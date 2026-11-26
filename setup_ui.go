@@ -243,8 +243,12 @@ func (m *setupModel) screen() setupScreen {
 	case setupStarting:
 		screen.action, screen.status = "Starting Soloist...", "Working"
 	case setupPairing:
-		screen.action = "Pair Soloist in the Spotify app using the same account.\n" +
-			"In the device picker, choose Pulso or your existing Soloist device name.\nThen recheck here."
+		screen.action = "1. Leave Pulso open. On your phone, open Spotify with the same account.\n" +
+			"2. Connect both devices to the same local network.\n" +
+			"3. Play a song and tap Connect to a device.\n" +
+			"4. Select Pulso or your existing Soloist device name.\n" +
+			"5. When audio plays here, return to Pulso and press Enter.\n" +
+			"Device missing? Check Wi-Fi, guest network isolation, and VPN settings."
 		screen.status = "Waiting for pairing"
 		screen.hints = []string{"Enter: recheck"}
 	case setupDone:
