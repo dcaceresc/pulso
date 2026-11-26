@@ -42,6 +42,7 @@ type setupSpotifyMsg struct {
 	attempt uint64
 	url     string
 	api     CatalogAPI
+	err     error
 	done    bool
 }
 
@@ -240,12 +241,11 @@ func (m *setupModel) beginSpotify() (tea.Model, tea.Cmd) {
 	if m.service.Authorize == nil {
 		return m.openPlayer()
 	}
+	// The field never starts with a stored value: showing it as if typed was
+	// confusing and could authorize with a stale placeholder.
 	m.phase = setupSpotify
 	m.spotify = setupSpotifyClientID
-	m.clientID = []rune(strings.TrimSpace(m.service.ClientID))
-	if _, ok := spotify.NormalizeClientID(string(m.clientID)); ok {
-		return m, m.startSpotify()
-	}
+	m.clientID = nil
 	return m, nil
 }
 
@@ -266,7 +266,7 @@ func (m *setupModel) startSpotify() tea.Cmd {
 			if err != nil {
 				api = nil
 			}
-			events <- setupSpotifyMsg{attempt: attempt, api: api, done: true}
+			events <- setupSpotifyMsg{attempt: attempt, api: api, err: err, done: true}
 		}()
 		return <-events
 	}
@@ -399,6 +399,15 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spotifyAPI, m.spotifyDone = msg.api, true
 			return m.openPlayer()
 		}
+		if errors.Is(msg.err, spotify.ErrClientIDRejected) {
+			// A rejected ID must not be retried from the stored copy.
+			m.service.ClientID = ""
+			m.clientID = nil
+			_ = spotify.ClearClientID()
+			m.spotify = setupSpotifyClientID
+			m.clientIssue = true
+			return m, nil
+		}
 		m.spotify = setupSpotifyFailed
 	case tea.KeyMsg:
 		if m.phase == setupSpotify && m.spotify != setupSpotifyClientID && msg.Type == tea.KeyRunes && !msg.Paste && len(msg.Runes) == 1 {
@@ -408,7 +417,8 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case 'e', 'E':
 				m.cancelSpotify()
 				m.spotify, m.clientIssue, m.spotifyURL = setupSpotifyClientID, false, ""
-				m.clientID = []rune(m.service.ClientID)
+				// Editing starts from an empty field; the saved ID stays a hint.
+				m.clientID = nil
 				return m, nil
 			}
 		}
@@ -453,7 +463,12 @@ func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 					m.clientID = m.clientID[:n-1]
 				}
 			case tea.KeyEnter:
-				id, ok := spotify.NormalizeClientID(string(m.clientID))
+				typed := strings.TrimSpace(string(m.clientID))
+				if typed == "" {
+					// Reuse a stored ID only on an explicit Enter, never silently.
+					typed = strings.TrimSpace(m.service.ClientID)
+				}
+				id, ok := spotify.NormalizeClientID(typed)
 				if !ok {
 					m.clientIssue = true
 					return nil
@@ -776,7 +791,12 @@ func (m *setupModel) View() string {
 	}
 	if screen.clientPrompt {
 		prompt := "Client ID: "
-		essential = append(essential, playerFit(prompt+string(m.clientID)+"_", width))
+		line := prompt + string(m.clientID) + "_"
+		// A stored ID is a hint, never editable content, and the field stays empty.
+		if stored := strings.TrimSpace(m.service.ClientID); stored != "" && len(stored) > 8 && len(m.clientID) == 0 {
+			essential = append(essential, playerFit(m.text("Saved Client ID: ", "Client ID guardado: ")+stored[:4]+"…"+stored[len(stored)-4:], width))
+		}
+		essential = append(essential, playerFit(line, width))
 	}
 	if room > 0 {
 		// Give the key field and the official fallback link priority over copy

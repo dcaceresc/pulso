@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/dcaceresc/pulso/internal/spotify"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -692,16 +694,22 @@ func TestSetupSpotifyStoredClientIDSkipsInstructions(t *testing.T) {
 		PlayerWithPreferences: func(int, int, preferences, CatalogAPI) tea.Model { return setupTestPlayer{} },
 	}, preferences{}, nil)
 	model, cmd := runSetupCmd(t, model, model.Init())
+	if cmd != nil {
+		t.Fatal("a stored Client ID must not authorize before the human confirms it")
+	}
+	if view := model.View(); strings.Contains(view, stored) {
+		t.Fatalf("the stored Client ID was shown as editable content:\n%s", view)
+	}
+	expectSetupText(t, model.View(), "Saved Client ID: 0123…cdef", "Client ID: _")
+	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("a stored Client ID should start authorization without instructions")
+		t.Fatal("confirming the saved Client ID should start authorization")
 	}
-	if view := model.View(); strings.Contains(view, "Create an app at") {
-		t.Fatalf("instructions were shown for a stored Client ID:\n%s", view)
-	}
+	model, cmd = runSetupCmd(t, model, cmd)
 	expectSetupText(t, model.View(), "Waiting for Spotify authorization")
 	// e still replaces the remembered Client ID, with the instructions to retry.
 	model, _ = model.Update(setupRunes("e"))
-	expectSetupText(t, model.View(), "Connect Spotify", "Client ID: "+stored)
+	expectSetupText(t, model.View(), "Connect Spotify", "Saved Client ID: 0123…cdef")
 	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("confirming the shown Client ID should start authorization")
@@ -775,11 +783,13 @@ func TestSetupRestoreFailureFallsBackToStoredClientID(t *testing.T) {
 		t.Fatal("the restore hook was never consulted")
 	}
 	model, cmd = runSetupCmd(t, model, cmd)
-	if cmd == nil {
-		t.Fatal("a failed restore with a stored Client ID should authorize directly")
+	if cmd != nil {
+		t.Fatal("a failed restore must wait for the human to confirm the saved Client ID")
 	}
-	if view := model.View(); strings.Contains(view, "Create an app at") {
-		t.Fatalf("instructions were shown for a stored Client ID:\n%s", view)
+	expectSetupText(t, model.View(), "Saved Client ID: 0123…cdef")
+	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("a failed restore with a stored Client ID should authorize on Enter")
 	}
 	expectSetupText(t, model.View(), "Waiting for Spotify authorization")
 	model, cmd = runSetupCmd(t, model, cmd)
@@ -788,7 +798,7 @@ func TestSetupRestoreFailureFallsBackToStoredClientID(t *testing.T) {
 	}
 	expectSetupText(t, model.View(), "http://127.0.0.1:8888/callback", "e: edit Client ID")
 	model, _ = model.Update(setupRunes("e"))
-	expectSetupText(t, model.View(), "Connect Spotify", "Client ID: "+stored)
+	expectSetupText(t, model.View(), "Connect Spotify", "Saved Client ID: 0123…cdef")
 }
 
 func TestSetupRestoreFailureWithoutClientIDShowsInstructions(t *testing.T) {
@@ -821,8 +831,12 @@ func TestSetupRestoreIgnoresIncompleteResult(t *testing.T) {
 	}, preferences{}, nil)
 	model, cmd := runSetupCmd(t, model, model.Init())
 	model, cmd = runSetupCmd(t, model, cmd)
+	if cmd != nil {
+		t.Fatal("an incomplete restore must wait for confirmation")
+	}
+	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("an incomplete restore should fall through to authorization")
+		t.Fatal("an incomplete restore should fall through to authorization on Enter")
 	}
 }
 
@@ -840,8 +854,12 @@ func TestSetupSpotifyEditCancelsPendingAuthorization(t *testing.T) {
 		PlayerWithPreferences: func(int, int, preferences, CatalogAPI) tea.Model { return setupTestPlayer{} },
 	}, preferences{}, nil)
 	model, cmd := runSetupCmd(t, model, model.Init())
+	if cmd != nil {
+		t.Fatal("authorization must wait for confirmation")
+	}
+	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("a stored Client ID should start authorization")
+		t.Fatal("confirming the saved Client ID should start authorization")
 	}
 	// The command only returns once the pending attempt is cancelled.
 	results := make(chan tea.Msg, 1)
@@ -852,7 +870,7 @@ func TestSetupSpotifyEditCancelsPendingAuthorization(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("editing the Client ID did not cancel the pending authorization")
 	}
-	expectSetupText(t, model.View(), "Connect Spotify", "Client ID: "+stored)
+	expectSetupText(t, model.View(), "Connect Spotify", "Saved Client ID: 0123…cdef")
 	select {
 	case msg := <-results:
 		model, cmd = model.Update(msg)
@@ -862,5 +880,24 @@ func TestSetupSpotifyEditCancelsPendingAuthorization(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the cancelled attempt never finished")
 	}
-	expectSetupText(t, model.View(), "Client ID: "+stored)
+	expectSetupText(t, model.View(), "Saved Client ID: 0123…cdef")
+}
+
+func TestSetupRejectedClientIDIsForgotten(t *testing.T) {
+	const stored = "0123456789abcdef0123456789abcdef"
+	model := NewSetupModelWithPreferences(context.Background(), SetupService{
+		Inspect:  func(context.Context) (SetupState, error) { return SetupReady, nil },
+		ClientID: stored,
+		Authorize: func(context.Context, string, func(string)) (CatalogAPI, error) {
+			return nil, spotify.ErrClientIDRejected
+		},
+		PlayerWithPreferences: func(int, int, preferences, CatalogAPI) tea.Model { return setupTestPlayer{} },
+	}, preferences{}, nil)
+	model, _ = runSetupCmd(t, model, model.Init())
+	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, _ = runSetupCmd(t, model, cmd)
+	if view := model.View(); strings.Contains(view, "0123…cdef") {
+		t.Fatalf("a rejected Client ID was offered again:\n%s", view)
+	}
+	expectSetupText(t, model.View(), "32 hex characters")
 }

@@ -30,7 +30,8 @@ var (
 	errSpotifyToken       = errors.New("Spotify token request failed")
 	// A definitive rejection means the saved approval is gone for good.
 	errSpotifyTokenRejected = errors.New("Spotify rejected the authorization; approve access again")
-	errSpotifyClientID      = errors.New("Spotify rejected the Client ID or redirect URI")
+	// ErrClientIDRejected means Spotify refused the Client ID or redirect URI.
+	ErrClientIDRejected = errors.New("Spotify rejected the Client ID or redirect URI")
 	// Spotify only accepts loopback redirects with an explicit port, so the
 	// address is fixed and must match the one registered in the dashboard.
 	spotifyCallbackAddr = spotifyCallbackDefaultAddr
@@ -224,7 +225,7 @@ func waitSpotifyCallback(ctx context.Context, listener net.Listener, host, state
 			}
 			if q.Get("error") == "invalid_client" {
 				http.Error(w, "Spotify rejected the Client ID", http.StatusBadRequest)
-				results <- callback{err: errSpotifyClientID}
+				results <- callback{err: ErrClientIDRejected}
 				return
 			}
 			if q.Has("error") || len(q["code"]) != 1 || q.Get("code") == "" {

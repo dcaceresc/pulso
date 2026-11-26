@@ -98,3 +98,15 @@ func NormalizeClientID(raw string) (string, bool) {
 	}
 	return id, true
 }
+
+// ClearClientID forgets a rejected Client ID so the next attempt asks again.
+func ClearClientID() error {
+	path, err := clientIDPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
