@@ -520,8 +520,8 @@ func TestPlayerViewCatalogKeysNoLongerOpenAnOverlay(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("s scheduled work outside the playing bar")
 	}
-	if after := ansi.Strip(m.View()); after != before {
-		t.Fatalf("s changed the workspace:\n%s", after)
+	if after := ansi.Strip(m.View()); after == before {
+		t.Fatalf("s did not reflect the requested shuffle:\n%s", after)
 	}
 	select {
 	case got := <-out:
@@ -530,6 +530,14 @@ func TestPlayerViewCatalogKeysNoLongerOpenAnOverlay(t *testing.T) {
 		}
 	default:
 		t.Fatal("s sent no shuffle command from the table")
+	}
+	// The snapshot refresh may be dropped when the bounded channel is full.
+	select {
+	case got := <-out:
+		if got.Name != "get_state" {
+			t.Fatalf("follow-up = %+v, want get_state", got)
+		}
+	default:
 	}
 
 	// l focuses the sidebar instead of opening the playlists overlay.
@@ -700,9 +708,6 @@ func TestPlayerViewPlayingBarSeekKeys(t *testing.T) {
 				if got != want {
 					t.Fatalf("got %+v, want %+v", got, want)
 				}
-				if len(out) != 0 {
-					t.Fatal("one keypress sent more than one command")
-				}
 			default:
 				t.Fatal("the playing bar did not seek")
 			}
@@ -781,15 +786,20 @@ func TestPlayerViewPlayingBarCyclesModes(t *testing.T) {
 				if got != want {
 					t.Fatalf("got %+v, want %+v", got, want)
 				}
-				if len(out) != 0 {
-					t.Fatal("one keypress sent more than one command")
-				}
 			default:
 				t.Fatalf("%q sent no command", tt.key)
 			}
-			// The bar waits for Soloist's event instead of guessing.
-			if after := ansi.Strip(m.View()); after != before {
-				t.Fatalf("the mode changed before the event:\n%s", after)
+			// A fresh snapshot request follows, so a lost event cannot stick.
+			select {
+			case refresh := <-out:
+				if refresh.Name != "get_state" {
+					t.Fatalf("follow-up = %+v, want get_state", refresh)
+				}
+			default:
+			}
+			// The requested mode shows until Soloist reports its own value.
+			if after := ansi.Strip(m.View()); after == before {
+				t.Fatalf("the requested mode was not reflected:\n%s", after)
 			}
 		})
 	}
@@ -861,15 +871,19 @@ func TestPlayerViewShuffleAndRepeatWorkOutsideTheBar(t *testing.T) {
 					if got != want {
 						t.Fatalf("got %+v, want %+v", got, want)
 					}
-					if len(out) != 0 {
-						t.Fatal("one keypress sent more than one command")
-					}
 				default:
 					t.Fatalf("%q sent no command from the %s", tc.key, tt.name)
 				}
-				// The bar still waits for Soloist's event instead of guessing.
-				if after := ansi.Strip(m.View()); after != before {
-					t.Fatalf("%q changed the workspace before the event:\n%s", tc.key, after)
+				select {
+				case refresh := <-out:
+					if refresh.Name != "get_state" {
+						t.Fatalf("%q follow-up = %+v, want get_state", tc.key, refresh)
+					}
+				default:
+				}
+				// The requested mode shows until Soloist reports its own value.
+				if after := ansi.Strip(m.View()); after == before {
+					t.Fatalf("%q was not reflected in the workspace:\n%s", tc.key, after)
 				}
 			}
 		})

@@ -177,7 +177,7 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 			t.Fatal("fixture did not advance")
 		}
 		if i == 0 {
-			for _, cmd := range []playerCommand{{Name: "get_state"}, {Name: "play"}, {Name: "pause"}, {Name: "skip_next"}, {Name: "skip_prev"}, {Name: "set_volume", Volume: 110}, {Name: "set_volume", Volume: -1},
+			for _, cmd := range []playerCommand{{Name: "play"}, {Name: "pause"}, {Name: "skip_next"}, {Name: "skip_prev"}, {Name: "set_volume", Volume: 110}, {Name: "set_volume", Volume: -1},
 				{Name: "play", URI: "https://open.spotify.com/track/AbC123"},
 				{Name: "play", URI: "spotify:artist:AbC123"},
 				{Name: "play", URI: "spotify:track:"},

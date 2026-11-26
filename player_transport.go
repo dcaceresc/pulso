@@ -464,6 +464,8 @@ func playerCommandPacket(command playerCommand) ([]playerRequest, bool) {
 	case "set_volume":
 		volume := min(100, max(0, command.Volume))
 		return []playerRequest{{Command: "set_volume", Volume: &volume}}, true
+	case "get_state":
+		return []playerRequest{{Command: "get_state"}}, true
 	case "seek":
 		position := max(0, command.PositionMS)
 		return []playerRequest{{Command: "seek", PositionMS: &position}}, true

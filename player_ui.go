@@ -54,6 +54,9 @@ type playerModel struct {
 	ended, quit     bool
 	busy            bool
 	ticking         bool
+	wantShuffle     *bool
+	wantRepeat      string
+	modeSession     uint64
 
 	// Workspace focus and the Soloist queue cursor. The library keeps its own
 	// per-panel cursors for playlists and their tracks; the search state keeps
@@ -171,6 +174,7 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.state = msg.state
+		m.reconcileModes()
 		m.clampSelections()
 		// A playing session needs a second of wall time to advance its playhead.
 		return m, tea.Batch(m.awaitState(), m.armTick())
@@ -312,18 +316,30 @@ func (m *playerModel) handlePlayingKey(key tea.KeyMsg) bool {
 		}
 		command = playerCommand{Name: "seek", PositionMS: playerSeekTarget(m.playhead(), delta, m.state.Track.DurationMS)}
 	case key.String() == "s":
-		command = playerCommand{Name: "set_shuffle", Shuffle: !m.state.Shuffle}
+		command = playerCommand{Name: "set_shuffle", Shuffle: !m.shuffleWanted()}
 	case key.String() == "r":
-		command = playerCommand{Name: "set_repeat", Repeat: playerNextRepeat(m.state.Repeat)}
+		command = playerCommand{Name: "set_repeat", Repeat: playerNextRepeat(m.repeatWanted())}
 	default:
 		return false
 	}
 	if m.commands == nil || !m.state.Connected {
 		return true
 	}
-	if m.send(command) && command.Name == "seek" {
-		// Move the bar at once; Soloist confirms with position_sync.
-		m.state.PositionMS, m.state.AnchorAt = command.PositionMS, m.now()
+	if m.send(command) {
+		switch command.Name {
+		case "seek":
+			// Move the bar at once; Soloist confirms with position_sync.
+			m.state.PositionMS, m.state.AnchorAt = command.PositionMS, m.now()
+		case "set_shuffle":
+			// Remember the intent until Soloist reports matching options, and ask
+			// for a fresh snapshot so a lost event cannot leave the toggle stuck.
+			wanted := command.Shuffle
+			m.wantShuffle = &wanted
+			m.send(playerCommand{Name: "get_state"})
+		case "set_repeat":
+			m.wantRepeat = command.Repeat
+			m.send(playerCommand{Name: "get_state"})
+		}
 	}
 	return true
 }
@@ -902,10 +918,10 @@ func (m *playerModel) playingRows(width int, styles playerStyles) []playerRow {
 
 // shuffleMode renders the shuffle state Soloist last reported.
 func (m *playerModel) shuffleMode() string {
-	if !m.state.OptionsKnown {
+	if !m.state.OptionsKnown && m.wantShuffle == nil {
 		return "—"
 	}
-	if m.state.Shuffle {
+	if m.shuffleWanted() {
 		return m.text("on", "activado")
 	}
 	return m.text("off", "apagado")
@@ -913,10 +929,10 @@ func (m *playerModel) shuffleMode() string {
 
 // repeatMode renders off, all (context) or one (track).
 func (m *playerModel) repeatMode() string {
-	if !m.state.OptionsKnown {
+	if !m.state.OptionsKnown && m.wantRepeat == "" {
 		return "—"
 	}
-	switch m.state.Repeat {
+	switch m.repeatWanted() {
 	case "context":
 		return m.text("all", "todo")
 	case "track":
@@ -1402,4 +1418,36 @@ func (m *playerModel) tableRow(columns []playerColumn, index int, selected bool,
 		style = styles.accent
 	}
 	return playerRow{text: strings.Join(cells, " "), style: style}
+}
+
+// shuffleWanted and repeatWanted prefer the value the human just asked for, so
+// a toggle never sticks while Soloist's event is in flight or missing.
+func (m *playerModel) shuffleWanted() bool {
+	if m.wantShuffle != nil {
+		return *m.wantShuffle
+	}
+	return m.state.Shuffle
+}
+
+func (m *playerModel) repeatWanted() string {
+	if m.wantRepeat != "" {
+		return m.wantRepeat
+	}
+	return m.state.Repeat
+}
+
+// reconcileModes drops an intent once Soloist reports it, and drops both when
+// the session changes or disconnects, because the intent no longer applies.
+func (m *playerModel) reconcileModes() {
+	if !m.state.Connected || m.state.SessionID != m.modeSession {
+		m.wantShuffle, m.wantRepeat = nil, ""
+		m.modeSession = m.state.SessionID
+		return
+	}
+	if m.wantShuffle != nil && m.state.OptionsKnown && m.state.Shuffle == *m.wantShuffle {
+		m.wantShuffle = nil
+	}
+	if m.wantRepeat != "" && m.state.OptionsKnown && m.state.Repeat == m.wantRepeat {
+		m.wantRepeat = ""
+	}
 }
