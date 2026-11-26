@@ -162,7 +162,7 @@ func TestPlayerViewResponsiveAndSafeMetadata(t *testing.T) {
 
 func TestPlayerViewWorkspaceBounds(t *testing.T) {
 	state := playerState{
-		Connected: true, Status: "playing", Device: "Desk", Volume: 37, PositionMS: 62000,
+		Connected: true, Status: "playing", Device: "Desk", Volume: 37, PositionMS: 62000, OptionsKnown: true,
 		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros", DurationMS: 381000},
 		Queue: []playerTrack{
 			{Title: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000},
@@ -863,7 +863,7 @@ func TestPlayerViewPlayingBarModes(t *testing.T) {
 	} {
 		t.Run(tt.language+"-"+tt.repeat, func(t *testing.T) {
 			m := playerViewPrefsModel(t, preferences{Language: tt.language}, playerState{
-				Connected: true, Shuffle: tt.shuffle, Repeat: tt.repeat, Volume: 40,
+				Connected: true, OptionsKnown: true, Shuffle: tt.shuffle, Repeat: tt.repeat, Volume: 40,
 				Track: playerTrack{Title: "Song", DurationMS: 200000},
 			})
 			playerViewText(t, m, append(tt.want, "Song")...)
@@ -1162,7 +1162,7 @@ func TestPlayerViewPanelStateRows(t *testing.T) {
 func TestPlayerViewPolishBounds(t *testing.T) {
 	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42)}
 	m, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{
-		Connected: true, Status: "playing", Volume: 37, PositionMS: 62000, Shuffle: true, Repeat: "context",
+		Connected: true, Status: "playing", Volume: 37, PositionMS: 62000, OptionsKnown: true, Shuffle: true, Repeat: "context",
 		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros", DurationMS: 381000},
 	}, source, nil, "")
 	m, cmd := libraryOpenFirst(t, m)

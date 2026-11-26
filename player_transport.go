@@ -41,15 +41,16 @@ type playerState struct {
 	Device string
 	// PositionMS is the playhead Soloist reported at AnchorAt; the UI adds the
 	// elapsed time at Speed on top of it. AnchorAt is zero when unknown.
-	PositionMS int64
-	AnchorAt   time.Time
-	Speed      float64
-	Volume     int
-	Shuffle    bool
-	Repeat     string // "off", "context" or "track", empty until Soloist says.
-	Connected  bool
-	Notice     string
-	SessionID  uint64
+	PositionMS   int64
+	AnchorAt     time.Time
+	Speed        float64
+	Volume       int
+	Shuffle      bool
+	Repeat       string // "off", "context" or "track", empty until Soloist says.
+	OptionsKnown bool   // True once Soloist reported shuffle and repeat.
+	Connected    bool
+	Notice       string
+	SessionID    uint64
 }
 
 type playerCommand struct {
@@ -367,6 +368,7 @@ func (state *playerState) apply(event playerEvent) bool {
 		if event.Options == nil {
 			return
 		}
+		state.OptionsKnown = true
 		if event.Options.Shuffle != nil {
 			state.Shuffle = *event.Options.Shuffle
 		}

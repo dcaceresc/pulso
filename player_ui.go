@@ -55,6 +55,7 @@ type playerModel struct {
 	pending, loaded bool
 	ended, quit     bool
 	busy            bool
+	ticking         bool
 
 	// Workspace focus and the Soloist queue cursor. The library keeps its own
 	// per-panel cursors for playlists and their tracks; the search state keeps
@@ -172,7 +173,7 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = msg.state
 		m.clampSelections()
 		// A playing session needs a second of wall time to advance its playhead.
-		return m, tea.Batch(m.awaitState(), m.tick())
+		return m, tea.Batch(m.awaitState(), m.armTick())
 	case playerTickMsg:
 		return m, m.tick()
 	case tea.KeyMsg:
@@ -531,11 +532,33 @@ func playerPlaying(status string) bool {
 // playerTickMsg re-renders the interpolated playhead.
 type playerTickMsg struct{}
 
-// tick keeps one second of wall time flowing into the bar while a session plays.
-func (m *playerModel) tick() tea.Cmd {
-	if m.quit || m.ended || m.ctx.Err() != nil || !m.state.Connected || !playerPlaying(m.state.Status) {
+// armTick starts the single tick chain. Every Soloist event used to arm
+// another one, so the screen was redrawn once per second per event.
+func (m *playerModel) armTick() tea.Cmd {
+	if m.ticking || m.quit || m.ended || !m.tickWanted() {
 		return nil
 	}
+	m.ticking = true
+	return m.nextTick()
+}
+
+// tick continues the armed chain, dropping it as soon as it is pointless.
+func (m *playerModel) tick() tea.Cmd {
+	if !m.ticking {
+		return nil
+	}
+	if !m.tickWanted() {
+		m.ticking = false
+		return nil
+	}
+	return m.nextTick()
+}
+
+func (m *playerModel) tickWanted() bool {
+	return m.ctx.Err() == nil && m.state.Connected && playerPlaying(m.state.Status)
+}
+
+func (m *playerModel) nextTick() tea.Cmd {
 	ctx := m.ctx
 	return tea.Tick(playerTickEvery, func(time.Time) tea.Msg {
 		if ctx.Err() != nil {
@@ -556,7 +579,8 @@ func (m *playerModel) now() time.Time {
 // anchor at Soloist's speed, capped at the track duration.
 func (m *playerModel) playhead() int64 {
 	position := m.state.PositionMS
-	if anchor, speed := m.state.AnchorAt, m.state.Speed; !anchor.IsZero() && speed > 0 {
+	// A paused session may still carry the last speed; only advance while playing.
+	if anchor, speed := m.state.AnchorAt, m.state.Speed; !anchor.IsZero() && speed > 0 && playerPlaying(m.state.Status) {
 		if elapsed := m.now().Sub(anchor); elapsed > 0 {
 			position += int64(float64(elapsed) / float64(time.Millisecond) * speed)
 		}
@@ -858,6 +882,9 @@ func (m *playerModel) playingRows(width int, styles playerStyles) []playerRow {
 
 // shuffleMode renders the shuffle state Soloist last reported.
 func (m *playerModel) shuffleMode() string {
+	if !m.state.OptionsKnown {
+		return "—"
+	}
 	if m.state.Shuffle {
 		return m.text("on", "activado")
 	}
@@ -866,6 +893,9 @@ func (m *playerModel) shuffleMode() string {
 
 // repeatMode renders off, all (context) or one (track).
 func (m *playerModel) repeatMode() string {
+	if !m.state.OptionsKnown {
+		return "—"
+	}
 	switch m.state.Repeat {
 	case "context":
 		return m.text("all", "todo")
