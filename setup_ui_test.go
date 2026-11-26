@@ -268,13 +268,47 @@ func TestSetupMaskingRetryAndPairing(t *testing.T) {
 	if cmd != nil || checks != 2 {
 		t.Fatal("successful start should recheck once, without polling")
 	}
-	expectSetupView(t, model, "1. Leave Pulso open. On your phone, open Spotify with the same account.\n2. Connect both devices to the same local network.\n3. Play a song and tap Connect to a device.\n4. Select Pulso or your existing Soloist device name.\n5. When audio plays here, return to Pulso and press Enter.", "Enter: recheck | Esc: quit")
+	expectSetupView(t, model, "1. Leave Pulso open. On your phone, open Spotify with the same account.\n2. Connect both devices to the same local network.\n3. Play a song and tap Connect to a device.\n4. Select Pulso or your existing Soloist device name.\n5. Pulso opens Now Playing when Spotify connects.", "Enter: recheck | Esc: quit")
 	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model, cmd = runSetupCmd(t, model, cmd)
 	if cmd != nil || checks != 3 || starts != 2 {
 		t.Fatal("pairing recheck should not restart Soloist")
 	}
 	expectSetupView(t, model, "Soloist is ready.", "Esc: quit")
+}
+
+func TestSetupManualPairingCheckAfterDaemonStops(t *testing.T) {
+	checks, starts, players := 0, 0, 0
+	model := newSetupModel(context.Background(), setupService{
+		inspect: func(context.Context) (setupState, error) {
+			checks++
+			switch checks {
+			case 1:
+				return setupAwaitPairing, nil
+			case 2:
+				return setupNeedsKey, nil
+			default:
+				return setupReady, nil
+			}
+		},
+		start: func(context.Context, string) error { starts++; return nil },
+		player: func(int, int) tea.Model {
+			players++
+			return setupTestPlayer{}
+		},
+	})
+	model, _ = runSetupCmd(t, model, model.Init())
+	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, cmd = runSetupCmd(t, model, cmd)
+	if cmd != nil || checks != 2 || starts != 0 || players != 0 {
+		t.Fatal("a stopped daemon should not be restarted or open the player")
+	}
+	expectSetupView(t, model, "Soloist stopped. Start it again, then press Enter to recheck.", "Enter: recheck | Esc: quit")
+	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, _ = runSetupCmd(t, model, cmd)
+	if model.View() != "Now Playing" || checks != 3 || starts != 0 || players != 1 {
+		t.Fatal("manual recheck should recover after the daemon returns")
+	}
 }
 
 func TestSetupResponsiveWorkspace(t *testing.T) {

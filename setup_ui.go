@@ -22,6 +22,7 @@ const (
 
 type setupService struct {
 	inspect func(context.Context) (setupState, error)
+	watch   func(context.Context, func(string) bool) error
 	install func(context.Context) error
 	start   func(context.Context, string) error
 	player  func(width, height int) tea.Model
@@ -39,13 +40,15 @@ const (
 	setupStarting
 	setupStartFailed
 	setupPairing
+	setupPairingChecking
+	setupPairingStopped
 	setupDone
 	setupQuit
 )
 
 type setupInspection struct {
 	state setupState
-	ok    bool
+	err   error
 }
 
 type setupInstalled uint8
@@ -79,6 +82,10 @@ type setupModel struct {
 	progress     setupState // Last confirmed inspection, retained while rechecking.
 	installIssue setupInstalled
 	key          []rune
+	pairing      *setupPairingSession
+	pairingDone  <-chan struct{}
+	pairingState setupPairingStatus
+	deviceName   string
 	width        int
 	height       int
 }
@@ -91,13 +98,55 @@ func (m *setupModel) Init() tea.Cmd {
 	inspect, ctx := m.service.inspect, m.ctx
 	return func() tea.Msg {
 		state, err := inspect(ctx)
-		return setupInspection{state, err == nil}
+		return setupInspection{state, err}
 	}
 }
 
 func (m *setupModel) recheck() tea.Cmd {
 	m.phase = setupChecking
 	return m.Init()
+}
+
+func (m *setupModel) beginPairing(recovering bool) tea.Cmd {
+	m.phase = setupPairing
+	m.pairingState, m.deviceName = setupPairingWaiting, ""
+	if recovering {
+		m.pairingState = setupPairingReconnecting
+	}
+	if m.service.watch == nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(m.ctx)
+	session := &setupPairingSession{cancel, make(chan setupPairingUpdate), make(chan struct{})}
+	go session.run(ctx, m.pairingDone, m.service, recovering)
+	m.pairing, m.pairingDone = session, session.done
+	return nextSetupPairingUpdate(session)
+}
+
+func nextSetupPairingUpdate(session *setupPairingSession) tea.Cmd {
+	return func() tea.Msg {
+		if update, ok := <-session.updates; ok {
+			return update
+		}
+		return nil
+	}
+}
+
+func (m *setupModel) cancelPairing() {
+	if m.pairing != nil {
+		m.pairing.cancel()
+		m.pairing = nil
+	}
+}
+
+func (m *setupModel) openPlayer() (tea.Model, tea.Cmd) {
+	m.cancelPairing()
+	m.progress, m.phase = setupReady, setupDone
+	if m.service.player != nil {
+		player := m.service.player(m.width, m.height)
+		return player, player.Init()
+	}
+	return m, nil
 }
 
 func (m *setupModel) clearKey() {
@@ -110,9 +159,19 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case setupInspection:
-		if m.phase == setupChecking {
+		switch m.phase {
+		case setupPairingChecking:
+			switch {
+			case setupDaemonStopped(msg.state, msg.err):
+				m.phase = setupPairingStopped
+			case msg.err == nil && msg.state == setupReady:
+				return m.openPlayer()
+			default:
+				return m, m.beginPairing(msg.err != nil)
+			}
+		case setupChecking:
 			m.phase = setupCheckFailed
-			if msg.ok {
+			if msg.err == nil {
 				m.progress = msg.state
 				switch msg.state {
 				case setupMissing:
@@ -120,14 +179,23 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case setupNeedsKey:
 					m.phase = setupEnterKey
 				case setupAwaitPairing:
-					m.phase = setupPairing
+					return m, m.beginPairing(false)
 				case setupReady:
-					if m.service.player != nil {
-						player := m.service.player(m.width, m.height)
-						return player, player.Init()
-					}
-					m.phase = setupDone
+					return m.openPlayer()
 				}
+			}
+		}
+	case setupPairingUpdate:
+		if m.phase == setupPairing && m.pairing == msg.session {
+			switch msg.status {
+			case setupPairingReady:
+				return m.openPlayer()
+			case setupPairingDaemonStopped:
+				m.cancelPairing()
+				m.phase = setupPairingStopped
+			default:
+				m.pairingState, m.deviceName = msg.status, msg.device
+				return m, nextSetupPairingUpdate(msg.session)
 			}
 		}
 	case setupInstalled:
@@ -154,14 +222,21 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC {
 		m.clearKey()
+		m.cancelPairing()
 		m.phase = setupQuit
 		return tea.Quit
 	}
 
 	switch m.phase {
-	case setupCheckFailed, setupPairing:
+	case setupCheckFailed:
 		if msg.Type == tea.KeyEnter {
 			return m.recheck()
+		}
+	case setupPairing, setupPairingStopped:
+		if msg.Type == tea.KeyEnter {
+			m.cancelPairing()
+			m.phase = setupPairingChecking
+			return m.Init()
 		}
 	case setupConfirmInstall, setupInstallFailed:
 		if m.phase == setupInstallFailed && msg.Type == tea.KeyEnter {
@@ -201,15 +276,15 @@ func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 type setupScreen struct {
-	action, link, status, reason string
-	hints                        []string
-	keyPrompt                    bool
+	action, link, status, reason, device string
+	hints                                []string
+	keyPrompt                            bool
 }
 
 func (m *setupModel) screen() setupScreen {
 	var screen setupScreen
 	switch m.phase {
-	case setupChecking:
+	case setupChecking, setupPairingChecking:
 		screen.action, screen.status = "Checking Soloist...", "Working"
 	case setupCheckFailed:
 		screen.action, screen.status = "Could not check Soloist. Try again.", "Retry needed"
@@ -248,13 +323,25 @@ func (m *setupModel) screen() setupScreen {
 	case setupStarting:
 		screen.action, screen.status = "Starting Soloist...", "Working"
 	case setupPairing:
+		deviceStep := "4. Select Pulso or your existing Soloist device name.\n"
+		if m.deviceName != "" {
+			deviceStep = "4. Select the device shown below.\n"
+			screen.device = "Device: " + m.deviceName
+		}
 		screen.action = "1. Leave Pulso open. On your phone, open Spotify with the same account.\n" +
 			"2. Connect both devices to the same local network.\n" +
-			"3. Play a song and tap Connect to a device.\n" +
-			"4. Select Pulso or your existing Soloist device name.\n" +
-			"5. When audio plays here, return to Pulso and press Enter.\n" +
+			"3. Play a song and tap Connect to a device.\n" + deviceStep +
+			"5. Pulso opens Now Playing when Spotify connects.\n" +
 			"Device missing? Check Wi-Fi, guest network isolation, and VPN settings."
 		screen.status = "Waiting for pairing"
+		if m.pairingState == setupPairingReconnecting {
+			screen.status = "Reconnecting to Soloist"
+			screen.reason = "Run pulso doctor if it does not reconnect."
+		}
+		screen.hints = []string{"Enter: recheck"}
+	case setupPairingStopped:
+		screen.action = "Soloist stopped. Start it again, then press Enter to recheck."
+		screen.status = "Soloist stopped"
 		screen.hints = []string{"Enter: recheck"}
 	case setupDone:
 		screen.action, screen.status = "Soloist is ready.", "Setup complete"
@@ -344,6 +431,9 @@ func (m *setupModel) View() string {
 	footer := setupRows(status, "  /  ", width)
 	for i, row := range footer {
 		footer[i] = setupLabel.Render(row)
+	}
+	if screen.device != "" {
+		footer = append([]string{playerFit(screen.device, width)}, footer...)
 	}
 	footer = append(footer, setupRows(screen.hints, " | ", width)...)
 	// Keep the title and the key hints in unusually short terminals.

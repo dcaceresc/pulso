@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,6 +33,7 @@ const (
 
 var (
 	errSoloistRuntime        = errors.New("Soloist runtime is unreachable or invalid. Run pulso doctor.")
+	errSoloistNotListening   = errors.New(errSoloistRuntime.Error()) // Same diagnostic; pairing can distinguish a refused socket.
 	errSoloistDataDir        = errors.New("Could not locate Soloist's default data directory. Run pulso doctor.")
 	errSoloistDiscovery      = errors.New("Could not locate Soloist. Run pulso doctor.")
 	errSoloistStart          = errors.New("Could not start Soloist. Run pulso doctor.")
@@ -64,6 +66,7 @@ func runSetup(stdout io.Writer) error {
 	}()
 	model := newSetupModel(ctx, setupService{
 		inspect: local.inspect,
+		watch:   local.watchPairing,
 		install: installManagedSoloist,
 		start:   local.start,
 		player: func(width, height int) tea.Model {
@@ -126,26 +129,34 @@ func (s *localSetup) inspect(ctx context.Context) (setupState, error) {
 }
 
 func soloistRuntimeState(ctx context.Context, dir string) (setupState, error) {
+	endpoint, err := soloistRuntimeEndpoint(dir)
+	if err != nil || endpoint == "" {
+		return setupNeedsKey, err
+	}
+	return soloistAuthState(ctx, endpoint)
+}
+
+func soloistRuntimeEndpoint(dir string) (string, error) {
 	addr, hasAddr, addrErr := readSoloistMarker(filepath.Join(dir, "ws.addr"))
 	port, hasPort, portErr := readSoloistMarker(filepath.Join(dir, "ws.port"))
 	if addrErr != nil || portErr != nil || hasAddr != hasPort {
-		return setupNeedsKey, errSoloistRuntime
+		return "", errSoloistRuntime
 	}
 	if !hasAddr {
 		for _, name := range []string{"pid", "soloist.pid"} {
 			if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-				return setupNeedsKey, errSoloistRuntime
+				return "", errSoloistRuntime
 			}
 		}
-		return setupNeedsKey, nil
+		return "", nil
 	}
 	ip, ipErr := netip.ParseAddr(addr)
 	number, portErr := strconv.ParseUint(port, 10, 16)
 	if ipErr != nil || !ip.IsLoopback() || ip.Zone() != "" || portErr != nil || number == 0 {
-		return setupNeedsKey, errSoloistRuntime
+		return "", errSoloistRuntime
 	}
 	endpoint := url.URL{Scheme: "ws", Host: net.JoinHostPort(ip.String(), strconv.FormatUint(number, 10)), Path: "/"}
-	return soloistAuthState(ctx, endpoint.String())
+	return endpoint.String(), nil
 }
 
 func readSoloistMarker(path string) (string, bool, error) {
@@ -168,7 +179,24 @@ func readSoloistMarker(path string) (string, bool, error) {
 	return strings.TrimSpace(string(data)), true, nil
 }
 
-func soloistAuthState(ctx context.Context, endpoint string) (setupState, error) {
+type soloistAuthEvent struct {
+	Type       string          `json:"type"`
+	LoggedIn   *bool           `json:"logged_in"`
+	DeviceName json.RawMessage `json:"device_name"`
+}
+
+func readSoloistAuthEvent(ctx context.Context, conn *websocket.Conn) (soloistAuthEvent, error) {
+	kind, data, err := conn.Read(ctx)
+	var message soloistAuthEvent
+	if err != nil || kind != websocket.MessageText || json.Unmarshal(data, &message) != nil {
+		return soloistAuthEvent{}, errSoloistRuntime
+	}
+	return message, nil
+}
+
+// openSoloistAuth bounds the handshake and first event together. On success the
+// caller owns a live socket whose subsequent reads use the caller's context.
+func openSoloistAuth(ctx context.Context, endpoint string) (*websocket.Conn, soloistAuthEvent, error) {
 	ctx, cancel := context.WithTimeout(ctx, soloistProbeTimeout)
 	defer cancel()
 	transport := &http.Transport{MaxResponseHeaderBytes: 8 << 10, DisableCompression: true}
@@ -179,18 +207,27 @@ func soloistAuthState(ctx context.Context, endpoint string) (setupState, error) 
 	}
 	conn, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{HTTPClient: client})
 	if err != nil {
-		return setupNeedsKey, errSoloistRuntime
+		const wsaConnRefused = syscall.Errno(10061)
+		if errors.Is(err, syscall.ECONNREFUSED) || runtime.GOOS == "windows" && errors.Is(err, wsaConnRefused) {
+			return nil, soloistAuthEvent{}, errSoloistNotListening
+		}
+		return nil, soloistAuthEvent{}, errSoloistRuntime
+	}
+	conn.SetReadLimit(soloistEventLimit)
+	message, err := readSoloistAuthEvent(ctx, conn)
+	if err != nil || message.Type != "auth_state" || message.LoggedIn == nil {
+		_ = conn.CloseNow()
+		return nil, soloistAuthEvent{}, errSoloistRuntime
+	}
+	return conn, message, nil
+}
+
+func soloistAuthState(ctx context.Context, endpoint string) (setupState, error) {
+	conn, message, err := openSoloistAuth(ctx, endpoint)
+	if err != nil {
+		return setupNeedsKey, err
 	}
 	defer conn.CloseNow()
-	conn.SetReadLimit(soloistEventLimit)
-	kind, data, err := conn.Read(ctx)
-	var message struct {
-		Type     string `json:"type"`
-		LoggedIn *bool  `json:"logged_in"`
-	}
-	if err != nil || kind != websocket.MessageText || json.Unmarshal(data, &message) != nil || message.Type != "auth_state" || message.LoggedIn == nil {
-		return setupNeedsKey, errSoloistRuntime
-	}
 	if *message.LoggedIn {
 		return setupReady, nil
 	}
