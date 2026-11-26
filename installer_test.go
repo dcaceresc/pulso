@@ -116,6 +116,11 @@ func TestInstallSoloist(t *testing.T) {
 	linux := soloistFixtureEntry{name: "./release/soloist", data: payload}
 	zipOK := soloistZipFixture(t, soloistFixtureEntry{name: "release/"}, win)
 	tarOK := soloistTarFixture(t, 0, soloistFixtureEntry{name: "./release/", kind: tar.TypeDir}, linux)
+	changelog := soloistFixtureEntry{name: "CHANGELOG.md", data: "release notes"}
+	licenses := soloistFixtureEntry{name: "THIRD_PARTY_LICENSES.txt", data: "third-party license text"}
+	tarLicenses := licenses
+	tarLicenses.name = "./" + tarLicenses.name
+	tarWithDocs := soloistTarFixture(t, 0, changelog, linux, tarLicenses)
 	badZipChecksum := bytes.Replace(zipOK, []byte(payload), []byte(strings.Repeat("x", len(payload))), 1)
 	badGzipChecksum := bytes.Clone(tarOK)
 	badGzipChecksum[len(badGzipChecksum)-8] ^= 1
@@ -141,6 +146,13 @@ func TestInstallSoloist(t *testing.T) {
 	}{
 		{name: "Windows ZIP", goos: "windows", archive: zipOK, wantRequests: 1},
 		{name: "Linux tar.gz", goos: "linux", archive: tarOK, wantRequests: 1},
+		{name: "Windows ZIP with release docs", goos: "windows", archive: soloistZipFixture(t, changelog, win, licenses), wantRequests: 1},
+		{name: "Linux tar.gz with release docs", goos: "linux", archive: tarWithDocs, wantRequests: 1},
+		{name: "ZIP rejects nested release doc", goos: "windows", archive: soloistZipFixture(t, win, soloistFixtureEntry{name: "release/CHANGELOG.md", data: changelog.data}), wantErr: `unexpected ZIP file "release/CHANGELOG.md"`, wantRequests: 1},
+		{name: "tar rejects nested release doc", goos: "linux", archive: soloistTarFixture(t, 0, linux, soloistFixtureEntry{name: "release/THIRD_PARTY_LICENSES.txt", data: licenses.data}), wantErr: `unexpected tar file "release/THIRD_PARTY_LICENSES.txt"`, wantRequests: 1},
+		{name: "ZIP rejects symlink release doc", goos: "windows", archive: soloistZipFixture(t, win, soloistFixtureEntry{name: changelog.name, data: "other", kind: tar.TypeSymlink}), wantErr: `non-regular or encrypted ZIP entry "CHANGELOG.md"`, wantRequests: 1},
+		{name: "tar rejects symlink release doc", goos: "linux", archive: soloistTarFixture(t, 0, linux, soloistFixtureEntry{name: licenses.name, kind: tar.TypeSymlink}), wantErr: `non-regular tar entry "THIRD_PARTY_LICENSES.txt"`, wantRequests: 1},
+		{name: "tar requires end marker after release doc", goos: "linux", archive: soloistTarFixture(t, 512, linux, tarLicenses), wantErr: "missing or invalid tar end marker", wantRequests: 1},
 		{name: "unsupported OS", goos: "darwin", wantErr: "unsupported Soloist platform"},
 		{name: "unsupported architecture", goos: "linux", arch: "arm64", wantErr: "unsupported Soloist platform"},
 		{name: "existing destination", goos: "linux", existing: true, wantIs: os.ErrExist},

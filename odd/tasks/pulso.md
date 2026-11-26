@@ -12,6 +12,12 @@ Target: Windows x86-64 and Linux x86-64.
 - S6: “quiero una interfaz grafica que de la bienvenida y verifique si esta instalado soloist sino te lo instale y te de los pasos para crear la key y poder agregarla”
 - S7 (selected): “Dentro de la terminal (TUI)”
 
+- S8: “no funciona ademas se queda pegado aqui Welcome to Pulso
+
+Could not install Soloist. Try again?
+
+Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spotify-tui o la de sqlterm que esta en la carpeta personal tienes permiso para leerla”
+
 ## Tasks
 
 - T1 [done] S1–S5 — Bootstrap the Go command and read-only Soloist diagnostic; inline; commit: `feat: add Pulso Soloist diagnostic`.
@@ -23,6 +29,9 @@ Target: Windows x86-64 and Linux x86-64.
 - T5 [pending] S1, S2 — Add Web API search and playlist browsing; route pending; commit pending.
 - T6 [pending] S2, S3, S5 — Verify versioned `go install` and real end-to-end behavior on both platforms; route pending; commit pending.
 
+- T9 [pending independent verification] S8 — Accept known release documentation without extracting it; candidate `fix: accept official Soloist release archives`.
+- T10 [in progress] S8 — Replace the text-only wizard with a full-screen responsive terminal workspace inspired by sqlterm and provide an actionable install failure; worker.
+
 ## Log
 
 - L1: “comienza con la implementacion”
@@ -33,3 +42,4 @@ Target: Windows x86-64 and Linux x86-64.
 - L6: Setup visual brief: one compact pane with a Pulso welcome, a clear status or next action, and one row of keyboard hints. Let prose fit an 80-column terminal. Key entry must be masked and not written to disk by Pulso in this slice. Use the key for a local Soloist launch; Spotify owns the persistent pairing. A running external instance is not restarted or replaced by the wizard.
 - L7: Installer and model fixture checks passed. The independent verifier could only inspect committed code; it identified a zero-CRC ZIP gap by static inspection. The parent reproduced that bug with a fixture, fixed it, and confirmed the installer and model suite passed. The independent verifier then ran successfully on the corrected committed snapshot `dac65d9` (7 tests and 29 subtests including independent scratch probes). Live CDN, real pairing and native Linux remain unverified.
 - L8: T8 Windows PTY checks confirmed the welcome, Esc, and pairing recheck. The independent check found misleading pairing copy for external devices; the parent observed RED, updated the copy, and ran the expanded service/model/CLI checks and full Go suite to GREEN. `go vet`, local Windows install and Linux amd64 cross-build passed. Native assessment unavailable (`package-local-binary-missing`).
+- L9: Downloaded the official ZIP and tar.gz (both HTTP 200) without executing them. Both include CHANGELOG.md and THIRD_PARTY_LICENSES.txt. The actual ZIP reproduced `unexpected ZIP file "CHANGELOG.md"`. After the narrow fix, both real archives passed extraction validation. sqlterm is a read-only layout reference: header, panel/sidebar, separate status and shortcut rows, responsive collapse.

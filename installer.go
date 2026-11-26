@@ -156,6 +156,15 @@ func soloistArchiveName(name string, dir bool) (string, error) {
 	return path.Base(name), nil
 }
 
+// Call only after validating the archive name and regular entry type.
+func isSoloistReleaseDoc(name string) bool {
+	switch strings.TrimPrefix(name, "./") {
+	case "CHANGELOG.md", "THIRD_PARTY_LICENSES.txt":
+		return true
+	}
+	return false
+}
+
 // zip.NewReader materializes the whole index before callers can count entries.
 // Cap index reads separately from compressed file data reads during extraction.
 type soloistZIPReader struct {
@@ -199,7 +208,7 @@ func extractSoloistZIP(ctx context.Context, data []byte, executable string, out 
 		if file.Flags&1 != 0 || (!dir && !mode.IsRegular()) {
 			return fmt.Errorf("non-regular or encrypted ZIP entry %q", file.Name)
 		}
-		if dir {
+		if dir || isSoloistReleaseDoc(file.Name) {
 			continue
 		}
 		if name != executable {
@@ -284,6 +293,18 @@ func extractSoloistTar(ctx context.Context, data []byte, executable string, out 
 			if strings.HasPrefix(key, "GNU.sparse.") {
 				return fmt.Errorf("non-regular sparse tar entry %q", header.Name)
 			}
+		}
+		if isSoloistReleaseDoc(header.Name) {
+			// Drain the body through the expanded-size limit so Next reads only
+			// its block padding before the next header or end marker.
+			_, err := io.CopyN(io.Discard, archive, entrySize)
+			if limit.N == 0 {
+				return fmt.Errorf("expanded Soloist tar exceeds %d bytes", soloistTarLimit)
+			}
+			if err != nil {
+				return fmt.Errorf("skip tar release document: %w", err)
+			}
+			continue
 		}
 		if name != executable {
 			return fmt.Errorf("unexpected tar file %q", header.Name)
