@@ -23,14 +23,45 @@ type playerModel struct {
 	commands        chan<- playerCommand
 	state           playerState
 	width, height   int
+	preferences     preferences
+	save            func(preferences) error
+	catalog         *catalogModel
+	saved           bool
 	pending, loaded bool
 	ended, quit     bool
 	busy            bool
 }
 
 func newPlayerModel(ctx context.Context, states <-chan playerState, commands chan<- playerCommand, width, height int) tea.Model {
+	return newPlayerModelWithPreferences(ctx, states, commands, width, height, defaultPreferences(), nil, "", nil)
+}
+
+// newPlayerModelWithPreferences builds the playback workspace. The catalog is
+// optional: without authorize, the overlay stays absent and playback still works.
+func newPlayerModelWithPreferences(ctx context.Context, states <-chan playerState, commands chan<- playerCommand, width, height int, p preferences, save func(preferences) error, clientID string, authorize func(context.Context, string, func(string)) (catalogAPI, error)) tea.Model {
 	ctx, cancel := context.WithCancel(ctx)
-	return &playerModel{ctx: ctx, cancel: cancel, states: states, commands: commands, width: width, height: height}
+	m := &playerModel{
+		ctx: ctx, cancel: cancel, states: states, commands: commands,
+		width: width, height: height, preferences: p.normalized(), save: save,
+	}
+	if authorize != nil {
+		m.catalog = newCatalogModel(ctx, m.preferences, width, height, clientID, authorize, m.playURI)
+	}
+	return m
+}
+
+// playURI sends a catalog selection to the session currently on screen.
+func (m *playerModel) playURI(uri string) {
+	if m.commands == nil || m.ctx.Err() != nil || !m.state.Connected || uri == "" {
+		return
+	}
+	command := playerCommand{Name: "play", URI: uri, SessionID: m.state.SessionID}
+	select {
+	case <-m.ctx.Done():
+	case m.commands <- command:
+	default:
+		m.busy = true
+	}
 }
 
 func (m *playerModel) Init() tea.Cmd { return m.awaitState() }
@@ -58,6 +89,15 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		if m.catalog != nil {
+			_, cmd := m.catalog.Update(msg)
+			return m, cmd
+		}
+	case catalogAuthMsg, catalogPageMsg:
+		if m.catalog != nil {
+			_, cmd := m.catalog.Update(msg)
+			return m, cmd
+		}
 	case playerViewState:
 		if m.quit || !m.pending {
 			break
@@ -72,12 +112,23 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = msg.state
 		return m, m.awaitState()
 	case tea.KeyMsg:
+		if m.catalog != nil && !m.catalog.Closed() {
+			_, cmd := m.catalog.Update(msg)
+			return m, cmd
+		}
 		return m, m.handleKey(msg)
 	}
 	return m, nil
 }
 
+func (m *playerModel) text(english, spanish string) string {
+	return m.preferences.text(english, spanish)
+}
+
 func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
+	if key.Type == tea.KeyF2 || key.Type == tea.KeyF3 {
+		return m.changePreferences(key.Type == tea.KeyF2)
+	}
 	if key.Paste || key.Alt {
 		return nil
 	}
@@ -86,7 +137,18 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 		m.cancel()
 		return tea.Quit
 	}
-	if m.quit || !m.state.Connected || m.ctx.Err() != nil || m.commands == nil {
+	if m.ctx.Err() != nil {
+		return nil
+	}
+	if m.catalog != nil {
+		switch key.String() {
+		case "s", "l":
+			m.catalog.width, m.catalog.height = m.width, m.height
+			m.catalog.preferences = m.preferences
+			return m.catalog.Open(map[string]string{"s": "search", "l": "playlists"}[key.String()])
+		}
+	}
+	if m.quit || !m.state.Connected || m.commands == nil {
 		return nil
 	}
 	var command playerCommand
@@ -126,10 +188,26 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-var (
-	playerBanner = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("14"))
-	playerLabel  = lipgloss.NewStyle().Bold(true)
-)
+// changePreferences toggles language or cycles the theme and persists the result.
+func (m *playerModel) changePreferences(language bool) tea.Cmd {
+	if language {
+		m.preferences.Language = map[string]string{"en": "es", "es": "en"}[m.preferences.Language]
+	} else {
+		next := map[string]string{"standard": "dark", "dark": "light", "light": "standard"}
+		m.preferences.Theme = next[m.preferences.Theme]
+	}
+	m.preferences = m.preferences.normalized()
+	if m.catalog != nil {
+		m.catalog.preferences = m.preferences
+	}
+	m.saved = false
+	if m.save != nil && m.save(m.preferences) == nil {
+		m.saved = true
+	}
+	return nil
+}
+
+var playerLabel = lipgloss.NewStyle().Bold(true)
 
 // Metadata is never rendered as terminal syntax or allowed to create rows.
 func playerText(text string) string {
@@ -173,45 +251,45 @@ func playerProgress(position, duration int64, width int) string {
 }
 
 func (m *playerModel) trackRows(width int) []string {
-	rows := []string{"NOW PLAYING"}
+	rows := []string{m.text("NOW PLAYING", "EN REPRODUCCIÓN")}
 	if !m.loaded {
-		return append(rows, "Loading Soloist playback...")
+		return append(rows, m.text("Loading Soloist playback...", "Cargando la reproducción de Soloist..."))
 	}
 	if !m.state.Connected {
-		return append(rows, "Disconnected from Soloist")
+		return append(rows, m.text("Disconnected from Soloist", "Sin conexión con Soloist"))
 	}
 	track := m.state.Track
 	title, artist, album := playerText(track.Title), playerText(track.Artist), playerText(track.Album)
 	if title == "" && artist == "" && album == "" && track.DurationMS <= 0 {
-		rows = append(rows, "Nothing playing")
+		rows = append(rows, m.text("Nothing playing", "No hay nada en reproducción"))
 	} else {
 		if title == "" {
-			title = "Unknown track"
+			title = m.text("Unknown track", "Pista desconocida")
 		}
 		rows = append(rows, title)
 		if artist != "" {
-			rows = append(rows, "Artist: "+artist)
+			rows = append(rows, m.text("Artist: ", "Artista: ")+artist)
 		}
 		if album != "" {
-			rows = append(rows, "Album: "+album)
+			rows = append(rows, m.text("Album: ", "Álbum: ")+album)
 		}
 		rows = append(rows, playerProgress(m.state.PositionMS, track.DurationMS, width))
 	}
-	return append(rows, fmt.Sprintf("Volume %d%%", playerVolume(m.state.Volume)))
+	return append(rows, fmt.Sprintf(m.text("Volume %d%%", "Volumen %d%%"), playerVolume(m.state.Volume)))
 }
 
 func (m *playerModel) queueRows(room int) []string {
-	rows := []string{"QUEUE"}
+	rows := []string{m.text("QUEUE", "COLA")}
 	if !m.state.Connected {
-		return append(rows, "Queue unavailable")
+		return append(rows, m.text("Queue unavailable", "Cola no disponible"))
 	}
 	if len(m.state.Queue) == 0 {
-		return append(rows, "Queue is empty")
+		return append(rows, m.text("Queue is empty", "La cola está vacía"))
 	}
 	for i, track := range m.state.Queue[:min(len(m.state.Queue), max(0, room-1))] {
 		title := playerText(track.Title)
 		if title == "" {
-			title = "Unknown track"
+			title = m.text("Unknown track", "Pista desconocida")
 		}
 		if artist := playerText(track.Artist); artist != "" {
 			title += " — " + artist
@@ -222,49 +300,66 @@ func (m *playerModel) queueRows(room int) []string {
 }
 
 func (m *playerModel) footer(width, height int) []string {
-	status := "Loading"
+	status := m.text("Loading", "Cargando")
 	if m.loaded {
-		status = "Disconnected"
+		status = m.text("Disconnected", "Sin conexión")
 		if m.state.Connected {
 			status = playerText(m.state.Status)
 			if status == "" {
-				status = "Connected"
+				status = m.text("Connected", "Conectado")
 			}
 			if device := playerText(m.state.Device); device != "" {
 				status += " / " + device
 			}
 		}
 	}
-	hints := "Esc/q: quit | Space: play/pause | n/p: next/previous | +/-: volume"
-	if width < len(hints) {
-		hints = "Esc/q: quit | Space n/p +/-"
+	label := m.text("STATUS ", "ESTADO ")
+	hints := []string{
+		m.text("Esc/q: quit | Space: play/pause | n/p: next/previous | +/-: volume",
+			"Esc/q: salir | Espacio: reproducir/pausar | n/p: siguiente/anterior | +/-: volumen"),
+		m.text("s: search | l: playlists | ", "s: buscar | l: listas | ") +
+			m.text("F2: language", "F2: idioma") + " | " + m.text("F3: theme", "F3: tema"),
 	}
-	rows := []string{playerLabel.Render(playerFit("STATUS "+status, width))}
+	rows := []string{playerLabel.Render(playerFit(label+status, width))}
 	if height >= 9 {
 		notice := playerText(m.state.Notice)
 		if m.busy {
-			notice = "Controls busy; try again."
+			notice = m.text("Controls busy; try again.", "Controles ocupados; inténtalo de nuevo.")
+		}
+		if m.saved {
+			notice = m.text("Preferences saved.", "Preferencias guardadas.")
 		}
 		if notice != "" {
 			rows = append(rows, playerFit(notice, width))
 		}
 	}
-	return append(rows, playerFit(hints, width))
+	for i, hint := range hints {
+		if i > 0 && width < 40 {
+			break
+		}
+		rows = append(rows, playerFit(hint, width))
+	}
+	return rows
 }
 
 func (m *playerModel) View() string {
 	if m.quit || m.width < 1 || m.height < 1 {
 		return ""
 	}
+	if m.catalog != nil && !m.catalog.Closed() {
+		return m.catalog.View()
+	}
 	// Match the setup workspace: a full-width banner, a flexible body, and
 	// pinned status and shortcut rows. Very small windows lose the inset.
+	palette := m.preferences.palette()
+	banner := lipgloss.NewStyle().Bold(true).Foreground(palette.AccentText).Background(palette.Accent)
 	inset := 0
 	if m.width >= 20 {
 		inset = 1
 	}
 	indent := strings.Repeat(" ", inset)
 	width := m.width - 2*inset
-	rows := []string{playerBanner.Width(m.width).Render(indent + playerFit("Pulso / Playback", width))}
+	rows := []string{banner.Width(m.width).Render(indent + playerFit(m.text("Pulso / Playback", "Pulso / Reproducción"), width))}
 	footer := m.footer(width, m.height)
 	footer = footer[max(0, len(footer)-(m.height-1)):]
 	room := m.height - 1 - len(footer)

@@ -148,7 +148,7 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 				return
 			}
 			if i == 0 {
-				for _, cmd := range []string{`{"type":"command","command":"play"}`, `{"type":"command","command":"pause"}`, `{"type":"command","command":"skip_next"}`, `{"type":"command","command":"skip_prev"}`, `{"type":"command","command":"set_volume","volume":100}`, `{"type":"command","command":"set_volume","volume":0}`} {
+				for _, cmd := range []string{`{"type":"command","command":"play"}`, `{"type":"command","command":"pause"}`, `{"type":"command","command":"skip_next"}`, `{"type":"command","command":"skip_prev"}`, `{"type":"command","command":"set_volume","volume":100}`, `{"type":"command","command":"set_volume","volume":0}`, `{"type":"command","command":"play","uri":"spotify:track:AbC123"}`, `{"type":"command","command":"play","uri":"spotify:album:AbC123"}`, `{"type":"command","command":"play","uri":"spotify:playlist:AbC123"}`, `{"type":"command","command":"play","uri":"spotify:episode:AbC123"}`} {
 					if !playerTestRead(t, ctx, conn, cmd) {
 						return
 					}
@@ -177,7 +177,18 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 			t.Fatal("fixture did not advance")
 		}
 		if i == 0 {
-			for _, cmd := range []playerCommand{{Name: "get_state"}, {Name: "play"}, {Name: "pause"}, {Name: "skip_next"}, {Name: "skip_prev"}, {Name: "set_volume", Volume: 110}, {Name: "set_volume", Volume: -1}} {
+			for _, cmd := range []playerCommand{{Name: "get_state"}, {Name: "play"}, {Name: "pause"}, {Name: "skip_next"}, {Name: "skip_prev"}, {Name: "set_volume", Volume: 110}, {Name: "set_volume", Volume: -1},
+				{Name: "play", URI: "https://open.spotify.com/track/AbC123"},
+				{Name: "play", URI: "spotify:artist:AbC123"},
+				{Name: "play", URI: "spotify:track:"},
+				{Name: "play", URI: "spotify:track:AbC123\n"},
+				{Name: "play", URI: "spotify:track:AbC123?x=1"},
+				{Name: "pause", URI: "spotify:track:AbC123"},
+				{Name: "play", URI: "spotify:track:AbC123"},
+				{Name: "play", URI: "spotify:album:AbC123"},
+				{Name: "play", URI: "spotify:playlist:AbC123"},
+				{Name: "play", URI: "spotify:episode:AbC123"},
+			} {
 				cmd.SessionID = state.SessionID
 				playerTestCommand(t, commands, cmd)
 			}
@@ -253,6 +264,7 @@ func TestPlayerTransportReconnect(t *testing.T) {
 	newView := playerTestState(t, states, func(s playerState) bool { return s.Connected && s.Device == "new" })
 	// The replacement is ready while the UI still holds the previous view.
 	model, _ = model.Update(setupRunes("n"))
+	playerTestCommand(t, commands, playerCommand{Name: "play", URI: "spotify:track:AbC123", SessionID: oldView.SessionID})
 	model, _ = model.Update(playerViewState{state: newView, ok: true})
 	model.Update(setupRunes("p"))
 	playerTestState(t, states, func(s playerState) bool { return !s.Connected && s.Notice != "" })

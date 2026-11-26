@@ -225,6 +225,102 @@ func TestPlayerViewNonblockingAndQuit(t *testing.T) {
 	}
 }
 
+// Drain the catalog's async OAuth/data results through the parent model.
+func playerViewCatalogDrain(t *testing.T, m tea.Model, cmd tea.Cmd) {
+	t.Helper()
+	for steps := 0; cmd != nil; steps++ {
+		if steps == 5 {
+			t.Fatal("catalog commands did not settle")
+		}
+		m, cmd = m.Update(playerViewRun(t, cmd))
+	}
+}
+
+func TestPlayerViewCatalogOverlay(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	states, out := make(chan playerState, 1), make(chan playerCommand, 1)
+	api := catalogViewFake{
+		search: func(context.Context, string, int) ([]catalogItem, bool, error) {
+			return []catalogItem{{Name: "Fixture result", URI: "spotify:track:AbC123"}}, false, nil
+		},
+		lists: func(context.Context, int) ([]catalogItem, bool, error) {
+			return []catalogItem{{Name: "Fixture playlist", URI: "spotify:playlist:AbC123"}}, false, nil
+		},
+	}
+	m := newPlayerModelWithPreferences(ctx, states, out, 100, 24, preferences{}, nil, "fixture-id", catalogViewReply(api))
+	playerViewText(t, m, "s: search", "l: playlists")
+	states <- playerState{Connected: true, SessionID: 42}
+	m, next := m.Update(playerViewRun(t, m.Init()))
+	m, cmd := m.Update(playerViewKey("s"))
+	playerViewCatalogDrain(t, m, cmd)
+	m, _ = m.Update(playerViewKey("jazz"))
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	playerViewCatalogDrain(t, m, cmd)
+	playerViewText(t, m, "Fixture result")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	select {
+	case got := <-out:
+		if want := (playerCommand{Name: "play", URI: "spotify:track:AbC123", SessionID: 42}); got != want {
+			t.Fatalf("selected command %+v, want %+v", got, want)
+		}
+	default:
+		t.Fatal("expected selection to send a command to the displayed session")
+	}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 14, Height: 5})
+	rows := strings.Split(ansi.Strip(m.View()), "\n")
+	if len(rows) > 5 {
+		t.Fatalf("overlay resized to too many rows: %v", rows)
+	}
+	for _, row := range rows {
+		if lipgloss.Width(row) > 14 {
+			t.Fatalf("overlay row was not resized: %q", row)
+		}
+	}
+	states <- playerState{Connected: true, SessionID: 43, Track: playerTrack{Title: "Fresh playback"}}
+	m, next = m.Update(playerViewRun(t, next))
+	if next == nil {
+		t.Fatal("overlay stopped player reception")
+	}
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil {
+		t.Fatal("Esc in catalog should not quit or reschedule player reception")
+	}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	playerViewText(t, m, "Fresh playback")
+	m, cmd = m.Update(playerViewKey("l"))
+	playerViewCatalogDrain(t, m, cmd)
+	playerViewText(t, m, "Fixture playlist")
+	states <- playerState{Notice: playerPairNotice}
+	m, _ = m.Update(playerViewRun(t, next))
+	m.Update(playerViewKey("p"))
+	if len(out) != 0 {
+		t.Fatal("a catalog selection reached an unauthenticated Soloist session")
+	}
+}
+
+func TestPlayerViewPreferenceShortcuts(t *testing.T) {
+	var saved []preferences
+	m := newPlayerModelWithPreferences(context.Background(), nil, nil, 100, 24, preferences{Language: "en", Theme: "standard"}, func(p preferences) error {
+		saved = append(saved, p)
+		return nil
+	}, "", nil)
+	m.Init()
+	playerViewText(t, m, "Pulso / Playback", "F2: language", "F3: theme")
+	if len(saved) != 0 {
+		t.Fatalf("startup unexpectedly saved: %v", saved)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF2})
+	playerViewText(t, m, "Pulso / Reproducción", "Cargando", "F2: idioma", "F3: tema")
+	for range 3 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF3})
+	}
+	want := []preferences{{Language: "es", Theme: "standard"}, {Language: "es", Theme: "dark"}, {Language: "es", Theme: "light"}, {Language: "es", Theme: "standard"}}
+	if fmt.Sprint(saved) != fmt.Sprint(want) {
+		t.Fatalf("saved %v, want %v", saved, want)
+	}
+}
+
 func TestPlayerViewContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

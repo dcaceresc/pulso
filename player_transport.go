@@ -49,6 +49,7 @@ type playerState struct {
 type playerCommand struct {
 	Name      string
 	Volume    int
+	URI       string
 	SessionID uint64
 }
 
@@ -377,6 +378,7 @@ func (state *playerState) apply(event playerEvent) bool {
 
 type playerRequest struct {
 	Command string `json:"command"`
+	URI     string `json:"uri,omitempty"`
 	Limit   int    `json:"limit,omitempty"`
 	Volume  *int   `json:"volume,omitempty"`
 }
@@ -385,6 +387,15 @@ func playerCommandPacket(command playerCommand) (playerRequest, bool) {
 	packet := playerRequest{Command: command.Name}
 	switch command.Name {
 	case "play", "pause", "skip_next", "skip_prev":
+		if command.URI == "" {
+			return packet, true
+		}
+		// Only play accepts a target, and only a playable Spotify URI.
+		uri, ok := playerSpotifyURI(command.URI)
+		if command.Name != "play" || !ok {
+			return playerRequest{}, false
+		}
+		packet.URI = uri
 		return packet, true
 	case "set_volume":
 		volume := min(100, max(0, command.Volume))
@@ -393,6 +404,38 @@ func playerCommandPacket(command playerCommand) (playerRequest, bool) {
 	default:
 		return playerRequest{}, false
 	}
+}
+
+func playerSpotifyURI(raw string) (string, bool) {
+	if rest, ok := strings.CutPrefix(raw, "spotify:"); ok {
+		kind, id, found := strings.Cut(rest, ":")
+		if !found || !playerPlayableKind(kind) || !playerURIID(id) {
+			return "", false
+		}
+		return "spotify:" + kind + ":" + id, true
+	}
+	return "", false
+}
+
+func playerPlayableKind(kind string) bool {
+	switch kind {
+	case "track", "album", "playlist", "episode":
+		return true
+	}
+	return false
+}
+
+// Spotify ids are base-62. Reject anything that could change the command shape.
+func playerURIID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 func playerWrite(ctx context.Context, conn *websocket.Conn, packet playerRequest) bool {
