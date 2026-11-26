@@ -19,6 +19,7 @@ Could not install Soloist. Try again?
 Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spotify-tui o la de sqlterm que esta en la carpeta personal tienes permiso para leerla”
 
 - S9: “hay que dejar esta informacion para el usuario para que entienda que hay que hacer, ya lo hice y dice reproduciendo en pulso ahora falta toda la intefaz de visualizacion”
+- S10: “.\player_transport.go:185:6: other declaration of playerText  Soloist reported a playback error.”
 
 ## Tasks
 
@@ -50,3 +51,4 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - L11: Responsive renders and install-failure tests passed, plus the full Go suite, vet, Linux amd64 cross-build and diff check. No graphical screenshot or interactive proof of this new layout. Native assessment unavailable (`package-local-binary-missing`).
 - L12: “hay que dejar esta informacion para el usuario para que entienda que hay que hacer, ya lo hice y dice reproduciendo en pulso ahora falta toda la intefaz de visualizacion”. The user reports a real paired device playing audio; Web API and both-platform verification remain separate.
 - L13: Pairing instructions added to the wizard and README in `ddb56eb`; focused RED and GREEN observed. Setup-to-player model handoff passed its focused tests in isolation. Production now opens the player for a previously paired session or after Enter confirms new pairing. Focused tests, full suite, vet and Linux amd64 cross-build passed. High-risk concurrency assessment unavailable (`package-local-binary-missing`); independent committed checks pending.
+- L14: “.\player_transport.go:185:6: other declaration of playerText  Soloist reported a playback error.” The committed tree has one `playerText` declaration and the initial build passed; the duplicate was not reproduced. Comparing the Soloist WebSocket contract with transport requests found the playback break: requests used the command name as `type` instead of `type: command` plus `command: <name>`. Contract-matching fixtures reproduced the malformed payload before the fix.

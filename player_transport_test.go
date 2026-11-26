@@ -135,7 +135,7 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 			return
 		}
 		if !playerTestSend(t, ctx, conn, `{"type":"auth_state","logged_in":true,"device_name":"Living Room"}`) ||
-			!playerTestRead(t, ctx, conn, `{"type":"get_state"}`) || !playerTestRead(t, ctx, conn, `{"type":"get_queue","limit":10}`) {
+			!playerTestRead(t, ctx, conn, `{"type":"command","command":"get_state"}`) || !playerTestRead(t, ctx, conn, `{"type":"command","command":"get_queue","limit":10}`) {
 			return
 		}
 		for i, step := range steps {
@@ -148,7 +148,7 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 				return
 			}
 			if i == 0 {
-				for _, cmd := range []string{`{"type":"play"}`, `{"type":"pause"}`, `{"type":"skip_next"}`, `{"type":"skip_prev"}`, `{"type":"set_volume","volume":100}`, `{"type":"set_volume","volume":0}`} {
+				for _, cmd := range []string{`{"type":"command","command":"play"}`, `{"type":"command","command":"pause"}`, `{"type":"command","command":"skip_next"}`, `{"type":"command","command":"skip_prev"}`, `{"type":"command","command":"set_volume","volume":100}`, `{"type":"command","command":"set_volume","volume":0}`} {
 					if !playerTestRead(t, ctx, conn, cmd) {
 						return
 					}
@@ -215,11 +215,11 @@ func TestPlayerTransportReconnect(t *testing.T) {
 				}
 			}
 			if !playerTestSend(t, ctx, conn, `{"type":"auth_state","logged_in":true,"device_name":"`+device+`"}`) ||
-				!playerTestRead(t, ctx, conn, `{"type":"get_state"}`) || !playerTestRead(t, ctx, conn, `{"type":"get_queue","limit":10}`) {
+				!playerTestRead(t, ctx, conn, `{"type":"command","command":"get_state"}`) || !playerTestRead(t, ctx, conn, `{"type":"command","command":"get_queue","limit":10}`) {
 				return
 			}
 			if gate == nil {
-				playerTestRead(t, ctx, conn, `{"type":"pause"}`)
+				playerTestRead(t, ctx, conn, `{"type":"command","command":"pause"}`)
 				return
 			}
 			select {
@@ -284,7 +284,7 @@ func TestPlayerTransportRejectsUnsafeFrames(t *testing.T) {
 			send := make(chan struct{})
 			server := playerTestServer(t, func(ctx context.Context, conn *websocket.Conn) {
 				if !playerTestSend(t, ctx, conn, `{"type":"auth_state","logged_in":true,"device_name":"Desk"}`) ||
-					!playerTestRead(t, ctx, conn, `{"type":"get_state"}`) || !playerTestRead(t, ctx, conn, `{"type":"get_queue","limit":10}`) {
+					!playerTestRead(t, ctx, conn, `{"type":"command","command":"get_state"}`) || !playerTestRead(t, ctx, conn, `{"type":"command","command":"get_queue","limit":10}`) {
 					return
 				}
 				select {

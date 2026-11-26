@@ -279,7 +279,7 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 					state = playerState{Notice: playerPairNotice}
 				} else if !state.Connected {
 					limit := playerQueueLimit
-					if !playerWrite(ctx, conn, playerRequest{Type: "get_state"}) || !playerWrite(ctx, conn, playerRequest{Type: "get_queue", Limit: limit}) {
+					if !playerWrite(ctx, conn, playerRequest{Command: "get_state"}) || !playerWrite(ctx, conn, playerRequest{Command: "get_queue", Limit: limit}) {
 						return authenticated
 					}
 					// Drop input buffered before the new session became ready.
@@ -370,13 +370,13 @@ func (state *playerState) apply(event playerEvent) bool {
 }
 
 type playerRequest struct {
-	Type   string `json:"type"`
-	Limit  int    `json:"limit,omitempty"`
-	Volume *int   `json:"volume,omitempty"`
+	Command string `json:"command"`
+	Limit   int    `json:"limit,omitempty"`
+	Volume  *int   `json:"volume,omitempty"`
 }
 
 func playerCommandPacket(command playerCommand) (playerRequest, bool) {
-	packet := playerRequest{Type: command.Name}
+	packet := playerRequest{Command: command.Name}
 	switch command.Name {
 	case "play", "pause", "skip_next", "skip_prev":
 		return packet, true
@@ -392,6 +392,9 @@ func playerCommandPacket(command playerCommand) (playerRequest, bool) {
 func playerWrite(ctx context.Context, conn *websocket.Conn, packet playerRequest) bool {
 	ctx, cancel := context.WithTimeout(ctx, soloistProbeTimeout)
 	defer cancel()
-	data, err := json.Marshal(packet)
+	data, err := json.Marshal(struct {
+		Type string `json:"type"`
+		playerRequest
+	}{Type: "command", playerRequest: packet})
 	return err == nil && conn.Write(ctx, websocket.MessageText, data) == nil
 }
