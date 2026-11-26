@@ -617,6 +617,9 @@ func TestLibraryUsesTheAuthorizedCatalog(t *testing.T) {
 			return libraryFixtureResponse(200, `{"total":1,"items":[{"name":"Rock","owner":{"display_name":"ana"},"uri":"spotify:playlist:rock","tracks":{"total":1}}],"next":null}`), nil
 		case "/v1/playlists/rock/items":
 			return libraryFixtureResponse(200, `{"total":1,"items":[{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"}],"duration_ms":336000,"uri":"spotify:track:one"}}],"next":null}`), nil
+		case "/v1/me":
+			// El catálogo autorizado también alimenta la etiqueta de cuenta.
+			return libraryFixtureResponse(200, `{"display_name":"ana"}`), nil
 		}
 		t.Fatalf("unexpected request %s", r.URL.Path)
 		return nil, nil

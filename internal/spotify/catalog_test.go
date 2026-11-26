@@ -137,3 +137,45 @@ func TestSpotifyCatalogRefresh(t *testing.T) {
 		t.Fatalf("got %d calls, want one refresh and two searches", calls)
 	}
 }
+
+func TestSpotifyCatalogProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"display name", `{"display_name":"  Ana Pérez  "}`, "Ana Pérez"},
+		{"empty name", `{"display_name":""}`, ""},
+		{"absent name", `{}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			c := spotifyFixtureCatalog(func(r *http.Request) (*http.Response, error) {
+				calls++
+				// El perfil no pagina: ni limit ni offset llegan a la petición.
+				if r.Method != http.MethodGet || r.URL.Scheme != "https" || r.URL.Host != "api.spotify.com" || r.URL.Path != "/v1/me" || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer fixture-access" {
+					t.Fatal("unexpected profile request")
+				}
+				return spotifyFixtureResponse(200, tc.body), nil
+			})
+			name, err := c.Profile(context.Background())
+			if err != nil || name != tc.want || calls != 1 {
+				t.Fatalf("profile = %q, %v; calls=%d", name, err, calls)
+			}
+		})
+	}
+}
+
+func TestSpotifyCatalogProfileFailure(t *testing.T) {
+	for _, code := range []int{401, 500} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
+				return spotifyFixtureResponse(code, `{"error":{"message":"fixture secret body"}}`), nil
+			})
+			name, err := c.Profile(context.Background())
+			if err == nil || !errors.Is(err, ErrSpotifyCatalog) || strings.Contains(err.Error(), "fixture secret body") || name != "" {
+				t.Fatalf("failed profile = %q, %v", name, err)
+			}
+		})
+	}
+}

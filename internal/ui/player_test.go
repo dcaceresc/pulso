@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1590,4 +1591,208 @@ func TestPlayerViewFooterFitsEverySize(t *testing.T) {
 			}
 		})
 	}
+}
+
+// playerProfileFake sirve el nombre de la cuenta y cuenta sus peticiones, para
+// que una prueba pueda demostrar que la barra superior pregunta una sola vez.
+type playerProfileFake struct {
+	mu    sync.Mutex
+	calls int
+	name  string
+	err   error
+}
+
+func (f *playerProfileFake) Profile(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return f.name, f.err
+}
+
+func (f *playerProfileFake) requests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func (f *playerProfileFake) Search(context.Context, string, int) ([]catalogItem, bool, error) {
+	return nil, false, nil
+}
+
+func (f *playerProfileFake) Playlists(context.Context, int) ([]catalogItem, bool, error) {
+	return nil, false, nil
+}
+
+func (f *playerProfileFake) PlaylistTracks(context.Context, string, int) ([]catalogItem, bool, error) {
+	return nil, false, nil
+}
+
+// playerProfilePlayer builds the workspace with the catalog that answers the
+// account name, leaving the startup requests unrun.
+func playerProfilePlayer(t *testing.T, api CatalogAPI, authorize func(context.Context, string, func(string)) (CatalogAPI, error), state playerState) (tea.Model, chan playerState) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	states := make(chan playerState, 4)
+	states <- state
+	return NewPlayerModelWithCatalog(ctx, states, nil, 120, 40, preferences{}, nil, api, authorize, "fixture-client"), states
+}
+
+func TestPlayerViewProfileName(t *testing.T) {
+	api := &playerProfileFake{name: "  Ana\tPérez  "}
+	m, _ := playerProfilePlayer(t, api, nil, playerState{Connected: true, SessionID: 3})
+	// El marcador sigue visible hasta que llega la respuesta.
+	playerViewText(t, m, "Search:", "@user")
+	m = librarySettle(t, m, m.Init())
+	view := playerViewText(t, m, "@Ana Pérez")
+	if strings.Contains(view, "@user") {
+		t.Fatalf("the placeholder survived the account name:\n%s", view)
+	}
+	if got := api.requests(); got != 1 {
+		t.Fatalf("profile requests = %d, want one", got)
+	}
+}
+
+func TestPlayerViewProfileEmptyName(t *testing.T) {
+	api := &playerProfileFake{}
+	m, _ := playerProfilePlayer(t, api, nil, playerState{Connected: true})
+	m = librarySettle(t, m, m.Init())
+	// Una cuenta sin nombre publicado no deja una etiqueta vacía ni el marcador.
+	view := playerViewText(t, m, "Search:")
+	if strings.Contains(view, "@") {
+		t.Fatalf("an empty account name left a label:\n%s", view)
+	}
+	if got := api.requests(); got != 1 {
+		t.Fatalf("profile requests = %d, want one", got)
+	}
+}
+
+func TestPlayerViewProfileTruncatedToBar(t *testing.T) {
+	long := strings.Repeat("界", 80)
+	api := &playerProfileFake{name: long}
+	m, _ := playerProfilePlayer(t, api, nil, playerState{Connected: true})
+	m = librarySettle(t, m, m.Init())
+	for _, size := range []struct{ width, height int }{
+		{120, 40}, {100, 30}, {60, 20}, {40, 12}, {20, 8}, {1, 1},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			// playerViewRows falla si una fila desborda el ancho.
+			view := strings.Join(playerViewRows(t, m, size.width, size.height), "\n")
+			if strings.Contains(view, long) {
+				t.Fatalf("the whole name fit a %d-column bar", size.width)
+			}
+			if size.width >= 40 && !strings.Contains(view, "@界界") {
+				t.Fatalf("the truncated name is missing:\n%s", view)
+			}
+		})
+	}
+}
+
+func TestPlayerViewProfileFailureKeepsPlaceholder(t *testing.T) {
+	api := &playerProfileFake{err: errors.New("fixture profile failure")}
+	m, _ := playerProfilePlayer(t, api, nil, playerState{Connected: true, Volume: 40})
+	m = librarySettle(t, m, m.Init())
+	view := playerViewText(t, m, "@user")
+	if strings.Contains(view, "fixture profile failure") {
+		t.Fatalf("raw failure text reached the view:\n%s", view)
+	}
+	// La barra sigue respondiendo: ninguna tecla repite la petición.
+	for _, key := range []tea.KeyMsg{playerViewKey("j"), playerViewKey("k"), {Type: tea.KeyTab}, playerViewKey("/"), playerViewKey("a")} {
+		var cmd tea.Cmd
+		m, cmd = m.Update(key)
+		if cmd != nil {
+			t.Fatalf("%q scheduled work after a failed profile read", key.String())
+		}
+	}
+	// Un evento de sesión tampoco la repite: solo una sesión nueva puede.
+	// Un modelo ya asentado tiene armada la siguiente lectura de estado, así que
+	// el evento entra directamente.
+	m, cmd := m.Update(playerViewState{state: playerState{Connected: true, SessionID: 2, Volume: 40}, ok: true})
+	if cmd == nil {
+		t.Fatal("the session event did not schedule the next state read")
+	}
+	if api.requests() != 1 {
+		t.Fatalf("a session event repeated the profile read: %d requests", api.requests())
+	}
+	playerViewText(t, m, "@user", "Volume 40%")
+}
+
+func TestPlayerViewProfileFetchesOncePerSession(t *testing.T) {
+	api := &playerProfileFake{name: "ana"}
+	m, _ := playerProfilePlayer(t, api, nil, playerState{Connected: true, SessionID: 1})
+	m = librarySettle(t, m, m.Init())
+	if got := api.requests(); got != 1 {
+		t.Fatalf("profile requests = %d, want one", got)
+	}
+	m, _ = m.Update(playerViewState{state: playerState{Connected: true, SessionID: 2}, ok: true})
+	m, _ = m.Update(playerViewKey("j"))
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if got := api.requests(); got != 1 {
+		t.Fatalf("profile requests = %d after events and keys, want one", got)
+	}
+	playerViewText(t, m, "@ana")
+}
+
+func TestPlayerViewProfileAfterAuthorization(t *testing.T) {
+	const url = "https://accounts.spotify.com/authorize?client_id=fixture-client&response_type=code"
+	api := &playerProfileFake{name: "beto"}
+	authorize := func(_ context.Context, _ string, showURL func(string)) (CatalogAPI, error) {
+		showURL(url)
+		return api, nil
+	}
+	m, _ := playerProfilePlayer(t, nil, authorize, playerState{Connected: true, SessionID: 2})
+	m = librarySettle(t, m, m.Init())
+	// Sin catálogo autorizado no hay petición de perfil.
+	if got := api.requests(); got != 0 {
+		t.Fatalf("profile requests = %d without a catalog, want none", got)
+	}
+	playerViewText(t, m, "@user")
+	// La autorización instala el catálogo y pide el nombre una sola vez.
+	m = libraryFocusSidebar(t, m)
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = librarySettle(t, m, cmd)
+	playerViewText(t, m, "@beto")
+	if got := api.requests(); got != 1 {
+		t.Fatalf("profile requests = %d after authorization, want one", got)
+	}
+}
+
+func TestPlayerViewDeviceSegment(t *testing.T) {
+	base := playerState{
+		Connected: true, Status: "playing", Volume: 37, PositionMS: 62000,
+		Track: playerTrack{Title: "Song", Album: "Album", DurationMS: 200000},
+	}
+	for _, tt := range []struct {
+		name   string
+		device string
+		shown  bool
+	}{
+		{"local device", "Pulso", false},
+		{"local device case", "pULSO", false},
+		{"local device padded", "\tPulso  ", false},
+		{"another device", "Desk", true},
+		{"no device", "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			state := base
+			state.Device = tt.device
+			m, _ := playerViewModel(t, 120, 40, state)
+			view := strings.Join(playerViewRows(t, m, 120, 40), "\n")
+			if strings.Contains(view, "Device ") != tt.shown {
+				t.Fatalf("device segment shown=%v in view:\n%s", !tt.shown, view)
+			}
+			// El volumen se conserva y el álbum recibe el espacio liberado.
+			playerViewText(t, m, "Volume 37%", "Album")
+		})
+	}
+}
+
+func TestPlayerViewDeviceLocalized(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	states := make(chan playerState, 1)
+	states <- playerState{Connected: true, Status: "paused", Volume: 37, Device: "Desk"}
+	m := NewPlayerModelWithPreferences(ctx, states, nil, 120, 40, preferences{Language: "es"}, nil, "", nil)
+	m, _ = m.Update(playerViewRun(t, m.Init()))
+	playerViewText(t, m, "Dispositivo Desk", "Volumen 37%")
 }

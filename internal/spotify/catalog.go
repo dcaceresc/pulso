@@ -117,6 +117,20 @@ func (c *Catalog) PlaylistTracks(ctx context.Context, uri string, offset int) ([
 	return items, page.more(offset), nil
 }
 
+// Profile devuelve el nombre visible de la cuenta con la sesión abierta. La
+// API omite el nombre en algunas cuentas, así que el vacío es una respuesta
+// válida y no un fallo.
+func (c *Catalog) Profile(ctx context.Context) (string, error) {
+	var response struct {
+		DisplayName string `json:"display_name"`
+	}
+	// El perfil no pagina: la petición va sin limit ni offset.
+	if err := c.request(ctx, "/v1/me", &response, false); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(response.DisplayName), nil
+}
+
 func spotifyURIID(uri, kind string) string {
 	id, ok := strings.CutPrefix(uri, "spotify:"+kind+":")
 	if !ok || !spotifyID.MatchString(id) {
@@ -144,7 +158,14 @@ func (c *Catalog) get(ctx context.Context, path string, params url.Values, offse
 	}
 	params.Set("limit", strconv.Itoa(CatalogPageSize))
 	params.Set("offset", strconv.Itoa(offset))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, spotifyAPIURL+path+"?"+params.Encode(), nil)
+	return c.request(ctx, path+"?"+params.Encode(), dst, playlistContents)
+}
+
+// request hace una sola petición GET autenticada al host fijado de la API y
+// traduce cada fallo a un error seguro: ni el cuerpo de la respuesta ni el
+// token llegan al llamador.
+func (c *Catalog) request(ctx context.Context, target string, dst any, playlistContents bool) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, spotifyAPIURL+target, nil)
 	if err != nil {
 		return ErrSpotifyCatalog
 	}

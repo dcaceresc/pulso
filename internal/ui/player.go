@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -43,6 +44,36 @@ type playerViewState struct {
 	ok    bool
 }
 
+// profileSource is the catalog read the top bar needs: the name of the account
+// that owns the session. It stays optional so a catalog that cannot answer
+// keeps the muted placeholder.
+type profileSource interface {
+	Profile(context.Context) (string, error)
+}
+
+// profileSourceOf accepts a catalog only when it can answer the account name; a
+// typed nil catalog stays absent.
+func profileSourceOf(api CatalogAPI) profileSource {
+	if api == nil {
+		return nil
+	}
+	source, ok := api.(profileSource)
+	if !ok {
+		return nil
+	}
+	if value := reflect.ValueOf(source); value.Kind() == reflect.Pointer && value.IsNil() {
+		return nil
+	}
+	return source
+}
+
+// playerProfileMsg carries the once-per-catalog account name answer.
+type playerProfileMsg struct {
+	generation uint64
+	name       string
+	err        error
+}
+
 type playerModel struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -60,6 +91,15 @@ type playerModel struct {
 	wantShuffle     *bool
 	wantRepeat      string
 	modeSession     uint64
+
+	// The top bar's account name is read once per installed catalog, so a
+	// failed read never repeats on every event or keystroke. profileKnown marks
+	// that an answer arrived; an empty name then leaves no label at all.
+	profile           profileSource
+	profileName       string
+	profileKnown      bool
+	profileAsked      bool
+	profileGeneration uint64
 
 	// Workspace focus and the Soloist queue cursor. The library keeps its own
 	// per-panel cursors for playlists and their tracks; the search state keeps
@@ -104,6 +144,7 @@ func NewPlayerModelWithCatalog(ctx context.Context, states <-chan soloist.State,
 	// library pages the sidebar, the table and the search all read it directly.
 	m.library = newLibraryState(ctx, librarySourceOf(api), authorize, clientID)
 	m.search = newSearchState(ctx, m.library.source)
+	m.profile = profileSourceOf(api)
 	return m
 }
 
@@ -125,14 +166,55 @@ func (m *playerModel) Init() tea.Cmd {
 	state := m.awaitState()
 	// A handoff that already carries a library loads its first page at once.
 	library := m.library.init()
-	switch {
-	case library == nil:
-		return state
-	case state == nil:
-		return library
-	default:
-		return tea.Batch(state, library)
+	// The account name is asked once, as soon as an authorized catalog exists.
+	return playerCommands(state, library, m.fetchProfile())
+}
+
+// playerCommands joins the scheduled requests: no command stays a single
+// command, so a view that only awaits state never sees an empty batch.
+func playerCommands(commands ...tea.Cmd) tea.Cmd {
+	kept := make([]tea.Cmd, 0, len(commands))
+	for _, command := range commands {
+		if command != nil {
+			kept = append(kept, command)
+		}
 	}
+	switch len(kept) {
+	case 0:
+		return nil
+	case 1:
+		return kept[0]
+	}
+	return tea.Batch(kept...)
+}
+
+// fetchProfile asks the catalog for the account name at most once per installed
+// catalog, so a failure leaves the placeholder without repeating the request.
+func (m *playerModel) fetchProfile() tea.Cmd {
+	if m.profile == nil || m.profileAsked || m.ctx.Err() != nil {
+		return nil
+	}
+	m.profileAsked = true
+	ctx, generation, source := m.ctx, m.profileGeneration, m.profile
+	return func() tea.Msg {
+		if ctx.Err() != nil {
+			return nil
+		}
+		name, err := source.Profile(ctx)
+		return playerProfileMsg{generation: generation, name: name, err: err}
+	}
+}
+
+// installProfile adopts the catalog that authorization just unlocked and asks
+// for the account name again: a new Spotify session may be another account.
+func (m *playerModel) installProfile(api CatalogAPI) tea.Cmd {
+	source := profileSourceOf(api)
+	if source == nil {
+		return nil
+	}
+	m.profile, m.profileName, m.profileKnown, m.profileAsked = source, "", false, false
+	m.profileGeneration++
+	return m.fetchProfile()
 }
 
 func (m *playerModel) awaitState() tea.Cmd {
@@ -159,10 +241,27 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case libraryAuthMsg, libraryPageMsg:
+		auth, isAuth := msg.(libraryAuthMsg)
+		// Una autorización solo instala el catálogo si la generación sigue viva.
+		accepted := isAuth && auth.done && auth.api != nil && m.library.current(auth.generation)
 		cmd := m.library.update(msg)
 		// Authorization can install the library source after startup.
 		m.search.source = m.library.source
+		if accepted {
+			return m, playerCommands(cmd, m.installProfile(auth.api))
+		}
 		return m, cmd
+	case playerProfileMsg:
+		if m.quit || msg.generation != m.profileGeneration || m.ctx.Err() != nil {
+			break
+		}
+		// Un fallo deja el marcador apagado y no se muestra nunca en crudo.
+		if msg.err != nil {
+			return m, nil
+		}
+		m.profileKnown = true
+		m.profileName = playerText(msg.name)
+		return m, nil
 	case searchPageMsg:
 		return m, m.search.update(msg)
 	case playerViewState:
@@ -848,8 +947,8 @@ func (m *playerModel) statusWord() string {
 	return status
 }
 
-// searchRow is the top bar: the label, the live buffer with its cursor, and a
-// muted user placeholder on the right.
+// searchRow is the top bar: the label, the live buffer with its cursor, and the
+// muted account label on the right.
 func (m *playerModel) searchRow(width int, styles playerStyles) string {
 	if width <= 0 {
 		return ""
@@ -864,11 +963,29 @@ func (m *playerModel) searchRow(width int, styles playerStyles) string {
 		field, fieldStyle = m.text("type to search", "escribe para buscar"), styles.muted
 	}
 	left := styles.label.Render(label) + fieldStyle.Render(playerFit(field, max(0, width-lipgloss.Width(label))))
-	right := styles.muted.Render(m.text("@user", "@usuario"))
+	account := m.profileText()
+	if account == "" {
+		return left
+	}
+	// El nombre real se recorta al hueco que deja el campo de búsqueda.
+	right := styles.muted.Render(playerFit(account, max(0, width-lipgloss.Width(left)-2)))
 	if lipgloss.Width(left)+lipgloss.Width(right)+2 > width {
 		return left
 	}
 	return left + strings.Repeat(" ", width-lipgloss.Width(left)-lipgloss.Width(right)) + right
+}
+
+// profileText es la etiqueta de cuenta de la barra superior: el marcador
+// apagado hasta que llega el nombre, y luego `@nombre`.
+func (m *playerModel) profileText() string {
+	if m.profileName != "" {
+		return "@" + m.profileName
+	}
+	if m.profileKnown {
+		// La cuenta existe pero no publica nombre: no hay etiqueta que mostrar.
+		return ""
+	}
+	return m.text("@user", "@usuario")
 }
 
 func (m *playerModel) playingRows(width int, styles playerStyles) []playerRow {
@@ -904,11 +1021,24 @@ func (m *playerModel) playingRows(width int, styles playerStyles) []playerRow {
 	if album := playerText(m.state.Track.Album); album != "" && width >= 90 {
 		progress = album + "  " + progress
 	}
-	if device := playerText(m.state.Device); device != "" {
+	if device := playerRemoteDevice(m.state.Device); device != "" {
 		volume += "  " + m.text("Device ", "Dispositivo ") + device
 	}
 	rows = append(rows, playerRow{text: playerSpread(progress, volume, width), style: styles.muted})
 	return rows
+}
+
+// playerLocalDevice es el nombre que Soloist reporta para la reproducción
+// local; la barra lo omite porque es la norma y solo hace ruido.
+const playerLocalDevice = "Pulso"
+
+// playerRemoteDevice devuelve el dispositivo solo cuando no es el local.
+func playerRemoteDevice(device string) string {
+	device = playerText(device)
+	if strings.EqualFold(device, playerLocalDevice) {
+		return ""
+	}
+	return device
 }
 
 // shuffleMode renders the shuffle state Soloist last reported.
