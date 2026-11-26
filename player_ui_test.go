@@ -340,21 +340,6 @@ func TestPlayerViewContextCancellation(t *testing.T) {
 	playerViewText(t, m, "Disconnected")
 }
 
-func TestPlayerViewPreferenceAliases(t *testing.T) {
-	var saved []preferences
-	m := newPlayerModelWithPreferences(context.Background(), nil, nil, 100, 24, preferences{Language: "en", Theme: "standard"}, func(p preferences) error {
-		saved = append(saved, p)
-		return nil
-	}, "", nil)
-	m.Init()
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
-	playerViewText(t, m, "Pulso / Reproducción")
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-	if len(saved) != 2 || saved[0].Language != "es" || saved[1].Theme != "dark" {
-		t.Fatalf("alias keys did not persist: %v", saved)
-	}
-}
-
 func TestPlayerViewOverlayPreferencesAndClose(t *testing.T) {
 	states, out := make(chan playerState, 1), make(chan playerCommand, 1)
 	api := catalogViewFake{search: func(context.Context, string, int) ([]catalogItem, bool, error) {

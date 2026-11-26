@@ -445,7 +445,7 @@ func TestSetupBilingualKeyFlowAndHandoff(t *testing.T) {
 			t.Fatal("legacy player used instead of preferences-aware player")
 			return nil
 		},
-		playerWithPreferences: func(width, height int, p preferences) tea.Model {
+		playerWithPreferences: func(width, height int, p preferences, api catalogAPI) tea.Model {
 			handoffs++
 			if width != 80 || height != 24 || p != (preferences{Language: "es", Theme: "light"}) {
 				t.Fatalf("unexpected handoff: %dx%d, %+v", width, height, p)
@@ -596,5 +596,64 @@ func TestSetupQuitWithUnsubmittedKey(t *testing.T) {
 				t.Fatal("quit should leave no key prompt and perform no start")
 			}
 		})
+	}
+}
+
+func TestSetupSpotifySignInAfterKey(t *testing.T) {
+	var gotID string
+	api := catalogViewFake{search: func(context.Context, string, int) ([]catalogItem, bool, error) { return nil, false, nil }}
+	service := setupService{
+		inspect: func(context.Context) (setupState, error) { return setupReady, nil },
+		authorize: func(_ context.Context, clientID string, showURL func(string)) (catalogAPI, error) {
+			gotID = clientID
+			showURL("http://127.0.0.1:1234/callback")
+			return api, nil
+		},
+		playerWithPreferences: func(width, height int, p preferences, got catalogAPI) tea.Model {
+			if got == nil {
+				t.Fatal("player received no catalog authorization")
+			}
+			return setupTestPlayer{}
+		},
+	}
+	model := newSetupModelWithPreferences(context.Background(), service, preferences{}, nil)
+	model, _ = runSetupCmd(t, model, model.Init())
+	expectSetupText(t, model.View(), "Connect Spotify", "Client ID: _", "Waiting for the Client ID")
+	model, _ = model.Update(setupRunes("client123"))
+	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("entering a Client ID should start authorization")
+	}
+	model, cmd = runSetupCmd(t, model, cmd)
+	expectSetupText(t, model.View(), "http://127.0.0.1:1234/callback", "Waiting for Spotify authorization")
+	model, cmd = runSetupCmd(t, model, cmd)
+	if cmd == nil || cmd() != "player initialized" || gotID != "client123" {
+		t.Fatalf("handoff failed: id=%q view=%q", gotID, model.View())
+	}
+}
+
+func TestSetupSpotifySkipKeepsPlayback(t *testing.T) {
+	service := setupService{
+		inspect:   func(context.Context) (setupState, error) { return setupReady, nil },
+		authorize: func(context.Context, string, func(string)) (catalogAPI, error) { return nil, errors.New("offline") },
+		playerWithPreferences: func(width, height int, p preferences, got catalogAPI) tea.Model {
+			if got != nil {
+				t.Fatal("skipping should not hand an authorization")
+			}
+			return setupTestPlayer{}
+		},
+	}
+	model := newSetupModelWithPreferences(context.Background(), service, preferences{}, nil)
+	model, _ = runSetupCmd(t, model, model.Init())
+	model, _ = model.Update(setupRunes("client123"))
+	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, cmd = runSetupCmd(t, model, cmd)
+	if cmd != nil {
+		t.Fatal("a failed authorization should not keep waiting")
+	}
+	expectSetupText(t, model.View(), "did not finish", "s: skip")
+	model, cmd = model.Update(setupRunes("s"))
+	if cmd == nil || cmd() != "player initialized" {
+		t.Fatalf("skip did not open the player: %q", model.View())
 	}
 }

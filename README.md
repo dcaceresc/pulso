@@ -26,14 +26,14 @@ Searching uses the official Spotify Web API, which is a separate sign-in from So
 
 1. Create a free app in the [Spotify developer dashboard](https://developer.spotify.com/dashboard) to get a Client ID. The app owner needs Spotify Premium, and Spotify allows up to five signed-in users.
 2. Add `http://127.0.0.1/callback` as a redirect URI for that app. A dynamically assigned port is allowed for loopback redirects.
-3. Press **s** or **l**. If no Client ID is known yet, Pulso asks for it once and remembers it in `client-id` under your user configuration directory; the access token is never stored. You can also set `PULSO_SPOTIFY_CLIENT_ID` (PowerShell: `$env:PULSO_SPOTIFY_CLIENT_ID="<client-id>"`) to skip the prompt.
-4. Pulso shows the authorization URL inside the overlay. Open it in your browser and approve access; Pulso waits on a temporary loopback listener and signs you in again on the next start.
+3. The setup wizard asks for the Client ID once, right after the Soloist key, and shows the authorization URL. Pulso remembers only the public Client ID in `client-id` under your user configuration directory; the access token is never stored. Press **s** in that step to continue without search and playlists. You can also set `PULSO_SPOTIFY_CLIENT_ID` (PowerShell: `$env:PULSO_SPOTIFY_CLIENT_ID="<client-id>"`) to skip the prompt.
+4. Open that URL in your browser and approve access. Pulso waits on a temporary loopback listener and signs you in again on the next start.
 
 Playlist contents are only returned for playlists you own or collaborate on. For other playlists, Pulso says the contents are restricted and can still play the playlist by its Spotify URI. Playback never depends on this sign-in, so the player keeps working when the Web API is unavailable.
 
 ## Language and theme
 
-Press **F2** (or **Ctrl+L**) to switch between English and Spanish, and **F3** (or **Ctrl+T**) to cycle the **standard**, **dark**, and **light** themes. Pulso saves the choice in `preferences.json` under your user configuration directory and only writes it when you press one of those keys.
+Press **F2** to switch between English and Spanish, and **F3** to cycle the **standard**, **dark**, and **light** themes. Pulso saves the choice in `preferences.json` under your user configuration directory and only writes it when you press one of those keys.
 
 ## Diagnose Soloist
 

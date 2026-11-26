@@ -69,12 +69,16 @@ func runSetup(stdout io.Writer) error {
 		watch:   local.watchPairing,
 		install: installManagedSoloist,
 		start:   local.start,
-		playerWithPreferences: func(width, height int, p preferences) tea.Model {
+		authorize: func(ctx context.Context, clientID string, showURL func(string)) (catalogAPI, error) {
+			return authorizeSpotify(ctx, clientID, showURL)
+		},
+		clientID: firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), loadClientID()),
+		playerWithPreferences: func(width, height int, p preferences, api catalogAPI) tea.Model {
 			states, commands := newPlayerStream(ctx, local.dataDir)
-			return newPlayerModelWithPreferences(ctx, states, commands, width, height, p, savePreferences,
-				os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), func(ctx context.Context, clientID string, showURL func(string)) (catalogAPI, error) {
+			return newPlayerModelWithCatalog(ctx, states, commands, width, height, p, savePreferences, api,
+				func(ctx context.Context, clientID string, showURL func(string)) (catalogAPI, error) {
 					return authorizeSpotify(ctx, clientID, showURL)
-				})
+				}, firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), loadClientID()))
 		},
 	}, loadPreferences(), savePreferences)
 	_, err := tea.NewProgram(model, tea.WithOutput(stdout), tea.WithAltScreen()).Run()
@@ -306,4 +310,12 @@ func waitForSoloist(ctx context.Context, cmd *exec.Cmd, dir string, timeout time
 		case <-ticker.C:
 		}
 	}
+}
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }

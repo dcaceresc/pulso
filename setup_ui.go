@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"strings"
+	"sync"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,13 +21,29 @@ const (
 	setupReady
 )
 
+type setupSpotifyState uint8
+
+const (
+	setupSpotifyClientID setupSpotifyState = iota
+	setupSpotifyPending
+	setupSpotifyFailed
+)
+
+type setupSpotifyMsg struct {
+	url  string
+	api  catalogAPI
+	done bool
+}
+
 type setupService struct {
 	inspect               func(context.Context) (setupState, error)
 	watch                 func(context.Context, func(string) bool) error
 	install               func(context.Context) error
 	start                 func(context.Context, string) error
 	player                func(width, height int) tea.Model
-	playerWithPreferences func(width, height int, p preferences) tea.Model
+	playerWithPreferences func(width, height int, p preferences, api catalogAPI) tea.Model
+	authorize             func(context.Context, string, func(string)) (catalogAPI, error)
+	clientID              string
 }
 
 type setupPhase uint8
@@ -44,6 +61,7 @@ const (
 	setupPairingChecking
 	setupPairingStopped
 	setupDone
+	setupSpotify
 	setupQuit
 )
 
@@ -77,21 +95,27 @@ func setupInstallResult(err error) setupInstalled {
 type setupStarted bool
 
 type setupModel struct {
-	ctx          context.Context
-	service      setupService
-	phase        setupPhase
-	progress     setupState // Last confirmed inspection, retained while rechecking.
-	installIssue setupInstalled
-	key          []rune
-	pairing      *setupPairingSession
-	pairingDone  <-chan struct{}
-	pairingState setupPairingStatus
-	deviceName   string
-	preferences  preferences
-	save         func(preferences) error
-	saveFailed   bool
-	width        int
-	height       int
+	ctx           context.Context
+	service       setupService
+	phase         setupPhase
+	progress      setupState // Last confirmed inspection, retained while rechecking.
+	installIssue  setupInstalled
+	key           []rune
+	pairing       *setupPairingSession
+	pairingDone   <-chan struct{}
+	pairingState  setupPairingStatus
+	deviceName    string
+	preferences   preferences
+	spotify       setupSpotifyState
+	spotifyURL    string
+	spotifyAPI    catalogAPI
+	spotifyDone   bool
+	spotifyEvents chan setupSpotifyMsg
+	clientID      []rune
+	save          func(preferences) error
+	saveFailed    bool
+	width         int
+	height        int
 }
 
 func newSetupModel(ctx context.Context, service setupService) tea.Model {
@@ -151,7 +175,7 @@ func (m *setupModel) openPlayer() (tea.Model, tea.Cmd) {
 	m.cancelPairing()
 	m.progress, m.phase = setupReady, setupDone
 	if m.service.playerWithPreferences != nil {
-		player := m.service.playerWithPreferences(m.width, m.height, m.preferences)
+		player := m.service.playerWithPreferences(m.width, m.height, m.preferences, m.spotifyAPI)
 		return player, player.Init()
 	}
 	if m.service.player != nil {
@@ -159,6 +183,55 @@ func (m *setupModel) openPlayer() (tea.Model, tea.Cmd) {
 		return player, player.Init()
 	}
 	return m, nil
+}
+
+// afterSoloist offers the Spotify catalog sign-in once Soloist is ready. Search
+// and playlists need their own authorization; playback does not.
+func (m *setupModel) afterSoloist() (tea.Model, tea.Cmd) {
+	m.progress = setupReady
+	if m.service.authorize == nil || m.spotifyDone {
+		return m.openPlayer()
+	}
+	m.phase = setupSpotify
+	if strings.TrimSpace(m.service.clientID) == "" {
+		m.spotify = setupSpotifyClientID
+		return m, nil
+	}
+	return m, m.startSpotify()
+}
+
+func (m *setupModel) startSpotify() tea.Cmd {
+	m.spotify, m.spotifyURL = setupSpotifyPending, ""
+	authorize, clientID, ctx := m.service.authorize, strings.TrimSpace(m.service.clientID), m.ctx
+	events := make(chan setupSpotifyMsg, 2)
+	m.spotifyEvents = events
+	return func() tea.Msg {
+		go func() {
+			var once sync.Once
+			api, err := authorize(ctx, clientID, func(url string) {
+				once.Do(func() { events <- setupSpotifyMsg{url: url} })
+			})
+			if err != nil {
+				api = nil
+			}
+			events <- setupSpotifyMsg{api: api, done: true}
+		}()
+		return <-events
+	}
+}
+
+func awaitSpotify(events <-chan setupSpotifyMsg) tea.Cmd {
+	return func() tea.Msg {
+		if msg, ok := <-events; ok {
+			return msg
+		}
+		return nil
+	}
+}
+
+func (m *setupModel) skipSpotify() (tea.Model, tea.Cmd) {
+	m.spotifyDone, m.spotifyEvents = true, nil
+	return m.openPlayer()
 }
 
 // changePreferences toggles language or cycles the theme and persists the result.
@@ -192,7 +265,7 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case setupDaemonStopped(msg.state, msg.err):
 				m.phase = setupPairingStopped
 			case msg.err == nil && msg.state == setupReady:
-				return m.openPlayer()
+				return m.afterSoloist()
 			default:
 				return m, m.beginPairing(msg.err != nil)
 			}
@@ -208,7 +281,7 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case setupAwaitPairing:
 					return m, m.beginPairing(false)
 				case setupReady:
-					return m.openPlayer()
+					return m.afterSoloist()
 				}
 			}
 		}
@@ -216,7 +289,7 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.phase == setupPairing && m.pairing == msg.session {
 			switch msg.status {
 			case setupPairingReady:
-				return m.openPlayer()
+				return m.afterSoloist()
 			case setupPairingDaemonStopped:
 				m.cancelPairing()
 				m.phase = setupPairingStopped
@@ -240,7 +313,25 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.phase = setupStartFailed
 		}
+	case setupSpotifyMsg:
+		if m.phase != setupSpotify {
+			break
+		}
+		if !msg.done {
+			m.spotifyURL = msg.url
+			return m, awaitSpotify(m.spotifyEvents)
+		}
+		m.spotifyEvents = nil
+		if msg.api != nil {
+			m.spotifyAPI, m.spotifyDone = msg.api, true
+			return m.openPlayer()
+		}
+		m.spotify = setupSpotifyFailed
 	case tea.KeyMsg:
+		if m.phase == setupSpotify && m.spotify != setupSpotifyClientID && msg.Type == tea.KeyRunes && !msg.Paste &&
+			len(msg.Runes) == 1 && (msg.Runes[0] == 's' || msg.Runes[0] == 'S') {
+			return m.skipSpotify()
+		}
 		return m, m.handleKey(msg)
 	}
 	return m, nil
@@ -248,10 +339,10 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.Type {
-	case tea.KeyF2, tea.KeyCtrlL:
+	case tea.KeyF2:
 		m.changePreferences(true)
 		return nil
-	case tea.KeyF3, tea.KeyCtrlT:
+	case tea.KeyF3:
 		m.changePreferences(false)
 		return nil
 	}
@@ -266,6 +357,33 @@ func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case setupCheckFailed:
 		if msg.Type == tea.KeyEnter {
 			return m.recheck()
+		}
+	case setupSpotify:
+		if m.spotify == setupSpotifyClientID {
+			switch msg.Type {
+			case tea.KeyRunes:
+				for _, r := range msg.Runes {
+					if unicode.IsPrint(r) && !unicode.IsSpace(r) {
+						m.clientID = append(m.clientID, r)
+					}
+				}
+			case tea.KeyBackspace:
+				if n := len(m.clientID); n != 0 {
+					m.clientID = m.clientID[:n-1]
+				}
+			case tea.KeyEnter:
+				id, ok := normalizeClientID(string(m.clientID))
+				if !ok {
+					return nil
+				}
+				m.clientID, m.service.clientID = nil, id
+				_ = saveClientID(id)
+				return m.startSpotify()
+			}
+			return nil
+		}
+		if msg.Type == tea.KeyEnter {
+			return m.startSpotify()
 		}
 	case setupPairing, setupPairingStopped:
 		if msg.Type == tea.KeyEnter {
@@ -313,7 +431,7 @@ func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 type setupScreen struct {
 	action, link, status, reason, device string
 	hints                                []string
-	keyPrompt                            bool
+	keyPrompt, clientPrompt              bool
 }
 
 func (m *setupModel) screen() setupScreen {
@@ -395,6 +513,32 @@ func (m *setupModel) screen() setupScreen {
 		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar")}
 	case setupDone:
 		screen.action, screen.status = m.text("Soloist is ready.", "Soloist está listo."), m.text("Setup complete", "Configuración completa")
+	case setupSpotify:
+		switch m.spotify {
+		case setupSpotifyClientID:
+			screen.action = m.text("Connect Spotify to search tracks and see your playlists:\n"+
+				"1. Create an app at https://developer.spotify.com/dashboard\n"+
+				"2. Add http://127.0.0.1/callback as a redirect URI.\n"+
+				"3. Paste its Client ID below. Only the public Client ID is saved.",
+				"Conecta Spotify para buscar canciones y ver tus listas:\n"+
+					"1. Crea una app en https://developer.spotify.com/dashboard\n"+
+					"2. Añade http://127.0.0.1/callback como URI de redirección.\n"+
+					"3. Pega abajo su Client ID. Solo se guarda el Client ID público.")
+			screen.status = m.text("Waiting for the Client ID", "Esperando el Client ID")
+			screen.clientPrompt = true
+			screen.hints = []string{m.text("Enter: connect", "Enter: conectar")}
+		case setupSpotifyFailed:
+			screen.action = m.text("Spotify authorization did not finish. Retry, or continue without search and playlists.",
+				"La autorización de Spotify no se completó. Reintenta o continúa sin búsqueda ni listas.")
+			screen.status = m.text("Retry needed", "Reintento necesario")
+			screen.hints = []string{m.text("Enter: retry", "Enter: reintentar"), m.text("s: skip", "s: omitir")}
+		default:
+			screen.action = m.text("Open this URL in your browser and approve access. Playback works without it.",
+				"Abre esta URL en tu navegador y aprueba el acceso. La reproducción funciona sin esto.")
+			screen.link = m.spotifyURL
+			screen.status = m.text("Waiting for Spotify authorization", "Esperando autorización de Spotify")
+			screen.hints = []string{m.text("s: skip", "s: omitir")}
+		}
 	}
 	if m.saveFailed {
 		screen.reason = m.text("Could not save preferences.", "No se pudieron guardar las preferencias.")
@@ -414,6 +558,9 @@ func (m *setupModel) text(english, spanish string) string {
 
 func (m *setupModel) checklist() []string {
 	steps := []string{"Soloist", m.text("Key", "Clave"), m.text("Pairing", "Emparejamiento")}
+	if m.service.authorize != nil {
+		steps = append(steps, "Spotify")
+	}
 	for i, step := range steps {
 		mark := "[ ] "
 		switch {
@@ -537,6 +684,10 @@ func (m *setupModel) View() string {
 	if screen.keyPrompt {
 		prompt := m.text("Key: ", "Clave: ")
 		essential = append(essential, prompt[:min(width, len(prompt))]+strings.Repeat("*", min(len(m.key), 64, max(0, width-len(prompt)))))
+	}
+	if screen.clientPrompt {
+		prompt := "Client ID: "
+		essential = append(essential, playerFit(prompt+string(m.clientID)+"_", width))
 	}
 	if room > 0 {
 		// Give the key field and the official fallback link priority over copy

@@ -39,16 +39,22 @@ func newPlayerModel(ctx context.Context, states <-chan playerState, commands cha
 // newPlayerModelWithPreferences builds the playback workspace. The catalog is
 // optional: without authorize, the overlay stays absent and playback still works.
 func newPlayerModelWithPreferences(ctx context.Context, states <-chan playerState, commands chan<- playerCommand, width, height int, p preferences, save func(preferences) error, clientID string, authorize func(context.Context, string, func(string)) (catalogAPI, error)) tea.Model {
+	return newPlayerModelWithCatalog(ctx, states, commands, width, height, p, save, nil, authorize, clientID)
+}
+
+func newPlayerModelWithCatalog(ctx context.Context, states <-chan playerState, commands chan<- playerCommand, width, height int, p preferences, save func(preferences) error, api catalogAPI, authorize func(context.Context, string, func(string)) (catalogAPI, error), knownClientID string) tea.Model {
 	ctx, cancel := context.WithCancel(ctx)
 	m := &playerModel{
 		ctx: ctx, cancel: cancel, states: states, commands: commands,
 		width: width, height: height, preferences: p.normalized(), save: save,
 	}
 	if authorize != nil {
+		clientID := knownClientID
 		if clientID == "" {
 			clientID = loadClientID()
 		}
 		m.catalog = newCatalogModel(ctx, m.preferences, width, height, clientID, authorize, m.playURI)
+		m.catalog.api = api
 		m.catalog.saveClientID = func(id string) {
 			_ = saveClientID(id)
 		}
@@ -118,11 +124,11 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = msg.state
 		return m, m.awaitState()
 	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyF2, tea.KeyCtrlL:
+		if msg.Type == tea.KeyF2 {
 			m.changePreferences(true)
 			return m, nil
-		case tea.KeyF3, tea.KeyCtrlT:
+		}
+		if msg.Type == tea.KeyF3 {
 			m.changePreferences(false)
 			return m, nil
 		}
@@ -141,9 +147,9 @@ func (m *playerModel) text(english, spanish string) string {
 
 func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	switch key.Type {
-	case tea.KeyF2, tea.KeyCtrlL:
+	case tea.KeyF2:
 		return m.changePreferences(true)
-	case tea.KeyF3, tea.KeyCtrlT:
+	case tea.KeyF3:
 		return m.changePreferences(false)
 	}
 	if key.Paste || key.Alt {
