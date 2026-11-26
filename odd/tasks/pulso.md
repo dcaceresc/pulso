@@ -4,6 +4,7 @@ Target: Windows x86-64 and Linux x86-64.
 
 - S14: “se reparo lo de las teclas pero no funciona la url de spotify da error response_type must be code”
 
+- S16: “hay que mejorar la ui quiero un plan aca hay un idea” (layout sketch with search bar, library sidebar, song table, now-playing bar and key hints; decisions: Unicode glyphs, playlists first)
 - S15: “entonces hay que hacer un cambio quita eso de pulso login, antes de que que genere la url se debe mostrar al usuario las intrucciones para que cree el clientId y lo agregue y despues muestre la url , tambien en la pagina de spotify la ruta  http://127.0.0.1/callback de rediret url no funciona dice  This redirect URI is not secure”
 
 ## Specs
@@ -32,6 +33,8 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - S13: “la idea es que el propio pulso deberia dar la url para conectarse como los otrs como nscpot o spotify_player y asi pueda conectarse , los botones de f2 y f3 no funcionan tambien tengo una duda incluso si cierro pulso sigo escuchando la cancion eso no tiene sentido porque pasa eso?”
 
 ## Tasks
+
+- T22 [pending] S16 — Workspace UI per [UI-PLAN.md](../UI-PLAN.md): U1 shell and focus, U2 library, U3 playing bar, U4 search, U5 polish. Not started.
 
 - T1 [done] S1–S5 — Bootstrap the Go command and read-only Soloist diagnostic; inline; commit: `feat: add Pulso Soloist diagnostic`.
 - T2 [blocked] S2, S4 — Verify Soloist playback and Web API access on both target platforms; waits for a paired Soloist and authorized Spotify developer app on the target environments.
