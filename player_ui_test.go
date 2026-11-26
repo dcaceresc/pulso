@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -91,7 +92,7 @@ func TestPlayerViewLifecycle(t *testing.T) {
 		value playerState
 		want  []string
 	}{
-		{playerState{Connected: true}, []string{"Connected", "Nothing playing", "Queue is empty"}},
+		{playerState{Connected: true}, []string{"Connected", "Nothing playing", "Nothing here yet"}},
 		{playerState{Notice: "Retrying Soloist"}, []string{"Disconnected", "Retrying Soloist"}},
 		{playerState{Connected: true, Track: playerTrack{Title: "Returned"}}, []string{"Connected", "Returned"}},
 	} {
@@ -149,7 +150,7 @@ func TestPlayerViewResponsiveAndSafeMetadata(t *testing.T) {
 			if size.width >= 30 {
 				playerViewText(t, m, "Pulso", "playing", "Good news", "Title", "Volume 37%")
 			}
-			if size.width >= 40 {
+			if size.width >= 60 {
 				playerViewText(t, m, "Artist")
 			}
 			if size.width >= 60 {
@@ -175,19 +176,23 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 		absent        []string
 	}{
 		{120, 40, []string{
-			"Pulso", "Search:", "LIBRARY", "No playlists yet", "#", "Title", "Artist", "Duration",
+			"Pulso", "Search:", "LIBRARY", "Nothing here yet", "#", "Title", "Artist", "Duration",
 			"Estrechez de Corazón", "Tren al Sur", "1:02", "6:21", "Volume 37%", "Device Desk",
 			"⇄ off", "↻ off", "Tab: panel", "Esc/q: quit", "l: library", "F2: language",
 		}, nil},
 		{100, 30, []string{
-			"Pulso", "Search:", "LIBRARY", "No playlists yet", "#", "Title", "Artist", "Duration",
+			"Pulso", "Search:", "LIBRARY", "Nothing here yet", "#", "Title", "Artist", "Duration",
 			"Estrechez de Corazón", "1:02", "6:21", "Volume 37%", "Device Desk", "Esc/q: quit",
 		}, nil},
 		{80, 24, []string{
-			"Pulso", "LIBRARY:", "No playlists yet", "#", "Title", "Artist", "Duration",
+			"Pulso", "LIBRARY:", "Nothing here yet", "#", "Title", "Artist", "Duration",
 			"Estrechez de Corazón", "Volume 37%", "Esc/q: quit",
 		}, []string{"│"}},
-		{40, 12, []string{"Pulso", "▶", "Volume 37%"}, nil},
+		{60, 20, []string{
+			"Pulso", "LIBRARY:", "Nothing here yet", "#", "Title", "Artist", "Duration",
+			"Estrechez de Corazón", "Volume 37%",
+		}, nil},
+		{40, 12, []string{"Pulso", "▶", "Volume 37%", "#", "Title", "Dur."}, nil},
 		{20, 8, []string{"Pulso", "Volume 37%"}, nil},
 		{1, 1, nil, nil},
 	} {
@@ -227,7 +232,7 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 
 func TestPlayerViewWorkspaceLocalized(t *testing.T) {
 	m := newPlayerModelWithPreferences(context.Background(), nil, nil, 120, 40, preferences{Language: "es", Theme: "standard"}, nil, "", nil)
-	playerViewText(t, m, "Pulso", "Buscar:", "BIBLIOTECA", "Aún no hay listas", "Reproducción", "Título", "Artista", "Duración", "Esc/q: salir", "F2: idioma")
+	playerViewText(t, m, "Pulso", "Buscar:", "BIBLIOTECA", "Aún no hay nada", "Reproducción", "Título", "Artista", "Duración", "Esc/q: salir", "F2: idioma")
 }
 
 func TestPlayerViewFocusCycleAndHints(t *testing.T) {
@@ -387,7 +392,7 @@ func TestPlayerViewSelectionMoves(t *testing.T) {
 		state playerState
 		want  string
 	}{
-		{playerState{Connected: true}, "Queue is empty"},
+		{playerState{Connected: true}, "Nothing here yet"},
 		{playerState{}, "Queue unavailable"},
 	} {
 		empty, _ := playerViewModel(t, 100, 30, tt.state)
@@ -985,5 +990,430 @@ func TestPlayerViewPlayingBarTicks(t *testing.T) {
 	closedModel, _ = closedModel.Update(playerViewRun(t, closedBatch[0]))
 	if _, next := closedModel.Update(playerTickMsg{}); next != nil {
 		t.Fatal("the playhead tick survived a closed stream")
+	}
+}
+
+// playerViewSidebarState is the last sidebar row, which is where every library
+// state lands so the panel is never blank.
+func playerViewSidebarState(t *testing.T, m tea.Model) string {
+	t.Helper()
+	player := m.(*playerModel)
+	rows := player.sidebarRows(player.styles(), 30)
+	if len(rows) < 2 {
+		t.Fatalf("the sidebar rendered no state row: %+v", rows)
+	}
+	return rows[len(rows)-1].text
+}
+
+// playerViewTableState is the first body row when the table is in a state.
+func playerViewTableState(t *testing.T, m tea.Model) string {
+	t.Helper()
+	player := m.(*playerModel)
+	rows := player.tableRows(40, player.styles(), 4)
+	if len(rows) == 0 {
+		t.Fatal("the table rendered no state row")
+	}
+	return rows[0].text
+}
+
+func playerViewSearchState(t *testing.T, m tea.Model) string {
+	t.Helper()
+	player := m.(*playerModel)
+	rows := player.searchTableRows(40, player.styles(), 4)
+	if len(rows) == 0 {
+		t.Fatal("the search table rendered no state row")
+	}
+	return rows[0].text
+}
+
+// TestPlayerViewPanelStateRows proves each panel renders one localized row per
+// concept and that a concept reads the same in every panel.
+func TestPlayerViewPanelStateRows(t *testing.T) {
+	for _, v := range []struct {
+		language                              string
+		loading, empty, failure, unauthorized string
+		restricted                            string
+	}{
+		{"en",
+			"… Loading",
+			"○ Nothing here yet",
+			"! Could not load Spotify data. Enter: retry.",
+			"● No Spotify. Enter: connect",
+			"! Playlist contents unavailable. p: play the playlist."},
+		{"es",
+			"… Cargando",
+			"○ Aún no hay nada",
+			"! No se pudieron cargar los datos de Spotify. Enter: reintentar.",
+			"● Sin Spotify. Enter: conectar",
+			"! Contenido de la lista no disponible. p: reproducir la lista."},
+	} {
+		t.Run(v.language, func(t *testing.T) {
+			p := preferences{Language: v.language}
+			// One shared vocabulary: the rows are the same code the panels use.
+			vocabulary := newPlayerModelWithPreferences(context.Background(), nil, nil, 120, 40, p, nil, "", nil).(*playerModel)
+			for name, got := range map[string]string{
+				"loading":      vocabulary.markLoading(),
+				"empty":        vocabulary.markEmpty(),
+				"failure":      vocabulary.markError(),
+				"unauthorized": vocabulary.markUnauthorized(),
+				"restricted":   vocabulary.markRestricted(),
+			} {
+				want := map[string]string{"loading": v.loading, "empty": v.empty, "failure": v.failure,
+					"unauthorized": v.unauthorized, "restricted": v.restricted}[name]
+				if got != want {
+					t.Fatalf("%s vocabulary = %q, want %q", name, got, want)
+				}
+			}
+
+			t.Run("loading", func(t *testing.T) {
+				m, _, _ := libraryNewPlayerPending(t, 120, 40, p, playerState{Connected: true},
+					&libraryFake{playlists: libraryPlaylistsFixture()}, nil, "")
+				if got := playerViewSidebarState(t, m); got != v.loading {
+					t.Fatalf("sidebar loading row = %q", got)
+				}
+				if got := playerViewTableState(t, m); got != v.loading {
+					t.Fatalf("table loading row = %q", got)
+				}
+			})
+
+			t.Run("empty", func(t *testing.T) {
+				emptyLibrary := &libraryFake{playlists: func(context.Context, int) ([]libraryPlaylist, int, bool, error) {
+					return nil, 0, false, nil
+				}}
+				m, _, _ := libraryNewPlayer(t, 120, 40, p, playerState{Connected: true}, emptyLibrary, nil, "")
+				if got := playerViewSidebarState(t, m); got != v.empty {
+					t.Fatalf("sidebar empty row = %q", got)
+				}
+				queue := playerViewPrefsModel(t, p, playerState{Connected: true})
+				if got := playerViewTableState(t, queue); got != v.empty {
+					t.Fatalf("queue empty row = %q", got)
+				}
+				source := &libraryFake{playlists: libraryPlaylistsFixture(), search: func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
+					return nil, 0, false, nil
+				}}
+				searched, _ := searchWorkspace(t, p, playerState{Connected: true}, source)
+				searched = searchSubmit(t, searched, "tren")
+				if got := playerViewSearchState(t, searched); got != v.empty {
+					t.Fatalf("search empty row = %q", got)
+				}
+			})
+
+			t.Run("failure", func(t *testing.T) {
+				failing := func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
+					return nil, 0, false, errSpotifyCatalog
+				}
+				m, _, _ := libraryNewPlayer(t, 120, 40, p, playerState{Connected: true}, &libraryFake{
+					playlists: func(context.Context, int) ([]libraryPlaylist, int, bool, error) {
+						return nil, 0, false, errSpotifyCatalog
+					},
+				}, nil, "")
+				if got := playerViewSidebarState(t, m); got != v.failure {
+					t.Fatalf("sidebar failure row = %q", got)
+				}
+				tracks, _, _ := libraryNewPlayer(t, 120, 40, p, playerState{Connected: true}, &libraryFake{
+					playlists: libraryPlaylistsFixture(), tracks: failing,
+				}, nil, "")
+				tracks, cmd := libraryOpenFirst(t, tracks)
+				tracks = librarySettle(t, tracks, cmd)
+				if got := playerViewTableState(t, tracks); got != v.failure {
+					t.Fatalf("tracks failure row = %q", got)
+				}
+				source := &libraryFake{playlists: libraryPlaylistsFixture(), search: failing}
+				searched, _ := searchWorkspace(t, p, playerState{Connected: true}, source)
+				searched = searchSubmit(t, searched, "tren")
+				if got := playerViewSearchState(t, searched); got != v.failure {
+					t.Fatalf("search failure row = %q", got)
+				}
+			})
+
+			t.Run("unauthorized", func(t *testing.T) {
+				authorize := func(context.Context, string, func(string)) (catalogAPI, error) {
+					return nil, errors.New("offline fixture")
+				}
+				m, _, _ := libraryNewPlayer(t, 120, 40, p, playerState{Connected: true}, nil, authorize, "fixture-client")
+				if got := playerViewSidebarState(t, m); got != v.unauthorized {
+					t.Fatalf("sidebar unauthorized row = %q", got)
+				}
+				m, _ = m.Update(playerViewKey("/"))
+				m, _ = m.Update(playerViewKey("tren"))
+				m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				if got := playerViewSearchState(t, m); got != v.unauthorized {
+					t.Fatalf("search unauthorized row = %q", got)
+				}
+			})
+
+			t.Run("restricted", func(t *testing.T) {
+				source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
+					return nil, 0, false, errPlaylistUnavailable
+				}}
+				m, _, _ := libraryNewPlayer(t, 120, 40, p, playerState{Connected: true}, source, nil, "")
+				m, cmd := libraryOpenFirst(t, m)
+				m = librarySettle(t, m, cmd)
+				if got := playerViewTableState(t, m); got != v.restricted {
+					t.Fatalf("restricted row = %q", got)
+				}
+			})
+		})
+	}
+}
+
+// TestPlayerViewPolishBounds renders the whole workspace at every target size
+// with a loaded library, and checks single-width glyphs and no emoji.
+func TestPlayerViewPolishBounds(t *testing.T) {
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42)}
+	m, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{
+		Connected: true, Status: "playing", Volume: 37, PositionMS: 62000, Shuffle: true, Repeat: "context",
+		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros", DurationMS: 381000},
+	}, source, nil, "")
+	m, cmd := libraryOpenFirst(t, m)
+	m = librarySettle(t, m, cmd)
+	for _, size := range []struct{ width, height int }{
+		{120, 40}, {100, 30}, {80, 24}, {60, 20}, {40, 12}, {20, 8}, {1, 1},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			rows := playerViewRows(t, m, size.width, size.height)
+			view := strings.Join(rows, "\n")
+			if size.width >= 2 && !strings.Contains(view, "Pulso") {
+				t.Fatalf("missing the frame at %dx%d:\n%s", size.width, size.height, view)
+			}
+			for _, r := range view {
+				if r == '\n' {
+					continue
+				}
+				if r >= 0x1F000 {
+					t.Fatalf("emoji %q in the chrome at %dx%d", r, size.width, size.height)
+				}
+				if lipgloss.Width(string(r)) != 1 {
+					t.Fatalf("wide glyph %q in the chrome at %dx%d", r, size.width, size.height)
+				}
+			}
+		})
+	}
+}
+
+// TestPlayerViewNarrowColumns keeps the breakpoint rule: below 60 columns the
+// table keeps the number, the title and a short duration, and the bar keeps the
+// title plus volume.
+func TestPlayerViewNarrowColumns(t *testing.T) {
+	m, _ := playerViewModel(t, 120, 40, playerState{
+		Connected: true, Status: "playing", Volume: 42, PositionMS: 1000,
+		Track: playerTrack{Title: "Song", Artist: "Artist", DurationMS: 200000},
+		Queue: []playerTrack{{Title: "Queued", Artist: "Queued Artist", DurationMS: 100000}},
+	})
+	narrow := strings.Join(playerViewRows(t, m, 40, 12), "\n")
+	for _, want := range []string{"#", "Title", "Dur.", "Song", "Volume 42%"} {
+		if !strings.Contains(narrow, want) {
+			t.Fatalf("missing %q at 40x12:\n%s", want, narrow)
+		}
+	}
+	for _, gone := range []string{"Artist", "Duration"} {
+		if strings.Contains(narrow, gone) {
+			t.Fatalf("narrow layout kept %q:\n%s", gone, narrow)
+		}
+	}
+	wide := strings.Join(playerViewRows(t, m, 60, 20), "\n")
+	for _, want := range []string{"#", "Title", "Artist", "Duration"} {
+		if !strings.Contains(wide, want) {
+			t.Fatalf("missing %q at 60x20:\n%s", want, wide)
+		}
+	}
+}
+
+// TestPlayerViewLibrarySwitcher checks the stacked sidebar: one row that names
+// the current playlist and how to change it.
+func TestPlayerViewLibrarySwitcher(t *testing.T) {
+	source := &libraryFake{playlists: libraryPlaylistsFixture()}
+	m, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true}, source, nil, "")
+	for _, tt := range []struct {
+		width, height int
+		want          []string
+	}{
+		{80, 24, []string{"LIBRARY: Rock Chileno", "Tab: library"}},
+		{60, 20, []string{"LIBRARY: Rock Chileno", "Tab: library"}},
+		{40, 12, []string{"LIBRARY: Rock Chileno", "Tab"}},
+		{20, 8, []string{"LIBRARY:"}},
+	} {
+		view := strings.Join(playerViewRows(t, m, tt.width, tt.height), "\n")
+		for _, want := range tt.want {
+			if !strings.Contains(view, want) {
+				t.Fatalf("missing %q in the switcher at %dx%d:\n%s", want, tt.width, tt.height, view)
+			}
+		}
+		if strings.Contains(view, "│") {
+			t.Fatalf("the stacked layout kept the column rule:\n%s", view)
+		}
+	}
+	// Changing the selection renames the switcher.
+	m = libraryFocusSidebar(t, m)
+	m, _ = m.Update(playerViewKey("j"))
+	view := strings.Join(playerViewRows(t, m, 80, 24), "\n")
+	for _, want := range []string{"Tab: library", "LIBRARY: Jazz"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q after moving the selection:\n%s", want, view)
+		}
+	}
+	// The switcher is localized too.
+	es, _, _ := libraryNewPlayer(t, 120, 40, preferences{Language: "es"}, playerState{Connected: true}, source, nil, "")
+	esView := strings.Join(playerViewRows(t, es, 80, 24), "\n")
+	for _, want := range []string{"BIBLIOTECA: Rock Chileno", "Tab: biblioteca"} {
+		if !strings.Contains(esView, want) {
+			t.Fatalf("missing %q in the Spanish switcher:\n%s", want, esView)
+		}
+	}
+}
+
+// TestPlayerViewHintsFollowFocus keeps the hints honest: they change with the
+// focused panel and never advertise a key that does nothing there.
+func TestPlayerViewHintsFollowFocus(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{120, 40}, {70, 20}, {40, 12}} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			m, _ := playerViewModel(t, size.width, size.height, playerState{
+				Connected: true, Status: "paused", Track: playerTrack{Title: "Song"},
+			})
+			hints := func() string {
+				player := m.(*playerModel)
+				return strings.Join(player.hintRows(player.width), "\n")
+			}
+			table := hints()
+			for _, want := range []string{"↑↓", "/"} {
+				if !strings.Contains(table, want) {
+					t.Fatalf("table hints miss %q:\n%s", want, table)
+				}
+			}
+			for _, gone := range []string{"s: shuffle", "Enter"} {
+				if strings.Contains(table, gone) {
+					t.Fatalf("table hints advertise %q:\n%s", gone, table)
+				}
+			}
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+			search := hints()
+			for _, want := range []string{"Enter: search"} {
+				if !strings.Contains(search, want) {
+					t.Fatalf("search hints miss %q:\n%s", want, search)
+				}
+			}
+			for _, gone := range []string{"q: quit", "↑↓", "Space"} {
+				if strings.Contains(search, gone) {
+					t.Fatalf("search hints advertise %q:\n%s", gone, search)
+				}
+			}
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+			playing := hints()
+			for _, want := range []string{"Space", "←→", "s", "r", "+/-"} {
+				if !strings.Contains(playing, want) {
+					t.Fatalf("playing-bar hints miss %q:\n%s", want, playing)
+				}
+			}
+			for _, gone := range []string{"↑↓", "Enter"} {
+				if strings.Contains(playing, gone) {
+					t.Fatalf("playing-bar hints advertise %q:\n%s", gone, playing)
+				}
+			}
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+			sidebar := hints()
+			wantSidebar := []string{"↑↓", "/"}
+			if size.width >= playerNarrowWidth {
+				wantSidebar = append(wantSidebar, "library")
+			}
+			for _, want := range wantSidebar {
+				if !strings.Contains(sidebar, want) {
+					t.Fatalf("sidebar hints miss %q:\n%s", want, sidebar)
+				}
+			}
+			for _, gone := range []string{"s: shuffle", "Enter: play"} {
+				if strings.Contains(sidebar, gone) {
+					t.Fatalf("sidebar hints advertise %q:\n%s", gone, sidebar)
+				}
+			}
+		})
+	}
+}
+
+// TestPlayerViewSearchReachableAtEverySize keeps `/` working from every panel
+// and proves the field is rendered wherever a second row fits.
+func TestPlayerViewSearchReachableAtEverySize(t *testing.T) {
+	for _, size := range []struct{ width, height int }{
+		{120, 40}, {100, 30}, {80, 24}, {60, 20}, {40, 12}, {20, 8}, {1, 1},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			m, _ := playerViewModel(t, size.width, size.height, playerState{Connected: true})
+			for panel := 0; panel < int(playerFocusCount); panel++ {
+				for range panel {
+					m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+				}
+				m, cmd := m.Update(playerViewKey("/"))
+				if cmd != nil {
+					t.Fatalf("/ from panel %d scheduled work", panel)
+				}
+				if got := m.(*playerModel).focus; got != playerFocusSearch {
+					t.Fatalf("/ from panel %d focused %v", panel, got)
+				}
+				playerViewRows(t, m, size.width, size.height)
+				if size.height >= 2 {
+					playerViewText(t, m, "Search:")
+				}
+				// Esc blurs the empty field, so the next panel starts from the table.
+				m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			}
+		})
+	}
+}
+
+// TestPlayerViewAccentContrast keeps the accent surface readable: it uses the
+// accent text colour, and muted text never lands on it.
+func TestPlayerViewAccentContrast(t *testing.T) {
+	for _, theme := range []string{"standard", "dark", "light"} {
+		t.Run(theme, func(t *testing.T) {
+			p := preferences{Language: "en", Theme: theme}
+			model := newPlayerModelWithPreferences(context.Background(), nil, nil, 120, 40, p, nil, "", nil)
+			styles := model.(*playerModel).styles()
+			palette := p.palette()
+			if styles.banner.GetForeground() != palette.AccentText || styles.banner.GetBackground() != palette.Accent {
+				t.Fatalf("the banner does not pair accent text with the accent surface: %+v", styles.banner)
+			}
+			if styles.banner.GetFaint() {
+				t.Fatal("the banner is dim on the accent surface")
+			}
+			for name, style := range map[string]lipgloss.Style{
+				"muted": styles.muted, "label": styles.label, "accent": styles.accent, "failure": styles.failure,
+			} {
+				if _, plain := style.GetBackground().(lipgloss.NoColor); !plain {
+					t.Fatalf("the %s style paints a background: %+v", name, style)
+				}
+			}
+		})
+	}
+}
+
+// TestPlayerViewUnauthorizedSearchEnterStartsAuth keeps the advertised key
+// honest: Enter on the unauthorized row starts the same flow as the sidebar.
+func TestPlayerViewUnauthorizedSearchEnterStartsAuth(t *testing.T) {
+	requested := make(chan string, 1)
+	authorize := func(_ context.Context, clientID string, _ func(string)) (catalogAPI, error) {
+		requested <- clientID
+		return nil, errors.New("offline fixture")
+	}
+	m, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true}, nil, authorize, "fixture-client")
+	m, _ = m.Update(playerViewKey("/"))
+	m, _ = m.Update(playerViewKey("tren"))
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := m.(*playerModel).focus; got != playerFocusTable {
+		t.Fatalf("submitting a search focused %v", got)
+	}
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter on the unauthorized row did not start authorization")
+	}
+	msg := playerViewRun(t, cmd)
+	select {
+	case got := <-requested:
+		if got != "fixture-client" {
+			t.Fatalf("authorized with %q", got)
+		}
+	default:
+		t.Fatal("the authorize seam was never called")
+	}
+	if m, _ = m.Update(msg); m.View() == "" {
+		t.Fatal("a failed authorization blanked the workspace")
 	}
 }

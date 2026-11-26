@@ -389,13 +389,13 @@ func TestLibraryAuthorizeOnDemand(t *testing.T) {
 		return fake, nil
 	}
 	m, out, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true, SessionID: 2}, nil, authorize, "fixture-client")
-	playerViewText(t, m, "Enter: connect Spotify")
+	playerViewText(t, m, "No Spotify. Enter: connect")
 	if len(out) != 0 {
 		t.Fatal("the call to action sent a playback command")
 	}
 	// The stacked layout keeps a localized call to action in its summary row.
 	playerViewRows(t, m, 80, 24)
-	playerViewText(t, m, "LIBRARY: Enter: connect Spotify")
+	playerViewText(t, m, "LIBRARY: ● No Spotify. Enter: connect")
 
 	m = libraryFocusSidebar(t, m)
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -436,8 +436,8 @@ func TestLibraryMissingClientIDNotice(t *testing.T) {
 		short    string
 		want     string
 	}{
-		{"en", "Restart Pulso", "LIBRARY: Restart Pulso and complete the Spotify step."},
-		{"es", "Reinicia Pulso", "BIBLIOTECA: Reinicia Pulso y completa el paso de Spotify."},
+		{"en", "Restart Pulso", "LIBRARY: ! Restart Pulso and complete the Spotify step."},
+		{"es", "Reinicia Pulso", "BIBLIOTECA: ! Reinicia Pulso y completa el paso de Spotify."},
 	} {
 		t.Run(tt.language, func(t *testing.T) {
 			m, _, _ := libraryNewPlayer(t, 120, 40, preferences{Language: tt.language}, playerState{Connected: true}, nil, authorize, "fixture-client")
@@ -557,15 +557,15 @@ func TestLibraryStatesAreNeverBlank(t *testing.T) {
 		{"playlists loading", preferences{}, &libraryFake{playlists: libraryPlaylistsFixture()}, false, false, false, "Loading"},
 		{"playlists empty", preferences{}, &libraryFake{playlists: func(context.Context, int) ([]libraryPlaylist, int, bool, error) {
 			return nil, 0, false, nil
-		}}, false, true, false, "No playlists yet"},
+		}}, false, true, false, "Nothing here yet"},
 		{"playlists failed", preferences{}, &libraryFake{playlists: func(context.Context, int) ([]libraryPlaylist, int, bool, error) {
 			return nil, 0, false, errSpotifyCatalog
-		}}, false, true, false, "Could not load playlists"},
+		}}, false, true, false, "Could not load Spotify data"},
 		{"tracks empty", preferences{}, &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
 			return nil, 0, false, nil
-		}}, true, true, true, "No tracks in this playlist"},
-		{"tracks failed", preferences{Language: "es"}, &libraryFake{playlists: libraryPlaylistsFixture(), tracks: failingTracks}, true, true, true, "No se pudieron cargar las canciones"},
-		{"tracks loading", preferences{}, &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksForProbe}, true, true, false, "Loading tracks"},
+		}}, true, true, true, "Nothing here yet"},
+		{"tracks failed", preferences{Language: "es"}, &libraryFake{playlists: libraryPlaylistsFixture(), tracks: failingTracks}, true, true, true, "No se pudieron cargar los datos de Spotify"},
+		{"tracks loading", preferences{}, &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksForProbe}, true, true, false, "Loading"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

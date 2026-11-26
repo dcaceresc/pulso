@@ -61,7 +61,7 @@ func TestSearchFirstPageReplacesTable(t *testing.T) {
 		t.Fatal("Enter on a non-empty query did not fetch the first page")
 	}
 	// The loading state is one localized row before the page lands.
-	playerViewText(t, m, "Search", "Searching")
+	playerViewText(t, m, "Search", "Loading")
 	m = librarySettle(t, m, cmd)
 
 	queries, offsets := source.searchRequests()
@@ -189,7 +189,7 @@ func TestSearchEmptyQueryNeverFetches(t *testing.T) {
 	if player := m.(*playerModel); player.focus != playerFocusSearch {
 		t.Fatal("an empty query left the search field")
 	}
-	if view := ansi.Strip(m.View()); strings.Contains(view, "Searching") {
+	if view := ansi.Strip(m.View()); strings.Contains(view, "Loading") {
 		t.Fatalf("an empty query started a search:\n%s", view)
 	}
 	if len(out) != 0 {
@@ -204,8 +204,8 @@ func TestSearchErrorRowAndRetry(t *testing.T) {
 	source := &libraryFake{playlists: libraryPlaylistsFixture(), search: failing}
 	m, _ := searchWorkspace(t, preferences{}, playerState{Connected: true, SessionID: 1}, source)
 	m = searchSubmit(t, m, "tren")
-	view := playerViewText(t, m, "Could not load search results")
-	if strings.Contains(view, "Searching") {
+	view := playerViewText(t, m, "Could not load Spotify data. Enter: retry.")
+	if strings.Contains(view, "Loading") {
 		t.Fatalf("a failed search stayed loading:\n%s", view)
 	}
 	// Enter on the failed table retries the first page.
@@ -221,7 +221,7 @@ func TestSearchErrorRowAndRetry(t *testing.T) {
 	localized := &libraryFake{playlists: libraryPlaylistsFixture(), search: failing}
 	es, _ := searchWorkspace(t, preferences{Language: "es"}, playerState{Connected: true}, localized)
 	es = searchSubmit(t, es, "tren")
-	playerViewText(t, es, "No se pudieron cargar los resultados")
+	playerViewText(t, es, "No se pudieron cargar los datos de Spotify")
 }
 
 func TestSearchEmptyResultsRow(t *testing.T) {
@@ -230,14 +230,14 @@ func TestSearchEmptyResultsRow(t *testing.T) {
 	}}
 	m, _ := searchWorkspace(t, preferences{}, playerState{Connected: true}, source)
 	m = searchSubmit(t, m, "tren")
-	playerViewText(t, m, "No results for this search")
+	playerViewText(t, m, "Nothing here yet")
 
 	localized := &libraryFake{playlists: libraryPlaylistsFixture(), search: func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
 		return nil, 0, false, nil
 	}}
 	es, _ := searchWorkspace(t, preferences{Language: "es"}, playerState{Connected: true}, localized)
 	es = searchSubmit(t, es, "tren")
-	playerViewText(t, es, "No hay resultados para esta búsqueda")
+	playerViewText(t, es, "Aún no hay nada")
 }
 
 func TestSearchUnauthorizedRow(t *testing.T) {
@@ -248,8 +248,8 @@ func TestSearchUnauthorizedRow(t *testing.T) {
 		language string
 		want     string
 	}{
-		{"en", "Spotify search is not connected"},
-		{"es", "La búsqueda de Spotify no está conectada"},
+		{"en", "● No Spotify. Enter: connect"},
+		{"es", "● Sin Spotify. Enter: conectar"},
 	} {
 		t.Run(tt.language, func(t *testing.T) {
 			m, out, _ := libraryNewPlayer(t, 120, 40, preferences{Language: tt.language}, playerState{Connected: true, SessionID: 3}, nil, authorize, "fixture-client")

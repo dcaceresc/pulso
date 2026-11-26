@@ -27,10 +27,12 @@ const (
 const (
 	playerWideWidth   = 100 // Three columns start here.
 	playerWideHeight  = 30
-	playerNarrowWidth = 60 // Below this the playing bar keeps only title and volume.
+	playerNarrowWidth = 60 // Below this the table and bar keep only their essential columns.
 	playerHintsWidth  = 80 // Two hint rows start here.
 	playerHintsHeight = 14
-	playerMinBodyRoom = 4 // Content wins over separator rules in short windows.
+	playerShortTable  = 20 // Below this the table keeps only its title column.
+	playerSwitcherKey = 40 // Below this the library switcher uses the short key label.
+	playerMinBodyRoom = 4  // Content wins over separator rules in short windows.
 	playerSeekStepMS  = 10_000
 	playerTickEvery   = time.Second
 )
@@ -70,8 +72,9 @@ func newPlayerModel(ctx context.Context, states <-chan playerState, commands cha
 	return newPlayerModelWithPreferences(ctx, states, commands, width, height, defaultPreferences(), nil, "", nil)
 }
 
-// newPlayerModelWithPreferences builds the playback workspace. The catalog is
-// optional: without authorize, the overlay stays absent and playback still works.
+// newPlayerModelWithPreferences builds the playback workspace. The Spotify
+// catalog is optional: without authorize, the library explains the connection
+// instead, and playback still works.
 func newPlayerModelWithPreferences(ctx context.Context, states <-chan playerState, commands chan<- playerCommand, width, height int, p preferences, save func(preferences) error, clientID string, authorize func(context.Context, string, func(string)) (catalogAPI, error)) tea.Model {
 	return newPlayerModelWithCatalog(ctx, states, commands, width, height, p, save, nil, authorize, clientID)
 }
@@ -233,8 +236,7 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 		m.focus = playerFocusSearch
 		return nil
 	case "l":
-		// l moves to the sidebar. The catalog overlay is gone; s is free
-		// outside the playing bar.
+		// l moves to the sidebar; s is free outside the playing bar.
 		m.focus = playerFocusSidebar
 		return nil
 	}
@@ -407,6 +409,11 @@ func (m *playerModel) activateSelection(key tea.KeyMsg) (tea.Cmd, bool) {
 	case key.Type == tea.KeyEnter && m.focus == playerFocusSidebar:
 		return m.activatePlaylist(), true
 	case key.Type == tea.KeyEnter && m.focus == playerFocusTable && m.search.active:
+		// The unauthorized row advertises Enter: connect, so Enter starts the
+		// same authorization the sidebar offers.
+		if m.library.source == nil {
+			return m.activatePlaylist(), true
+		}
 		// Enter on the empty error row asks for the same page again.
 		if m.search.err != nil && len(m.search.tracks) == 0 {
 			return m.search.retry(), true
@@ -634,6 +641,13 @@ type playerStyles struct {
 	accent, muted, label, failure, banner lipgloss.Style
 }
 
+// playerAccentSurface is the only style that paints a background: accent text
+// on the accent colour. Muted text is never placed on it, so a state is never
+// dim-on-accent.
+func playerAccentSurface(palette themePalette) lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Foreground(palette.AccentText).Background(palette.Accent)
+}
+
 func (m *playerModel) styles() playerStyles {
 	palette := m.preferences.palette()
 	return playerStyles{
@@ -641,8 +655,44 @@ func (m *playerModel) styles() playerStyles {
 		muted:   lipgloss.NewStyle().Foreground(palette.Muted),
 		label:   lipgloss.NewStyle().Bold(true).Foreground(palette.Accent),
 		failure: lipgloss.NewStyle().Foreground(palette.Error),
-		banner:  lipgloss.NewStyle().Bold(true).Foreground(palette.AccentText).Background(palette.Accent),
+		banner:  playerAccentSurface(palette),
 	}
+}
+
+// State rows pair a single-width glyph and a localized word with a colour, so
+// no state depends on colour alone. There are no emoji.
+const (
+	playerMarkLoading = "…"
+	playerMarkEmpty   = "○"
+	playerMarkFailure = "!"
+	playerMarkNotice  = "●"
+)
+
+func playerMarked(mark, text string) string { return mark + " " + text }
+
+// The workspace reuses one sentence per concept in every panel, so the same
+// state reads the same in the sidebar, the table and the search results.
+func (m *playerModel) markLoading() string {
+	return playerMarked(playerMarkLoading, m.text("Loading", "Cargando"))
+}
+
+func (m *playerModel) markEmpty() string {
+	return playerMarked(playerMarkEmpty, m.text("Nothing here yet", "Aún no hay nada"))
+}
+
+func (m *playerModel) markError() string {
+	return playerMarked(playerMarkFailure, m.text("Could not load Spotify data. Enter: retry.",
+		"No se pudieron cargar los datos de Spotify. Enter: reintentar."))
+}
+
+func (m *playerModel) markUnauthorized() string {
+	return playerMarked(playerMarkNotice, m.text("No Spotify. Enter: connect",
+		"Sin Spotify. Enter: conectar"))
+}
+
+func (m *playerModel) markRestricted() string {
+	return playerMarked(playerMarkFailure, m.text("Playlist contents unavailable. p: play the playlist.",
+		"Contenido de la lista no disponible. p: reproducir la lista."))
 }
 
 type playerRow struct {
@@ -768,23 +818,21 @@ func (m *playerModel) searchRow(width int, styles playerStyles) string {
 
 func (m *playerModel) playingRows(width int, styles playerStyles) []playerRow {
 	glyph := "⏸"
-	var title string
-	switch {
-	case !m.loaded:
+	title := m.text("Nothing playing", "No hay nada en reproducción")
+	if !m.loaded {
 		title = m.text("Loading", "Cargando")
-	case !m.state.Connected:
+	} else if !m.state.Connected {
 		title = m.text("Disconnected", "Sin conexión")
-	default:
-		title = playerText(m.state.Track.Title)
-		if title == "" {
-			title = m.text("Nothing playing", "No hay nada en reproducción")
-		}
-		if artist := playerText(m.state.Track.Artist); artist != "" {
-			title += " · " + artist
-		}
-		if strings.EqualFold(strings.TrimSpace(m.state.Status), "playing") {
-			glyph = "▶"
-		}
+	} else if track := playerText(m.state.Track.Title); track != "" {
+		title = track
+	}
+	if m.loaded && m.state.Connected && strings.EqualFold(strings.TrimSpace(m.state.Status), "playing") {
+		glyph = "▶"
+	}
+	// The artist joins the title only when the bar has room for it; below the
+	// narrow breakpoint the bar keeps the title and the volume.
+	if artist := playerText(m.state.Track.Artist); artist != "" && width >= playerNarrowWidth && m.loaded && m.state.Connected {
+		title += " · " + artist
 	}
 	marker := "  "
 	if m.focus == playerFocusPlaying {
@@ -846,7 +894,8 @@ func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
 	return rows
 }
 
-// hintRows follows the focused panel; narrow windows use short labels.
+// hintRows follows the focused panel and never advertises a key that does
+// nothing there. Narrow windows use short labels.
 func (m *playerModel) hintRows(width int) []string {
 	if m.focus == playerFocusSearch {
 		if width < playerHintsWidth {
@@ -855,9 +904,48 @@ func (m *playerModel) hintRows(width int) []string {
 		return []string{m.text("Type: edit | Backspace: delete | Enter: search | Esc: leave",
 			"Escribe: editar | Retroceso: borrar | Enter: buscar | Esc: salir")}
 	}
-	if width < playerHintsWidth {
-		return []string{m.text("Tab | ↑↓/jk | /: search | q: quit", "Tab | ↑↓/jk | /: buscar | q: salir")}
+	if width < playerNarrowWidth {
+		return []string{m.shortHints()}
 	}
+	if width < playerHintsWidth {
+		return []string{m.compactHints()}
+	}
+	rows := []string{m.wideHints()}
+	if m.height >= playerHintsHeight {
+		rows = append(rows, m.wideSecondaryHints())
+	}
+	return rows
+}
+
+// shortHints lists the focused panel's keys as bare labels when every column
+// counts.
+func (m *playerModel) shortHints() string {
+	switch m.focus {
+	case playerFocusPlaying:
+		return m.text("Space | ←→ | s | r | +/- | q: quit", "Espacio | ←→ | s | r | +/- | q: salir")
+	case playerFocusSidebar:
+		return m.text("/: search | ↑↓ | Enter | q", "/: buscar | ↑↓ | Enter | q")
+	default:
+		return m.text("/: search | ↑↓ | q", "/: buscar | ↑↓ | q")
+	}
+}
+
+// compactHints names each focused key once in a single row.
+func (m *playerModel) compactHints() string {
+	switch m.focus {
+	case playerFocusPlaying:
+		return m.text("Tab | Space: pause | ←→: seek | s | r | +/- | q: quit",
+			"Tab | Espacio: pausa | ←→: salto | s | r | +/- | q: salir")
+	case playerFocusSidebar:
+		return m.text("Tab | ↑↓/jk: library | /: search | q: quit",
+			"Tab | ↑↓/jk: biblioteca | /: buscar | q: salir")
+	default:
+		return m.text("Tab | ↑↓/jk: move | /: search | q: quit",
+			"Tab | ↑↓/jk: mover | /: buscar | q: salir")
+	}
+}
+
+func (m *playerModel) wideHints() string {
 	primary := m.text("Tab: panel | ↑↓/jk: move | /: search | Esc/q: quit",
 		"Tab: panel | ↑↓/jk: mover | /: buscar | Esc/q: salir")
 	switch m.focus {
@@ -868,17 +956,16 @@ func (m *playerModel) hintRows(width int) []string {
 		primary = m.text("Tab: panel | Space: pause | ←→: seek | n/p: track | s: shuffle | r: repeat | +/-: volume | Esc/q: quit",
 			"Tab: panel | Espacio: pausa | ←→: salto | n/p: pista | s: aleatorio | r: repetir | +/-: volumen | Esc/q: salir")
 	}
-	rows := []string{primary}
-	if m.height >= playerHintsHeight {
-		secondary := m.text("l: library | +/-: volume | F2: language | F3: theme",
-			"l: biblioteca | +/-: volumen | F2: idioma | F3: tema")
-		if m.focus == playerFocusPlaying {
-			secondary = m.text("s: shuffle | r: repeat | +/-: volume | F2: language | F3: theme",
-				"s: aleatorio | r: repetir | +/-: volumen | F2: idioma | F3: tema")
-		}
-		rows = append(rows, secondary)
+	return primary
+}
+
+func (m *playerModel) wideSecondaryHints() string {
+	if m.focus == playerFocusPlaying {
+		return m.text("s: shuffle | r: repeat | +/-: volume | F2: language | F3: theme",
+			"s: aleatorio | r: repetir | +/-: volumen | F2: idioma | F3: tema")
 	}
-	return rows
+	return m.text("l: library | +/-: volume | F2: language | F3: theme",
+		"l: biblioteca | +/-: volumen | F2: idioma | F3: tema")
 }
 
 func (m *playerModel) bodyRows(width int, styles playerStyles, room int) []playerRow {
@@ -908,9 +995,9 @@ func (m *playerModel) columnRows(width int, styles playerStyles, room int) []pla
 	return rows
 }
 
-// stackedRows is the breakpoint layout: one library summary row above the table.
+// stackedRows is the breakpoint layout: one library switcher row above the table.
 func (m *playerModel) stackedRows(width int, styles playerStyles, room int) []playerRow {
-	rows := []playerRow{{text: m.librarySummary(), style: styles.label}}
+	rows := []playerRow{{text: m.librarySwitcher(width), style: styles.label}}
 	return append(rows, m.mainRows(width, styles, max(1, room-1))...)
 }
 
@@ -934,15 +1021,18 @@ func (m *playerModel) librarySelection() string {
 	if rows := m.libraryStateRows(m.styles()); len(rows) > 0 {
 		return strings.TrimSpace(rows[0].text)
 	}
-	return libraryEmptyLabel(m.preferences)
+	return m.markEmpty()
 }
 
-func libraryEmptyLabel(p preferences) string {
-	return p.text("No playlists yet", "Aún no hay listas")
-}
-
-func (m *playerModel) librarySummary() string {
-	return m.text("LIBRARY: ", "BIBLIOTECA: ") + m.librarySelection()
+// librarySwitcher is the stacked one-line sidebar: it names the current
+// selection and the key that changes it.
+func (m *playerModel) librarySwitcher(width int) string {
+	left := m.text("LIBRARY: ", "BIBLIOTECA: ") + m.librarySelection()
+	change := m.text("Tab: library", "Tab: biblioteca")
+	if width < playerSwitcherKey {
+		change = "Tab"
+	}
+	return playerSpread(left, change, width)
 }
 
 // sidebarRows lists playlists and ends in the state rows, so the panel is never
@@ -971,39 +1061,35 @@ func (m *playerModel) sidebarRows(styles playerStyles, width int) []playerRow {
 	return append(rows, m.libraryStateRows(styles)...)
 }
 
-// libraryStateRows explains an unavailable library; the stacked layout reuses
-// its first row as the summary.
+// libraryStateRows explains an unavailable library with the same localized
+// sentence the other panels use for that concept.
 func (m *playerModel) libraryStateRows(styles playerStyles) []playerRow {
 	library := m.library
-	muted := func(text string) playerRow { return playerRow{text: "  " + text, style: styles.muted} }
+	muted := func(text string) playerRow { return playerRow{text: text, style: styles.muted} }
 	switch {
 	case library.canAuthorize():
 		switch {
 		case library.authURL != "":
 			return []playerRow{{text: "  " + library.authURL, style: styles.muted}}
 		case library.authorizing():
-			return []playerRow{muted(m.text("Waiting for Spotify…", "Esperando a Spotify…"))}
+			return []playerRow{muted(playerMarked(playerMarkNotice, m.text("Waiting for Spotify…", "Esperando a Spotify…")))}
 		case library.notice == libraryNoticeAuthFailed:
-			return []playerRow{
-				{text: "  " + m.text("Spotify unavailable; playback works.", "Spotify no disponible; la reproducción funciona."), style: styles.failure},
-				muted(m.text("Enter: retry Spotify", "Enter: reintentar Spotify")),
-			}
+			return []playerRow{{text: playerMarked(playerMarkFailure, m.text("Spotify unavailable; playback works. Enter: retry.",
+				"Spotify no disponible; la reproducción funciona. Enter: reintentar.")), style: styles.failure}}
 		case library.notice == libraryNoticeClientID:
-			return []playerRow{{text: "  " + m.text("Restart Pulso and complete the Spotify step.", "Reinicia Pulso y completa el paso de Spotify."), style: styles.failure}}
+			return []playerRow{{text: playerMarked(playerMarkFailure, m.text("Restart Pulso and complete the Spotify step.",
+				"Reinicia Pulso y completa el paso de Spotify.")), style: styles.failure}}
 		default:
-			return []playerRow{muted(m.text("Enter: connect Spotify", "Enter: conectar Spotify"))}
+			return []playerRow{muted(m.markUnauthorized())}
 		}
 	case library.source == nil:
-		return []playerRow{muted(libraryEmptyLabel(m.preferences))}
-	case library.loadingPlaylists && len(library.playlists) == 0:
-		return []playerRow{muted(m.text("Loading…", "Cargando…"))}
+		return []playerRow{muted(m.markEmpty())}
 	case library.notice == libraryNoticeLoadFailed && !library.loadedPlaylists:
-		return []playerRow{
-			{text: "  " + m.text("Could not load playlists.", "No se pudieron cargar las listas."), style: styles.failure},
-			muted(m.text("Enter: retry", "Enter: reintentar")),
-		}
+		return []playerRow{{text: m.markError(), style: styles.failure}}
+	case !library.loadedPlaylists && len(library.playlists) == 0:
+		return []playerRow{muted(m.markLoading())}
 	case library.loadedPlaylists && len(library.playlists) == 0:
-		return []playerRow{muted(libraryEmptyLabel(m.preferences))}
+		return []playerRow{muted(m.markEmpty())}
 	}
 	return nil
 }
@@ -1055,27 +1141,28 @@ const (
 )
 
 // tableColumns drops whole columns instead of squeezing them, so no header or
-// value ever overflows the region.
+// value ever overflows the region. Below the narrow breakpoint the table keeps
+// only the number, the title and a short duration column.
 func (m *playerModel) tableColumns(width int) []playerColumn {
 	if width <= 0 {
 		return nil
 	}
 	title, artist := m.text("Title", "Título"), m.text("Artist", "Artista")
-	duration := m.text("Duration", "Duración")
-	durationWidth := lipgloss.Width(duration)
+	duration, short := m.text("Duration", "Duración"), m.text("Dur.", "Dur.")
+	durationWidth, shortWidth := lipgloss.Width(duration), lipgloss.Width(short)
 	switch {
 	case width < 12:
 		return []playerColumn{{kind: playerColumnTitle, label: title, width: width}}
-	case width < 26:
+	case width < playerShortTable:
 		return []playerColumn{
 			{kind: playerColumnNumber, label: "#", width: 2},
 			{kind: playerColumnTitle, label: title, width: width - 3},
 		}
-	case width < 40:
+	case width < playerNarrowWidth:
 		return []playerColumn{
 			{kind: playerColumnNumber, label: "#", width: 2},
-			{kind: playerColumnTitle, label: title, width: width - 4 - durationWidth},
-			{kind: playerColumnDuration, label: duration, width: durationWidth},
+			{kind: playerColumnTitle, label: title, width: width - 4 - shortWidth},
+			{kind: playerColumnDuration, label: short, width: shortWidth},
 		}
 	default:
 		rest := width - 5 - durationWidth
@@ -1118,11 +1205,11 @@ func (m *playerModel) tableRows(width int, styles playerStyles, room int) []play
 	}
 	switch {
 	case !m.loaded:
-		return []playerRow{{text: m.text("Loading Soloist playback...", "Cargando la reproducción de Soloist..."), style: styles.muted}}
+		return []playerRow{{text: m.markLoading(), style: styles.muted}}
 	case !m.state.Connected:
 		return []playerRow{{text: m.text("Queue unavailable", "Cola no disponible"), style: styles.muted}}
 	case len(m.state.Queue) == 0:
-		return []playerRow{{text: m.text("Queue is empty", "La cola está vacía"), style: styles.muted}}
+		return []playerRow{{text: m.markEmpty(), style: styles.muted}}
 	}
 	columns := m.tableColumns(width)
 	start := max(0, m.tableSelected-room+1)
@@ -1138,13 +1225,13 @@ func (m *playerModel) libraryTableRows(width int, styles playerStyles, room int)
 	library := m.library
 	switch {
 	case library.notice == libraryNoticeUnavailable:
-		return []playerRow{{text: m.text("Playlist contents unavailable. p: play the playlist.", "Contenido de la lista no disponible. p: reproducir la lista."), style: styles.failure}}
+		return []playerRow{{text: m.markRestricted(), style: styles.failure}}
 	case library.notice == libraryNoticeLoadFailed:
-		return []playerRow{{text: m.text("Could not load the tracks. Enter: retry", "No se pudieron cargar las canciones. Enter: reintentar"), style: styles.failure}}
+		return []playerRow{{text: m.markError(), style: styles.failure}}
 	case !library.loadedTracks || (library.loadingTracks && len(library.tracks) == 0):
-		return []playerRow{{text: m.text("Loading tracks…", "Cargando canciones…"), style: styles.muted}}
+		return []playerRow{{text: m.markLoading(), style: styles.muted}}
 	case len(library.tracks) == 0:
-		return []playerRow{{text: m.text("No tracks in this playlist", "No hay canciones en esta lista"), style: styles.muted}}
+		return []playerRow{{text: m.markEmpty(), style: styles.muted}}
 	}
 	columns := m.tableColumns(width)
 	start := max(0, library.tableSelected-room+1)
@@ -1155,27 +1242,24 @@ func (m *playerModel) libraryTableRows(width int, styles playerStyles, room int)
 			playerTrack{Title: track.Name, Artist: track.Artist, DurationMS: track.DurationMS}, styles))
 	}
 	if library.loadingTracks && len(rows) < room {
-		rows = append(rows, playerRow{text: m.text("Loading more…", "Cargando más…"), style: styles.muted})
+		rows = append(rows, playerRow{text: m.markLoading(), style: styles.muted})
 	}
 	return rows
 }
 
-// searchTableRows renders the results, including one localized row for each
-// loading, empty, error and unauthorized state.
+// searchTableRows renders the results, including one shared localized row for
+// each loading, empty, error and unauthorized state.
 func (m *playerModel) searchTableRows(width int, styles playerStyles, room int) []playerRow {
 	search := m.search
-	loading := m.text("Searching…", "Buscando…")
-	failed := m.text("Could not load search results. Enter: retry", "No se pudieron cargar los resultados. Enter: reintentar")
-	empty := m.text("No results for this search", "No hay resultados para esta búsqueda")
 	switch {
 	case m.library.source == nil:
-		return []playerRow{{text: m.text("Spotify search is not connected", "La búsqueda de Spotify no está conectada"), style: styles.muted}}
+		return []playerRow{{text: m.markUnauthorized(), style: styles.muted}}
 	case search.loading && len(search.tracks) == 0:
-		return []playerRow{{text: loading, style: styles.muted}}
+		return []playerRow{{text: m.markLoading(), style: styles.muted}}
 	case search.err != nil && len(search.tracks) == 0:
-		return []playerRow{{text: failed, style: styles.failure}}
+		return []playerRow{{text: m.markError(), style: styles.failure}}
 	case search.loaded && len(search.tracks) == 0:
-		return []playerRow{{text: empty, style: styles.muted}}
+		return []playerRow{{text: m.markEmpty(), style: styles.muted}}
 	}
 	columns := m.tableColumns(width)
 	start := max(0, search.cursor-room+1)
@@ -1188,9 +1272,9 @@ func (m *playerModel) searchTableRows(width int, styles playerStyles, room int) 
 	if len(rows) < room {
 		switch {
 		case search.loading:
-			rows = append(rows, playerRow{text: m.text("Loading more…", "Cargando más…"), style: styles.muted})
+			rows = append(rows, playerRow{text: m.markLoading(), style: styles.muted})
 		case search.err != nil:
-			rows = append(rows, playerRow{text: failed, style: styles.failure})
+			rows = append(rows, playerRow{text: m.markError(), style: styles.failure})
 		}
 	}
 	return rows
