@@ -175,16 +175,16 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 		absent        []string
 	}{
 		{120, 40, []string{
-			"Pulso", "Search:", "LIBRARY", "Playlists", "#", "Title", "Artist", "Duration",
+			"Pulso", "Search:", "LIBRARY", "No playlists yet", "#", "Title", "Artist", "Duration",
 			"Estrechez de Corazón", "Tren al Sur", "1:02", "6:21", "Volume 37%", "Device Desk",
 			"⇄ off", "↻ off", "Tab: panel", "Esc/q: quit", "s: search", "l: playlists", "F2: language",
 		}, nil},
 		{100, 30, []string{
-			"Pulso", "Search:", "LIBRARY", "Playlists", "#", "Title", "Artist", "Duration",
+			"Pulso", "Search:", "LIBRARY", "No playlists yet", "#", "Title", "Artist", "Duration",
 			"Estrechez de Corazón", "1:02", "6:21", "Volume 37%", "Device Desk", "Esc/q: quit",
 		}, nil},
 		{80, 24, []string{
-			"Pulso", "LIBRARY:", "Playlists", "#", "Title", "Artist", "Duration",
+			"Pulso", "LIBRARY:", "No playlists yet", "#", "Title", "Artist", "Duration",
 			"Estrechez de Corazón", "Volume 37%", "Esc/q: quit",
 		}, []string{"│"}},
 		{40, 12, []string{"Pulso", "▶", "Volume 37%"}, nil},
@@ -227,7 +227,7 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 
 func TestPlayerViewWorkspaceLocalized(t *testing.T) {
 	m := newPlayerModelWithPreferences(context.Background(), nil, nil, 120, 40, preferences{Language: "es", Theme: "standard"}, nil, "", nil)
-	playerViewText(t, m, "Pulso", "Buscar:", "BIBLIOTECA", "Listas", "Reproducción", "Título", "Artista", "Duración", "Esc/q: salir", "F2: idioma")
+	playerViewText(t, m, "Pulso", "Buscar:", "BIBLIOTECA", "Aún no hay listas", "Reproducción", "Título", "Artista", "Duración", "Esc/q: salir", "F2: idioma")
 }
 
 func TestPlayerViewFocusCycleAndHints(t *testing.T) {

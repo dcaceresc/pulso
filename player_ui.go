@@ -52,11 +52,12 @@ type playerModel struct {
 	ended, quit     bool
 	busy            bool
 
-	// Workspace focus and in-memory selections. No library source is wired
-	// yet, so the selections simply clamp inside what is on screen.
-	focus                          playerPanel
-	sidebarSelected, tableSelected int
-	query                          string
+	// Workspace focus and the Soloist queue cursor. The library keeps its own
+	// per-panel cursors for playlists and their tracks.
+	focus         playerPanel
+	tableSelected int
+	query         string
+	library       *libraryState
 }
 
 func newPlayerModel(ctx context.Context, states <-chan playerState, commands chan<- playerCommand, width, height int) tea.Model {
@@ -76,11 +77,17 @@ func newPlayerModelWithCatalog(ctx context.Context, states <-chan playerState, c
 		width: width, height: height, preferences: p.normalized(), save: save,
 		focus: playerFocusTable,
 	}
+	clientID := ""
 	if authorize != nil {
-		clientID := knownClientID
+		clientID = knownClientID
 		if clientID == "" {
 			clientID = loadClientID()
 		}
+	}
+	// The setup handoff passes the authorized catalog; when it can serve
+	// library pages the sidebar and the table read it directly.
+	m.library = newLibraryState(ctx, librarySourceOf(api), authorize, clientID)
+	if authorize != nil {
 		m.catalog = newCatalogModel(ctx, m.preferences, width, height, clientID, authorize, m.playURI)
 		m.catalog.api = api
 		m.catalog.saveClientID = func(id string) {
@@ -104,7 +111,19 @@ func (m *playerModel) playURI(uri string) {
 	}
 }
 
-func (m *playerModel) Init() tea.Cmd { return m.awaitState() }
+func (m *playerModel) Init() tea.Cmd {
+	state := m.awaitState()
+	// A handoff that already carries a library loads its first page at once.
+	library := m.library.init()
+	switch {
+	case library == nil:
+		return state
+	case state == nil:
+		return library
+	default:
+		return tea.Batch(state, library)
+	}
+}
 
 func (m *playerModel) awaitState() tea.Cmd {
 	if m.pending || m.ended || m.quit {
@@ -138,6 +157,8 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_, cmd := m.catalog.Update(msg)
 			return m, cmd
 		}
+	case libraryAuthMsg, libraryPageMsg:
+		return m, m.library.update(msg)
 	case playerViewState:
 		if m.quit || !m.pending {
 			break
@@ -219,8 +240,11 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 			return m.catalog.Open(map[string]string{"s": "search", "l": "playlists"}[key.String()])
 		}
 	}
-	if m.moveSelection(key) {
-		return nil
+	if handled, cmd := m.moveSelection(key); handled {
+		return cmd
+	}
+	if cmd, handled := m.activateSelection(key); handled {
+		return cmd
 	}
 	if m.quit || !m.state.Connected || m.commands == nil {
 		return nil
@@ -284,7 +308,7 @@ func (m *playerModel) handleSearchKey(key tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-func (m *playerModel) moveSelection(key tea.KeyMsg) bool {
+func (m *playerModel) moveSelection(key tea.KeyMsg) (bool, tea.Cmd) {
 	delta := 0
 	switch key.Type {
 	case tea.KeyUp:
@@ -300,22 +324,75 @@ func (m *playerModel) moveSelection(key tea.KeyMsg) bool {
 		}
 	}
 	if delta == 0 {
-		return false
+		return false, nil
 	}
 	switch m.focus {
 	case playerFocusSidebar:
-		m.sidebarSelected = playerIndex(m.sidebarSelected+delta, len(m.libraryItems()))
+		return true, m.library.moveSidebar(delta)
 	case playerFocusTable:
+		if m.library.open() {
+			return true, m.library.moveTracks(delta)
+		}
 		m.tableSelected = playerIndex(m.tableSelected+delta, len(m.state.Queue))
-	default:
-		return false
+		return true, nil
 	}
-	return true
+	return false, nil
+}
+
+// activateSelection handles Enter and the library's own play key. It reports
+// whether the key belonged to the library panels.
+func (m *playerModel) activateSelection(key tea.KeyMsg) (tea.Cmd, bool) {
+	if key.Paste {
+		return nil, false
+	}
+	switch {
+	case key.Type == tea.KeyEnter && m.focus == playerFocusSidebar:
+		return m.activatePlaylist(), true
+	case key.Type == tea.KeyEnter && m.focus == playerFocusTable && m.library.open():
+		if m.library.notice == libraryNoticeLoadFailed && !m.library.loadedTracks {
+			return m.library.fetchTracks(0), true
+		}
+		if track, ok := m.library.selectedTrack(); ok {
+			m.playURI(track.URI)
+		}
+		return nil, true
+	case key.String() == "p" && m.focus == playerFocusSidebar:
+		if playlist, ok := m.library.selectedPlaylist(); ok {
+			m.playURI(playlist.URI)
+			return nil, true
+		}
+	case key.String() == "p" && m.focus == playerFocusTable && m.library.open() && m.library.restricted:
+		m.playURI(m.library.playlist.URI)
+		return nil, true
+	}
+	return nil, false
+}
+
+// activatePlaylist opens the sidebar selection or starts authorization.
+func (m *playerModel) activatePlaylist() tea.Cmd {
+	library := m.library
+	switch {
+	case library.canAuthorize():
+		// A second Enter must not cancel the flow already waiting on the
+		// browser and its loopback listener.
+		if library.authorizing() {
+			return nil
+		}
+		return library.startAuth()
+	case library.source == nil:
+		return nil
+	case library.notice == libraryNoticeLoadFailed && !library.loadedPlaylists:
+		return library.fetchPlaylists(0)
+	case len(library.playlists) == 0:
+		return nil
+	}
+	m.focus = playerFocusTable
+	return library.openPlaylist()
 }
 
 func (m *playerModel) clampSelections() {
-	m.sidebarSelected = playerIndex(m.sidebarSelected, len(m.libraryItems()))
 	m.tableSelected = playerIndex(m.tableSelected, len(m.state.Queue))
+	m.library.clamp()
 }
 
 func playerStep(value playerPanel, delta int) playerPanel {
@@ -666,7 +743,7 @@ func (m *playerModel) columnRows(width int, styles playerStyles, room int) []pla
 	if mainWidth < 1 {
 		return nil
 	}
-	side, main := m.sidebarRows(styles), m.mainRows(mainWidth, styles, room)
+	side, main := m.sidebarRows(styles, sidebarWidth), m.mainRows(mainWidth, styles, room)
 	separator := styles.muted.Render("│")
 	rows := make([]playerRow, 0, room)
 	for i := 0; i < room; i++ {
@@ -691,42 +768,101 @@ func playerCell(row playerRow, width int) string {
 	return row.style.Render(text)
 }
 
-// libraryItems are the selectable sidebar rows. U1 has no playlist source yet,
-// so the Playlists section is the only row; U2 replaces it with real entries.
-func (m *playerModel) libraryItems() []string {
-	return []string{m.text("Playlists", "Listas")}
+// librarySelection is the playlist under the sidebar cursor, or the state row
+// that stands in for an unavailable library in the stacked summary.
+func (m *playerModel) librarySelection() string {
+	if playlist, ok := m.library.selectedPlaylist(); ok {
+		if name := playerText(playlist.Name); name != "" {
+			return name
+		}
+	}
+	if rows := m.libraryStateRows(m.styles()); len(rows) > 0 {
+		return strings.TrimSpace(rows[0].text)
+	}
+	return libraryEmptyLabel(m.preferences)
 }
 
-func (m *playerModel) librarySelection() string {
-	items := m.libraryItems()
-	if len(items) == 0 {
-		return m.text("Playlists", "Listas")
-	}
-	return items[playerIndex(m.sidebarSelected, len(items))]
+func libraryEmptyLabel(p preferences) string {
+	return p.text("No playlists yet", "Aún no hay listas")
 }
 
 func (m *playerModel) librarySummary() string {
 	return m.text("LIBRARY: ", "BIBLIOTECA: ") + m.librarySelection()
 }
 
-func (m *playerModel) sidebarRows(styles playerStyles) []playerRow {
+// sidebarRows lists playlists and ends in the state rows, so the panel is never
+// blank: loading, empty, error and unauthorized each read differently.
+func (m *playerModel) sidebarRows(styles playerStyles, width int) []playerRow {
 	rows := []playerRow{{text: m.text("LIBRARY", "BIBLIOTECA"), style: styles.label}}
-	for i, item := range m.libraryItems() {
+	library := m.library
+	for i, playlist := range library.playlists {
 		marker, style := "  ", lipgloss.NewStyle()
-		if i == m.sidebarSelected {
+		if i == library.sidebarSelected {
 			marker = "> "
 			if m.focus == playerFocusSidebar {
 				style = styles.accent
 			}
 		}
-		rows = append(rows, playerRow{text: marker + item, style: style})
+		name := playerText(playlist.Name)
+		if name == "" {
+			name = m.text("Untitled playlist", "Lista sin título")
+		}
+		text := marker + name
+		if owner := playerText(playlist.Owner); owner != "" && lipgloss.Width(text)+lipgloss.Width(owner)+3 <= width {
+			text += " · " + owner
+		}
+		rows = append(rows, playerRow{text: text, style: style})
 	}
-	// The section is empty until the library slice lands.
-	rows = append(rows, playerRow{text: "  " + m.text("No playlists yet", "Aún no hay listas"), style: styles.muted})
-	return rows
+	return append(rows, m.libraryStateRows(styles)...)
+}
+
+// libraryStateRows explains an unavailable library; the stacked layout reuses
+// its first row as the summary.
+func (m *playerModel) libraryStateRows(styles playerStyles) []playerRow {
+	library := m.library
+	muted := func(text string) playerRow { return playerRow{text: "  " + text, style: styles.muted} }
+	switch {
+	case library.canAuthorize():
+		switch {
+		case library.authURL != "":
+			return []playerRow{{text: "  " + library.authURL, style: styles.muted}}
+		case library.authorizing():
+			return []playerRow{muted(m.text("Waiting for Spotify…", "Esperando a Spotify…"))}
+		case library.notice == libraryNoticeAuthFailed:
+			return []playerRow{
+				{text: "  " + m.text("Spotify unavailable; playback works.", "Spotify no disponible; la reproducción funciona."), style: styles.failure},
+				muted(m.text("Enter: retry Spotify", "Enter: reintentar Spotify")),
+			}
+		default:
+			return []playerRow{muted(m.text("Enter: connect Spotify", "Enter: conectar Spotify"))}
+		}
+	case library.source == nil:
+		return []playerRow{muted(libraryEmptyLabel(m.preferences))}
+	case library.loadingPlaylists && len(library.playlists) == 0:
+		return []playerRow{muted(m.text("Loading…", "Cargando…"))}
+	case library.notice == libraryNoticeLoadFailed && !library.loadedPlaylists:
+		return []playerRow{
+			{text: "  " + m.text("Could not load playlists.", "No se pudieron cargar las listas."), style: styles.failure},
+			muted(m.text("Enter: retry", "Enter: reintentar")),
+		}
+	case library.loadedPlaylists && len(library.playlists) == 0:
+		return []playerRow{muted(libraryEmptyLabel(m.preferences))}
+	}
+	return nil
 }
 
 func (m *playerModel) mainTitle() string {
+	if m.library.open() {
+		title := playerText(m.library.playlist.Name)
+		if title == "" {
+			title = m.text("Playlist", "Lista")
+		}
+		total := max(m.library.trackTotal, len(m.library.tracks))
+		if total > 0 {
+			title += " · " + fmt.Sprintf(m.text("%d tracks", "%d canciones"), total)
+		}
+		return title
+	}
 	title := m.text("Playback", "Reproducción")
 	if m.loaded && m.state.Connected {
 		title += " · " + fmt.Sprintf(m.text("%d tracks", "%d canciones"), len(m.state.Queue))
@@ -803,6 +939,9 @@ func (m *playerModel) tableHeader(width int) string {
 }
 
 func (m *playerModel) tableRows(width int, styles playerStyles, room int) []playerRow {
+	if m.library.open() {
+		return m.libraryTableRows(width, styles, room)
+	}
 	switch {
 	case !m.loaded:
 		return []playerRow{{text: m.text("Loading Soloist playback...", "Cargando la reproducción de Soloist..."), style: styles.muted}}
@@ -815,14 +954,41 @@ func (m *playerModel) tableRows(width int, styles playerStyles, room int) []play
 	start := max(0, m.tableSelected-room+1)
 	rows := make([]playerRow, 0, room)
 	for i := start; i < len(m.state.Queue) && len(rows) < room; i++ {
-		rows = append(rows, m.tableRow(columns, i, m.state.Queue[i], styles))
+		rows = append(rows, m.tableRow(columns, i, i == m.tableSelected, m.state.Queue[i], styles))
 	}
 	return rows
 }
 
-func (m *playerModel) tableRow(columns []playerColumn, index int, track playerTrack, styles playerStyles) playerRow {
+// libraryTableRows renders the open playlist, including its own states.
+func (m *playerModel) libraryTableRows(width int, styles playerStyles, room int) []playerRow {
+	library := m.library
+	switch {
+	case library.notice == libraryNoticeUnavailable:
+		return []playerRow{{text: m.text("Playlist contents unavailable. p: play the playlist.", "Contenido de la lista no disponible. p: reproducir la lista."), style: styles.failure}}
+	case library.notice == libraryNoticeLoadFailed:
+		return []playerRow{{text: m.text("Could not load the tracks. Enter: retry", "No se pudieron cargar las canciones. Enter: reintentar"), style: styles.failure}}
+	case !library.loadedTracks || (library.loadingTracks && len(library.tracks) == 0):
+		return []playerRow{{text: m.text("Loading tracks…", "Cargando canciones…"), style: styles.muted}}
+	case len(library.tracks) == 0:
+		return []playerRow{{text: m.text("No tracks in this playlist", "No hay canciones en esta lista"), style: styles.muted}}
+	}
+	columns := m.tableColumns(width)
+	start := max(0, library.tableSelected-room+1)
+	rows := make([]playerRow, 0, room)
+	for i := start; i < len(library.tracks) && len(rows) < room; i++ {
+		track := library.tracks[i]
+		rows = append(rows, m.tableRow(columns, i, i == library.tableSelected,
+			playerTrack{Title: track.Name, Artist: track.Artist, DurationMS: track.DurationMS}, styles))
+	}
+	if library.loadingTracks && len(rows) < room {
+		rows = append(rows, playerRow{text: m.text("Loading more…", "Cargando más…"), style: styles.muted})
+	}
+	return rows
+}
+
+func (m *playerModel) tableRow(columns []playerColumn, index int, selected bool, track playerTrack, styles playerStyles) playerRow {
 	number := fmt.Sprintf(" %d", index+1)
-	if index == m.tableSelected {
+	if selected {
 		number = fmt.Sprintf(">%d", index+1)
 	}
 	title := playerText(track.Title)
@@ -849,7 +1015,7 @@ func (m *playerModel) tableRow(columns []playerColumn, index int, track playerTr
 		cells[i] = playerPad(value, column.width)
 	}
 	style := lipgloss.NewStyle()
-	if index == m.tableSelected && m.focus == playerFocusTable {
+	if selected && m.focus == playerFocusTable {
 		style = styles.accent
 	}
 	return playerRow{text: strings.Join(cells, " "), style: style}
