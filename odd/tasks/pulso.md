@@ -47,6 +47,8 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 
 - T12 [blocked on live verification] S11 — Automatic login detection, Now Playing handoff and interruption recovery implemented in `5524547`; independent Windows loopback tests passed. Clean first pairing with real Spotify on Windows and Linux remains pending.
 
+- T17 [in progress] S13 — Fix advisories from the independent check: a stray loopback request no longer burns the OAuth callback, Ctrl+C closes the overlay, and F2/F3 work inside it; commit `fix: harden the authorization callback`.
+
 ## Log
 
 - L1: “comienza con la implementacion”
@@ -71,3 +73,4 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - L20: This slice means track search and read-only playlist browsing/playback, not playlist editing. Spotify Web API login is separate from Soloist. Users supply their own developer Client ID; register `http://127.0.0.1/callback` and use an ephemeral loopback port for OAuth. Keep Soloist playback independent of API access. Use English and Spanish, with English fallback, plus Standard, Dark and Light themes. Do not persist access tokens or keys in this initial slice. Never request live credentials for tests.
 - L21: Three implementation workers failed on quota. The parent completed their pending scope inline: localized setup and player, F2/F3 persistence, catalog overlay integration, Spotify URI commands, and production wiring. Fixture tests covering catalog, OAuth, preferences, setup and player pass, as do vet and the Windows suite; Linux cross-build pending confirmation. OAuth token storage is memory-only and playlist content is read-only.
 - L22: “la idea es que el propio pulso deberia dar la url para conectarse como los otrs como nscpot o spotify_player... los botones de f2 y f3 no funcionan... incluso si cierro pulso sigo escuchando la cancion...”. Explanation: Soloist is an independent daemon that keeps playing when its controller exits. Pulso now pauses it on quit and leaves the daemon paired. The Client ID is remembered in a private `client-id` file so the URL appears on the next start, and F2/F3 gained Ctrl+L/Ctrl+T aliases because a host terminal may consume function keys. No tokens are stored.
+- L23: Independent verification of c54667e passed every S12 requirement (search, playlist fallback, PKCE, loopback, redirects, memory-only tokens, stale messages, session-bound play, preference writes) plus baseline parity on CLI output. Three advisories were reported: a stray local request consuming the one callback slot, Ctrl+C swallowed by the overlay, and F2/F3 inactive in the overlay. The parent reproduced the first two with new fixtures and fixed all three.

@@ -262,7 +262,7 @@ func (m *catalogModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	if key.Alt {
 		return nil
 	}
-	if key.Type == tea.KeyEsc && !key.Paste {
+	if (key.Type == tea.KeyEsc || key.Type == tea.KeyCtrlC) && !key.Paste {
 		m.close()
 		return nil
 	}

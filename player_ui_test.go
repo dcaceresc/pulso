@@ -354,3 +354,29 @@ func TestPlayerViewPreferenceAliases(t *testing.T) {
 		t.Fatalf("alias keys did not persist: %v", saved)
 	}
 }
+
+func TestPlayerViewOverlayPreferencesAndClose(t *testing.T) {
+	states, out := make(chan playerState, 1), make(chan playerCommand, 1)
+	api := catalogViewFake{search: func(context.Context, string, int) ([]catalogItem, bool, error) {
+		return []catalogItem{{Name: "Track", URI: "spotify:track:1"}}, false, nil
+	}}
+	var saved []preferences
+	m := newPlayerModelWithPreferences(context.Background(), states, out, 100, 24, preferences{Language: "en", Theme: "standard"}, func(p preferences) error {
+		saved = append(saved, p)
+		return nil
+	}, "fixture-id", catalogViewReply(api))
+	m.Init()
+	m, cmd := m.Update(playerViewKey("s"))
+	playerViewCatalogDrain(t, m, cmd)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF2})
+	playerViewText(t, m, "Buscar canciones")
+	if len(saved) != 1 || saved[0].Language != "es" {
+		t.Fatalf("overlay shortcut did not persist: %v", saved)
+	}
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatal("Ctrl+C in the overlay should close it without quitting")
+	}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	playerViewText(t, m, "Pulso / Reproducción")
+}

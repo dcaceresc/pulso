@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -116,5 +117,53 @@ func TestSpotifyCatalogOAuthCancellation(t *testing.T) {
 	}))
 	if catalog != nil || err != context.Canceled || called {
 		t.Fatalf("canceled authorization = %v; exchanged=%v", err, called)
+	}
+}
+
+func TestWaitSpotifyCallbackIgnoresStrayState(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listener unavailable: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	host := listener.Addr().String()
+	urlCh := make(chan string, 1)
+	type result struct {
+		code string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, err := waitSpotifyCallback(ctx, listener, host, "expected-state", func() {
+			urlCh <- "http://" + host + spotifyCallbackPath + "?state=expected-state&code=good-code"
+		})
+		done <- result{code, err}
+	}()
+	<-urlCh
+	base := "http://" + host + spotifyCallbackPath
+	stray, err := http.Get(base + "?state=wrong&code=stray")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stray.Body.Close()
+	if stray.StatusCode != http.StatusBadRequest {
+		t.Fatalf("stray state status = %d", stray.StatusCode)
+	}
+	good, err := http.Get(base + "?state=expected-state&code=good-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	good.Body.Close()
+	if good.StatusCode != http.StatusOK {
+		t.Fatalf("valid callback status = %d, want 200 after a stray request", good.StatusCode)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil || got.code != "good-code" {
+			t.Fatalf("callback = %+v", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("authorization did not finish")
 	}
 }

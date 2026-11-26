@@ -118,6 +118,14 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = msg.state
 		return m, m.awaitState()
 	case tea.KeyMsg:
+		switch msg.Type {
+		case tea.KeyF2, tea.KeyCtrlL:
+			m.changePreferences(true)
+			return m, nil
+		case tea.KeyF3, tea.KeyCtrlT:
+			m.changePreferences(false)
+			return m, nil
+		}
 		if m.catalog != nil && !m.catalog.Closed() {
 			_, cmd := m.catalog.Update(msg)
 			return m, cmd

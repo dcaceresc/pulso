@@ -125,17 +125,16 @@ func waitSpotifyCallback(ctx context.Context, listener net.Listener, host, state
 				http.Error(w, "Callback query too large", http.StatusRequestURITooLong)
 				return
 			}
+			q, err := url.ParseQuery(r.URL.RawQuery)
+			if err != nil || len(q["state"]) != 1 || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
+				http.Error(w, "Invalid Spotify authorization response", http.StatusBadRequest)
+				return
+			}
+			// An unrelated local request must not burn the one real callback.
 			select {
 			case accepted <- struct{}{}:
 			default:
 				http.Error(w, "Spotify callback already received", http.StatusConflict)
-				return
-			}
-
-			q, err := url.ParseQuery(r.URL.RawQuery)
-			if err != nil || len(q["state"]) != 1 || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
-				http.Error(w, "Invalid Spotify authorization response", http.StatusBadRequest)
-				results <- callback{err: errors.New("Invalid Spotify authorization state")}
 				return
 			}
 			if q.Has("error") || len(q["code"]) != 1 || q.Get("code") == "" {
