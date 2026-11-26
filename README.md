@@ -12,7 +12,7 @@ From a Windows or Linux x86-64 terminal with Go 1.22 or newer, run `go run .`, o
 
 Pulso searches `PATH` first, then `pulso/bin` under your user configuration directory (`%APPDATA%` on Windows; `$XDG_CONFIG_HOME` or `~/.config` on Linux). Installing via Pulso does not require admin access or change `PATH`; the install directory's filesystem must support hard links. The wizard only uses Soloist's default session directory: `%LOCALAPPDATA%/soloist/data` on Windows, or `$STATE_DIRECTORY` if set on Linux, then `$XDG_DATA_HOME/soloist`, then `$HOME/.local/share/soloist`. It only connects to numeric loopback WebSocket addresses; custom data directories and non-loopback endpoints aren't supported by the wizard.
 
-Setup is intended for the official Windows and Linux x86-64 Soloist builds. Pulso does not install system audio dependencies, configure audio devices, or update Soloist automatically. Real playback, account pairing, and versioned installation on both targets have not yet been verified. This wizard does not provide playback controls or Spotify Web API access.
+Setup is intended for the official Windows and Linux x86-64 Soloist builds. Pulso does not install system audio dependencies, configure audio devices, or update Soloist automatically. Real playback, account pairing, and versioned installation on both targets have not yet been verified. When Soloist is ready, Pulso opens **Now Playing** with the current track, progress, volume, and upcoming queue. Press **Space** to play or pause, **n/p** for next or previous, **+/-** for volume, and **Esc** or **q** to exit. Search and playlist browsing via Spotify Web API are not implemented yet.
 
 ## Diagnose Soloist
 

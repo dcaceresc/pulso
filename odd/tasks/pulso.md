@@ -18,6 +18,8 @@ Could not install Soloist. Try again?
 
 Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spotify-tui o la de sqlterm que esta en la carpeta personal tienes permiso para leerla”
 
+- S9: “hay que dejar esta informacion para el usuario para que entienda que hay que hacer, ya lo hice y dice reproduciendo en pulso ahora falta toda la intefaz de visualizacion”
+
 ## Tasks
 
 - T1 [done] S1–S5 — Bootstrap the Go command and read-only Soloist diagnostic; inline; commit: `feat: add Pulso Soloist diagnostic`.
@@ -25,7 +27,8 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - T3 [done] S2, S4, S6 — Managed Soloist installer for missing Windows/Linux amd64 builds; worker; commit `2502892`; independent fixture checks passed.
 - T7 [done] S6, S7 — Bubble Tea welcome, setup status, installation confirmation, and masked key entry; worker; commit `dac65d9`; independent model checks passed.
 - T8 [done for local fixtures] S6, S7 — Default launch and pairing in `4434863`; follow-up commit `fix: guide pairing for existing Soloist devices`. Real Spotify pairing stays in T2.
-- T4 [pending] S1, S2 — Build the TUI player, playback controls, queue, and reconnect behavior; route pending; commit pending.
+- T4 [pending independent verification] S1, S2, S9 — Playback transport and Now Playing UI with controls, upcoming queue, and reconnect; commits `feat: stream Soloist playback events` and `feat: open the Now Playing workspace`.
+- T11 [pending independent verification] S9 — Pairing instructions in `ddb56eb`; ready-session handoff in `feat: open the Now Playing workspace`.
 - T5 [pending] S1, S2 — Add Web API search and playlist browsing; route pending; commit pending.
 - T6 [pending] S2, S3, S5 — Verify versioned `go install` and real end-to-end behavior on both platforms; route pending; commit pending.
 
@@ -45,3 +48,5 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - L9: Downloaded the official ZIP and tar.gz (both HTTP 200) without executing them. Both include CHANGELOG.md and THIRD_PARTY_LICENSES.txt. The actual ZIP reproduced `unexpected ZIP file "CHANGELOG.md"`. After the narrow fix, both real archives passed extraction validation. sqlterm is a read-only layout reference: header, panel/sidebar, separate status and shortcut rows, responsive collapse.
 - L10: Ran the corrected installer against the official CDN on Windows in an isolated temporary directory. It installed only `soloist.exe` (22,562,104 bytes); the executable was not started and no account was used.
 - L11: Responsive renders and install-failure tests passed, plus the full Go suite, vet, Linux amd64 cross-build and diff check. No graphical screenshot or interactive proof of this new layout. Native assessment unavailable (`package-local-binary-missing`).
+- L12: “hay que dejar esta informacion para el usuario para que entienda que hay que hacer, ya lo hice y dice reproduciendo en pulso ahora falta toda la intefaz de visualizacion”. The user reports a real paired device playing audio; Web API and both-platform verification remain separate.
+- L13: Pairing instructions added to the wizard and README in `ddb56eb`; focused RED and GREEN observed. Setup-to-player model handoff passed its focused tests in isolation. Production now opens the player for a previously paired session or after Enter confirms new pairing. Focused tests, full suite, vet and Linux amd64 cross-build passed. High-risk concurrency assessment unavailable (`package-local-binary-missing`); independent committed checks pending.

@@ -24,6 +24,7 @@ type setupService struct {
 	inspect func(context.Context) (setupState, error)
 	install func(context.Context) error
 	start   func(context.Context, string) error
+	player  func(width, height int) tea.Model
 }
 
 type setupPhase uint8
@@ -121,6 +122,10 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case setupAwaitPairing:
 					m.phase = setupPairing
 				case setupReady:
+					if m.service.player != nil {
+						player := m.service.player(m.width, m.height)
+						return player, player.Init()
+					}
 					m.phase = setupDone
 				}
 			}

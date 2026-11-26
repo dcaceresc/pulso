@@ -73,6 +73,48 @@ func setupRunes(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
+type setupTestPlayer struct{}
+
+func (setupTestPlayer) Init() tea.Cmd                         { return func() tea.Msg { return "player initialized" } }
+func (p setupTestPlayer) Update(tea.Msg) (tea.Model, tea.Cmd) { return p, nil }
+func (setupTestPlayer) View() string                          { return "Now Playing" }
+
+func TestSetupOpensPlayerWhenReady(t *testing.T) {
+	for _, paired := range []bool{true, false} {
+		t.Run(fmt.Sprint("already paired=", paired), func(t *testing.T) {
+			calls := 0
+			setup := newSetupModel(context.Background(), setupService{
+				inspect: func(context.Context) (setupState, error) {
+					if paired {
+						return setupReady, nil
+					}
+					return setupAwaitPairing, nil
+				},
+				player: func(width, height int) tea.Model {
+					calls++
+					if width != 111 || height != 32 {
+						t.Fatalf("player viewport = %dx%d", width, height)
+					}
+					return setupTestPlayer{}
+				},
+			})
+			setup, _ = setup.Update(tea.WindowSizeMsg{Width: 111, Height: 32})
+			model, cmd := runSetupCmd(t, setup, setup.Init())
+			if !paired {
+				if calls != 0 {
+					t.Fatal("player opened before pairing")
+				}
+				paired = true
+				model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				model, cmd = runSetupCmd(t, model, cmd)
+			}
+			if calls != 1 || model.View() != "Now Playing" || cmd == nil || cmd() != "player initialized" {
+				t.Fatalf("player handoff failed: calls=%d view=%q", calls, model.View())
+			}
+		})
+	}
+}
+
 func TestSetupWelcomeAndConfirmation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

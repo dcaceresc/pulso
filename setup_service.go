@@ -62,7 +62,15 @@ func runSetup(stdout io.Writer) error {
 		local.startMu.Lock()
 		local.startMu.Unlock()
 	}()
-	model := newSetupModel(ctx, setupService{inspect: local.inspect, install: installManagedSoloist, start: local.start})
+	model := newSetupModel(ctx, setupService{
+		inspect: local.inspect,
+		install: installManagedSoloist,
+		start:   local.start,
+		player: func(width, height int) tea.Model {
+			states, commands := newPlayerStream(ctx, local.dataDir)
+			return newPlayerModel(ctx, states, commands, width, height)
+		},
+	})
 	_, err := tea.NewProgram(model, tea.WithOutput(stdout), tea.WithAltScreen()).Run()
 	return err
 }
