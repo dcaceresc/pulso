@@ -23,6 +23,8 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 
 - S11: “implementa la mejora” (the automatic pairing improvement in L16).
 
+- S12: “funciona ahora quiero que añadas la funcion de busqueda y playlist y tambien listes las funciones que tiene spotatui y generes un plan para agregalas quiero tambien que la aplicacion tenga localizacion tenga español e ingles y tambien tenga temas”
+
 ## Tasks
 
 - T1 [done] S1–S5 — Bootstrap the Go command and read-only Soloist diagnostic; inline; commit: `feat: add Pulso Soloist diagnostic`.
@@ -32,13 +34,16 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - T8 [done for local fixtures] S6, S7 — Default launch and pairing in `4434863`; follow-up commit `fix: guide pairing for existing Soloist devices`. Real Spotify pairing stays in T2.
 - T4 [done for automated checks] S1, S2, S9, S10 — Playback transport and Now Playing UI in `941ed85` and `b00273a`; protocol and reconnect fixes in `4cbb8e1` and `8fbcadf`. Native Linux and live playback verification stay in T2/T6.
 - T11 [done] S9 — Pairing instructions in `ddb56eb`; ready-session handoff in `b00273a`; independent fixture verification passed.
-- T5 [pending] S1, S2 — Add Web API search and playlist browsing; route pending; commit pending.
+- T5 [in progress] S1, S2, S12 — Build Spotify Web API login (OAuth PKCE), catalog search and playlist reads; worker.
+- T13 [pending] S12 — Add persisted English/Spanish and terminal theme selection; worker.
+- T14 [pending] S12 — Integrate search and playlist views into Now Playing and play selected URIs through Soloist.
+- T15 [done] S12 — Document Spotatui features and a phased Pulso roadmap in `ROADMAP.md`; commit `docs: map the Pulso feature roadmap`.
 - T6 [pending] S2, S3, S5 — Verify versioned `go install` and real end-to-end behavior on both platforms; route pending; commit pending.
 
 - T9 [done] S8 — Accept known release documentation without extracting it; commit `2087a24`. The independent verifier passed 32 subtests on the committed snapshot.
 - T10 [done for automated checks] S8 — Responsive full-screen setup and install recovery; commit `feat: redesign the Soloist setup workspace`. Render bounds and recovery tested; no visual capture.
 
-- T12 [pending independent verification] S11 — Automatically detect Spotify Connect login, open Now Playing, and recover from interruption; candidate `feat: detect Soloist pairing automatically`.
+- T12 [blocked on live verification] S11 — Automatic login detection, Now Playing handoff and interruption recovery implemented in `5524547`; independent Windows loopback tests passed. Clean first pairing with real Spotify on Windows and Linux remains pending.
 
 ## Log
 
@@ -59,3 +64,6 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - L15: Independent checks passed for pairing on `b00273a` but found a reconnect gap: a keypress from a stale player view could reach the replacement socket. The parent reproduced `skip_next` arriving before the fresh view's `skip_prev`. A session identifier now scopes commands to their rendered session. The full suite, vet and Linux amd64 cross-build passed; an independent committed test of `8fbcadf` passed four transport tests and two subtests. No live playback or native Linux run was performed.
 - L16: “implementa la mejora”. The immediately preceding plan called for automatic detection of `auth_state` / `logged_in: true`, opening Now Playing without Enter, bypassing setup when already paired, showing action and device name, recovering from a lost WebSocket with bounded retry, retaining Enter/Esc, explaining a stopped daemon, and verifying on Windows/Linux. Saving the key is out of scope. The user has confirmed prior interactive playback works.
 - L17: The worker observed RED and GREEN for pairing detection. The parent ran the full Windows Go suite, vet, and Linux amd64 cross-build successfully. Native assessment is unavailable (`package-local-binary-missing`). Actual first pairing with the new flow and native Linux still need testing.
+- L18: Independent Windows fixture verification of `5524547` passed (`go test -count=1 -run '^(TestSetup|TestLocalSetup)' ./...`, exit 0). A WebSocket connection refusal can also happen during daemon restart; that path requires a manual Enter recheck. No live first pairing or native Linux run was performed.
+- L19: “funciona ahora quiero que añadas la funcion de busqueda y playlist y tambien listes las funciones que tiene spotatui y generes un plan para agregalas quiero tambien que la aplicacion tenga localizacion tenga español e ingles y tambien tenga temas”. User confirms the new pairing flow works on their environment. Native Linux real pairing remains unverified.
+- L20: This slice means track search and read-only playlist browsing/playback, not playlist editing. Spotify Web API login is separate from Soloist. Users supply their own developer Client ID; register `http://127.0.0.1/callback` and use an ephemeral loopback port for OAuth. Keep Soloist playback independent of API access. Use English and Spanish, with English fallback, plus Standard, Dark and Light themes. Do not persist access tokens or keys in this initial slice. Never request live credentials for tests.
