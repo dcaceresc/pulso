@@ -170,7 +170,7 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 	playerTestCommand(t, commands, playerCommand{Name: "play"})
 	close(auth)
 	for i, step := range steps {
-		playerTestState(t, states, step.match)
+		state := playerTestState(t, states, step.match)
 		select {
 		case next <- struct{}{}:
 		case <-time.After(5 * time.Second):
@@ -178,6 +178,7 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 		}
 		if i == 0 {
 			for _, cmd := range []playerCommand{{Name: "get_state"}, {Name: "play"}, {Name: "pause"}, {Name: "skip_next"}, {Name: "skip_prev"}, {Name: "set_volume", Volume: 110}, {Name: "set_volume", Volume: -1}} {
+				cmd.SessionID = state.SessionID
 				playerTestCommand(t, commands, cmd)
 			}
 		}
@@ -219,7 +220,7 @@ func TestPlayerTransportReconnect(t *testing.T) {
 				return
 			}
 			if gate == nil {
-				playerTestRead(t, ctx, conn, `{"type":"command","command":"pause"}`)
+				playerTestRead(t, ctx, conn, `{"type":"command","command":"skip_prev"}`)
 				return
 			}
 			select {
@@ -240,14 +241,20 @@ func TestPlayerTransportReconnect(t *testing.T) {
 		}
 		return firstDir, nil
 	})
-	playerTestState(t, states, func(s playerState) bool { return s.Connected && s.Device == "old" })
+	oldView := playerTestState(t, states, func(s playerState) bool { return s.Connected && s.Device == "old" })
+	model := newPlayerModel(ctx, states, commands, 80, 24)
+	model.Init()
+	model, _ = model.Update(playerViewState{state: oldView, ok: true})
 	current.Store(true)
 	close(fail)
 	playerTestState(t, states, func(s playerState) bool { return !s.Connected && s.Device == "" && s.Notice != "" })
 	playerTestCommand(t, commands, playerCommand{Name: "play"})
 	close(nextAuth)
-	playerTestState(t, states, func(s playerState) bool { return s.Connected && s.Device == "new" })
-	playerTestCommand(t, commands, playerCommand{Name: "pause"})
+	newView := playerTestState(t, states, func(s playerState) bool { return s.Connected && s.Device == "new" })
+	// The replacement is ready while the UI still holds the previous view.
+	model, _ = model.Update(setupRunes("n"))
+	model, _ = model.Update(playerViewState{state: newView, ok: true})
+	model.Update(setupRunes("p"))
 	playerTestState(t, states, func(s playerState) bool { return !s.Connected && s.Notice != "" })
 }
 

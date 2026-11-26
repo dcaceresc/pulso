@@ -110,8 +110,9 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 
-	// A bounded try-send preserves key order without queuing goroutines or
-	// delivering an old keypress after a disconnect.
+	// Bind the keypress to the session visible when it was made.
+	command.SessionID = m.state.SessionID
+	// A bounded try-send preserves key order without queuing goroutines.
 	select {
 	case <-m.ctx.Done():
 	case m.commands <- command:

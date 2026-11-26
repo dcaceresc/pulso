@@ -43,11 +43,13 @@ type playerState struct {
 	Volume     int
 	Connected  bool
 	Notice     string
+	SessionID  uint64
 }
 
 type playerCommand struct {
-	Name   string
-	Volume int
+	Name      string
+	Volume    int
+	SessionID uint64
 }
 
 func newPlayerStream(ctx context.Context, dataDir func() (string, error)) (<-chan playerState, chan<- playerCommand) {
@@ -64,8 +66,9 @@ func newPlayerStream(ctx context.Context, dataDir func() (string, error)) (<-cha
 			states <- state
 		}
 		input := (<-chan playerCommand)(commands)
+		var nextSessionID uint64
 		for delay := playerRetryMin; ctx.Err() == nil; delay = min(2*delay, playerRetryMax) {
-			if playerSession(ctx, dataDir, &input, publish) {
+			if playerSession(ctx, dataDir, &input, &nextSessionID, publish) {
 				delay = playerRetryMin
 			}
 			if ctx.Err() != nil {
@@ -242,7 +245,7 @@ func playerRead(ctx context.Context, dataDir func() (string, error), frames chan
 	}
 }
 
-func playerSession(ctx context.Context, dataDir func() (string, error), input *<-chan playerCommand, publish func(playerState)) (authenticated bool) {
+func playerSession(ctx context.Context, dataDir func() (string, error), input *<-chan playerCommand, nextSessionID *uint64, publish func(playerState)) (authenticated bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	frames := make(chan playerFrame)
@@ -259,7 +262,7 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 				*input = nil
 				continue
 			}
-			if packet, allowed := playerCommandPacket(command); state.Connected && allowed {
+			if packet, allowed := playerCommandPacket(command); state.Connected && command.SessionID == state.SessionID && allowed {
 				if !playerWrite(ctx, conn, packet) {
 					return authenticated
 				}
@@ -287,6 +290,9 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 					for n := len(*input); n > 0; n-- {
 						<-*input
 					}
+					// A keypress from a view of an older session must not control this socket.
+					*nextSessionID = *nextSessionID + 1
+					state.SessionID = *nextSessionID
 					state.Connected, state.Notice = true, ""
 					authenticated = true
 				}
