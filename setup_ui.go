@@ -190,7 +190,7 @@ func (m *setupModel) View() string {
 		body = "Starting Soloist..."
 	case setupPairing:
 		body = "Pair Soloist in the Spotify app using the same account.\n" +
-			"Open the device picker, choose Pulso, then recheck here."
+			"In the device picker, choose Pulso or your existing Soloist device name.\nThen recheck here."
 		hints = "Enter: recheck | Esc: quit"
 	case setupDone:
 		body = "Soloist is ready."

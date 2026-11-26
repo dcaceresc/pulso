@@ -194,7 +194,7 @@ func TestSetupMaskingRetryAndPairing(t *testing.T) {
 	if cmd != nil || checks != 2 {
 		t.Fatal("successful start should recheck once, without polling")
 	}
-	expectSetupView(t, model, "Pair Soloist in the Spotify app using the same account.\nOpen the device picker, choose Pulso, then recheck here.", "Enter: recheck | Esc: quit")
+	expectSetupView(t, model, "Pair Soloist in the Spotify app using the same account.\nIn the device picker, choose Pulso or your existing Soloist device name.\nThen recheck here.", "Enter: recheck | Esc: quit")
 	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model, cmd = runSetupCmd(t, model, cmd)
 	if cmd != nil || checks != 3 || starts != 2 {
