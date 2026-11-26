@@ -29,8 +29,8 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - T5 [pending] S1, S2 — Add Web API search and playlist browsing; route pending; commit pending.
 - T6 [pending] S2, S3, S5 — Verify versioned `go install` and real end-to-end behavior on both platforms; route pending; commit pending.
 
-- T9 [pending independent verification] S8 — Accept known release documentation without extracting it; candidate `fix: accept official Soloist release archives`.
-- T10 [in progress] S8 — Replace the text-only wizard with a full-screen responsive terminal workspace inspired by sqlterm and provide an actionable install failure; worker.
+- T9 [done] S8 — Accept known release documentation without extracting it; commit `2087a24`. The independent verifier passed 32 subtests on the committed snapshot.
+- T10 [done for automated checks] S8 — Responsive full-screen setup and install recovery; commit `feat: redesign the Soloist setup workspace`. Render bounds and recovery tested; no visual capture.
 
 ## Log
 
@@ -43,3 +43,5 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - L7: Installer and model fixture checks passed. The independent verifier could only inspect committed code; it identified a zero-CRC ZIP gap by static inspection. The parent reproduced that bug with a fixture, fixed it, and confirmed the installer and model suite passed. The independent verifier then ran successfully on the corrected committed snapshot `dac65d9` (7 tests and 29 subtests including independent scratch probes). Live CDN, real pairing and native Linux remain unverified.
 - L8: T8 Windows PTY checks confirmed the welcome, Esc, and pairing recheck. The independent check found misleading pairing copy for external devices; the parent observed RED, updated the copy, and ran the expanded service/model/CLI checks and full Go suite to GREEN. `go vet`, local Windows install and Linux amd64 cross-build passed. Native assessment unavailable (`package-local-binary-missing`).
 - L9: Downloaded the official ZIP and tar.gz (both HTTP 200) without executing them. Both include CHANGELOG.md and THIRD_PARTY_LICENSES.txt. The actual ZIP reproduced `unexpected ZIP file "CHANGELOG.md"`. After the narrow fix, both real archives passed extraction validation. sqlterm is a read-only layout reference: header, panel/sidebar, separate status and shortcut rows, responsive collapse.
+- L10: Ran the corrected installer against the official CDN on Windows in an isolated temporary directory. It installed only `soloist.exe` (22,562,104 bytes); the executable was not started and no account was used.
+- L11: Responsive renders and install-failure tests passed, plus the full Go suite, vet, Linux amd64 cross-build and diff check. No graphical screenshot or interactive proof of this new layout. Native assessment unavailable (`package-local-binary-missing`).

@@ -63,7 +63,7 @@ func runSetup(stdout io.Writer) error {
 		local.startMu.Unlock()
 	}()
 	model := newSetupModel(ctx, setupService{inspect: local.inspect, install: installManagedSoloist, start: local.start})
-	_, err := tea.NewProgram(model, tea.WithOutput(stdout)).Run()
+	_, err := tea.NewProgram(model, tea.WithOutput(stdout), tea.WithAltScreen()).Run()
 	return err
 }
 

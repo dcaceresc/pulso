@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 const setupKeyGuide = "Soloist is installed. To create your Soloist key:\n" +
@@ -16,18 +19,44 @@ const setupKeyGuide = "Soloist is installed. To create your Soloist key:\n" +
 
 func expectSetupView(t *testing.T, model tea.Model, body, hints string) {
 	t.Helper()
-	want := "Welcome to Pulso\n\n" + body + "\n\n" + hints
 	got := model.View()
-	if got != want {
-		t.Fatalf("View() = %q\nwant     %q", got, want)
+	expectSetupBounds(t, got, 80, 24)
+	expectSetupText(t, got, "Welcome to Pulso", hints)
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "Key: ") {
+			found := false
+			for _, rendered := range strings.Split(got, "\n") {
+				if strings.TrimSpace(rendered) == strings.TrimSpace(line) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("missing exact masked input %q in view:\n%s", line, got)
+			}
+		} else if line != "" {
+			expectSetupText(t, got, line)
+		}
 	}
-	lines := strings.Split(got, "\n")
-	if len(lines) > 24 {
-		t.Fatalf("view has %d lines, want at most 24", len(lines))
+}
+
+func expectSetupBounds(t *testing.T, view string, width, height int) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		t.Fatalf("view has %d lines, want at most %d", len(lines), height)
 	}
 	for _, line := range lines {
-		if len(line) > 80 {
-			t.Fatalf("line exceeds 80 columns: %q", line)
+		if lipgloss.Width(line) > width {
+			t.Fatalf("line exceeds %d columns: %q", width, line)
+		}
+	}
+}
+
+func expectSetupText(t *testing.T, view string, parts ...string) {
+	t.Helper()
+	for _, part := range parts {
+		if !strings.Contains(view, part) {
+			t.Errorf("view missing %q:\n%s", part, view)
 		}
 	}
 }
@@ -177,6 +206,9 @@ func TestSetupMaskingRetryAndPairing(t *testing.T) {
 	}
 	retryView := setupKeyGuide + "Could not start Soloist. Enter your key to retry.\nKey: "
 	expectSetupView(t, model, retryView, "Enter: start | Esc: quit")
+	if strings.Contains(model.View(), first) || strings.Contains(model.View(), "raw start error") {
+		t.Fatal("failed start leaked the submitted key or raw error")
+	}
 	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil || starts != 1 {
 		t.Fatal("an empty retry should not submit the previous key")
@@ -201,6 +233,107 @@ func TestSetupMaskingRetryAndPairing(t *testing.T) {
 		t.Fatal("pairing recheck should not restart Soloist")
 	}
 	expectSetupView(t, model, "Soloist is ready.", "Esc: quit")
+}
+
+func TestSetupResponsiveWorkspace(t *testing.T) {
+	model := newSetupModel(context.Background(), setupService{
+		inspect: func(context.Context) (setupState, error) { return setupNeedsKey, nil },
+	})
+	model, _ = runSetupCmd(t, model, model.Init())
+	model, _ = model.Update(setupRunes(strings.Repeat("q", 90)))
+	for _, tc := range []struct {
+		width, height int
+		sidebar       bool
+	}{
+		{110, 30, true}, {95, 27, true}, {94, 27, false}, {95, 26, false}, {40, 16, false}, {25, 8, false},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", tc.width, tc.height), func(t *testing.T) {
+			model, cmd := model.Update(tea.WindowSizeMsg{Width: tc.width, Height: tc.height})
+			if cmd != nil {
+				t.Fatal("resizing should not perform setup work")
+			}
+			view := model.View()
+			expectSetupBounds(t, view, tc.width, tc.height)
+			expectSetupText(t, view, "Welcome to Pulso", "Key:", "****", "Enter: start", "Esc: quit")
+			if tc.width >= 40 {
+				expectSetupText(t, view, "[x] Soloist", "[>] Key", "[ ] Pairing", "ACTION", "STATUS", "below.")
+			} else {
+				expectSetupText(t, view, "Resize for details.")
+			}
+			if got := strings.Contains(view, "│"); got != tc.sidebar {
+				t.Errorf("sidebar visible = %v, want %v:\n%s", got, tc.sidebar, view)
+			}
+			if strings.Contains(view, "qq") {
+				t.Fatal("resizing exposed the key")
+			}
+			t.Logf("\n%s", view)
+		})
+	}
+}
+
+func TestSetupInstallFailureActions(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		err          error
+	}{
+		{"generic", "Automatic install failed.", errors.New("raw install details")},
+		{"permission", "Cannot write to the install location.", fmt.Errorf("raw install details: %w", fs.ErrPermission)},
+		{"timeout", "Soloist download timed out.", fmt.Errorf("raw install details: %w", context.DeadlineExceeded)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var checks, installs int
+			model := newSetupModel(context.Background(), setupService{
+				inspect: func(context.Context) (setupState, error) {
+					checks++
+					if checks > 1 {
+						return setupNeedsKey, nil
+					}
+					return setupMissing, nil
+				},
+				install: func(context.Context) error {
+					installs++
+					return tc.err
+				},
+			})
+			model, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+			model, _ = runSetupCmd(t, model, model.Init())
+			model, cmd := model.Update(setupRunes("Y"))
+			expectSetupText(t, model.View(), "Working", "Installing Soloist...")
+			if strings.Contains(model.View(), "retry install") || installs != 0 {
+				t.Fatal("installing should not show retry or run synchronously")
+			}
+			model, cmd = runSetupCmd(t, model, cmd)
+			if cmd != nil || checks != 1 || installs != 1 {
+				t.Fatal("failed installation should wait for a choice without retrying")
+			}
+			for _, width := range []int{100, 40} {
+				model, _ = model.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+				view := model.View()
+				expectSetupBounds(t, view, width, 30)
+				expectSetupText(t, view, "Retry needed", tc.reason, "Install Soloist manually", "on your PATH", "Y: retry install", "Enter: recheck", "Esc: quit")
+				if strings.Contains(view, "raw install details") || strings.Contains(view, "Working") {
+					t.Fatal("failure view exposed a raw error or still showed working")
+				}
+				// Long links may be wrapped, but must retain the full address.
+				if !strings.Contains(strings.Join(strings.Fields(view), ""), downloads) {
+					t.Errorf("view missing official downloads link: %s", view)
+				}
+				t.Logf("\n%s", view)
+			}
+			model, cmd = model.Update(setupRunes("Y"))
+			expectSetupText(t, model.View(), "Working", "Installing Soloist...")
+			model, _ = runSetupCmd(t, model, cmd)
+			model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if checks != 1 || installs != 2 {
+				t.Fatal("Enter should schedule a check, not another install")
+			}
+			model, cmd = runSetupCmd(t, model, cmd)
+			if cmd != nil || checks != 2 || installs != 2 {
+				t.Fatal("manual install recheck should inspect exactly once")
+			}
+			expectSetupText(t, model.View(), "Key:", "Enter: start")
+		})
+	}
 }
 
 func TestSetupQuitWithUnsubmittedKey(t *testing.T) {
