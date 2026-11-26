@@ -25,9 +25,9 @@ Press **s** to search Spotify tracks and **l** to list your playlists. In the ov
 Searching uses the official Spotify Web API, which is a separate sign-in from Soloist:
 
 1. Create a free app in the [Spotify developer dashboard](https://developer.spotify.com/dashboard) to get a Client ID. The app owner needs Spotify Premium, and Spotify allows up to five signed-in users.
-2. Add `http://127.0.0.1/callback` as a redirect URI for that app. A dynamically assigned port is allowed for loopback redirects.
-3. The setup wizard asks for the Client ID once, right after the Soloist key, and shows the authorization URL. Pulso remembers only the public Client ID in `client-id` under your user configuration directory; the access token is never stored. Press **s** in that step to continue without search and playlists. If the browser does not open, run `pulso login` to print the URL without terminal wrapping. You can also set `PULSO_SPOTIFY_CLIENT_ID` (PowerShell: `$env:PULSO_SPOTIFY_CLIENT_ID="<client-id>"`) to skip the prompt.
-4. Open that URL in your browser and approve access. Pulso waits on a temporary loopback listener and signs you in again on the next start.
+2. Add `http://127.0.0.1:8888/callback` as a redirect URI for that app. Spotify requires the port in the URI, and it must match exactly.
+3. The setup wizard asks for the Client ID once, right after the Soloist key, and shows the authorization URL. Pulso remembers only the public Client ID in `client-id` under your user configuration directory; the access token is never stored. The wizard always shows these instructions first, with your saved Client ID prefilled and editable. Press **s** in that step to continue without search and playlists. The fixed port keeps the redirect URI identical to the one Spotify accepts. You can also set `PULSO_SPOTIFY_CLIENT_ID` (PowerShell: `$env:PULSO_SPOTIFY_CLIENT_ID="<client-id>"`) to skip the prompt.
+4. Approve access in the browser Pulso opens. Pulso waits on http://127.0.0.1:8888/callback and signs you in again on the next start; if that port is busy, close whatever uses it and retry.
 
 Playlist contents are only returned for playlists you own or collaborate on. For other playlists, Pulso says the contents are restricted and can still play the playlist by its Spotify URI. Playback never depends on this sign-in, so the player keeps working when the Web API is unavailable.
 

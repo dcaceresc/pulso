@@ -39,7 +39,6 @@ func TestCommandHelp(t *testing.T) {
 Usage:
   pulso                          Open the Soloist setup wizard
   pulso doctor [--data-dir PATH]  Report local Soloist status
-  pulso login [CLIENT_ID]        Print the Spotify authorization URL
   pulso --help                   Show this help
 `
 	for _, flag := range []string{"--help", "-h"} {

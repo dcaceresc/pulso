@@ -4,6 +4,8 @@ Target: Windows x86-64 and Linux x86-64.
 
 - S14: “se reparo lo de las teclas pero no funciona la url de spotify da error response_type must be code”
 
+- S15: “entonces hay que hacer un cambio quita eso de pulso login, antes de que que genere la url se debe mostrar al usuario las intrucciones para que cree el clientId y lo agregue y despues muestre la url , tambien en la pagina de spotify la ruta  http://127.0.0.1/callback de rediret url no funciona dice  This redirect URI is not secure”
+
 ## Specs
 
 - S1: “quiero construir una tui pero en go genera un plan”
@@ -55,6 +57,8 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 
 - T19 [in progress] S14 — Open the authorization page automatically and add `pulso login` that prints the URL unwrapped; commit `fix: open the Spotify authorization page`.
 
+- T21 [in progress] S15 — Remove `pulso login`, always show Client ID instructions before the URL, and use a fixed `127.0.0.1:8888` redirect because Spotify rejects a portless loopback URI; commit `fix: register a fixed Spotify redirect`.
+
 ## Log
 
 - L1: “comienza con la implementacion”
@@ -83,3 +87,4 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - L24: “f2 y f3 siguen sin funcionar y no es la terminal probe sqlterm y el f2 y el f3 funcionaron los de control l y control t quitalos deben funcionar bien las teclas ademas cuando yo hablo si el usuario se conecte es que cuando agregue la api key de soloist se genera la url para que se conecte y se pueda ver las playlist y poder buscar canciones”. Root cause: bubbletea v1.3.4 Windows console input has no VK_F1–F12 mapping, so F-keys arrived as empty runes; v1.3.10 maps them. Ctrl+L/Ctrl+T removed as requested. The wizard now has a Spotify step after Soloist that accepts the Client ID once, shows the generated authorization URL, and hands the authorized catalog to the player; `s` skips it and playback still works.
 - L25: “se reparo lo de las teclas pero no funciona la url de spotify da error response_type must be code”. The generated URL contains `response_type=code`; the terminal hard-wrapped it, so a multi-line copy reached Spotify with the parameter broken. Pulso now opens the page itself and `pulso login` prints the URL on one logical line for copying. Still needs a live confirmation that Spotify accepts the dynamic loopback port.
 - L26: “client_id: Invalid”. The wizard accepted any alphanumeric string, so a Soloist key or a truncated value could reach Spotify. The Client ID is now validated as 32 hex characters with an inline explanation, `e` re-opens the field, an `invalid_client` callback error is reported specifically, and `pulso login <client-id>` replaces the stored value. The common cause remains pasting the Soloist API key, which is not the Spotify Client ID.
+- L27: “entonces hay que hacer un cambio quita eso de pulso login... antes de que genere la url se debe mostrar al usuario las intrucciones... la ruta http://127.0.0.1/callback... dice This redirect URI is not secure”. Spotify now rejects HTTP loopback redirects without an explicit port; the dashboard accepted `http://127.0.0.1:8888/callback` style URIs. Pulso now listens on that fixed port, shows it in the instructions, always presents the instructions with the saved Client ID prefilled, and `pulso login` is removed.

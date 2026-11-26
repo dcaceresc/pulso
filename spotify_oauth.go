@@ -21,6 +21,7 @@ const (
 	spotifyAccountsURL          = "https://accounts.spotify.com"
 	spotifyTokenURL             = spotifyAccountsURL + "/api/token"
 	spotifyCallbackPath         = "/callback"
+	spotifyCallbackDefaultAddr  = "127.0.0.1:8888"
 	spotifyAuthorizationTimeout = 3 * time.Minute
 )
 
@@ -28,7 +29,10 @@ var (
 	errSpotifyRateLimited = errors.New("Spotify rate limit reached; try again later")
 	errSpotifyToken       = errors.New("Spotify token request failed")
 	errSpotifyClientID    = errors.New("Spotify rejected the Client ID or redirect URI")
-	spotifyBearer         = regexp.MustCompile(`^[A-Za-z0-9._~+/\-]+=*$`)
+	// Spotify only accepts loopback redirects with an explicit port, so the
+	// address is fixed and must match the one registered in the dashboard.
+	spotifyCallbackAddr = spotifyCallbackDefaultAddr
+	spotifyBearer       = regexp.MustCompile(`^[A-Za-z0-9._~+/\-]+=*$`)
 )
 
 type spotifyToken struct {
@@ -62,9 +66,9 @@ func authorizeSpotifyWithTransport(ctx context.Context, clientID string, showURL
 	verifier := base64.RawURLEncoding.EncodeToString(random[32:])
 	challenge := sha256.Sum256([]byte(verifier))
 
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, err := net.Listen("tcp4", spotifyCallbackAddr)
 	if err != nil {
-		return nil, errors.New("Could not start the Spotify loopback callback")
+		return nil, errors.New("Could not listen on " + spotifyCallbackAddr + " for the Spotify callback; free the port and retry")
 	}
 	host := listener.Addr().String()
 	redirect := "http://" + host + spotifyCallbackPath
@@ -226,4 +230,13 @@ func requestSpotifyToken(ctx context.Context, client *http.Client, form url.Valu
 func readSpotifyJSON(r io.Reader, limit int64, dst any) bool {
 	data, err := io.ReadAll(io.LimitReader(r, limit+1))
 	return err == nil && int64(len(data)) <= limit && json.Unmarshal(data, dst) == nil
+}
+
+// spotifyRedirectHint is the exact value users must register in the dashboard.
+func spotifyRedirectHint() string {
+	addr := spotifyCallbackAddr
+	if strings.HasSuffix(addr, ":0") {
+		addr = spotifyCallbackDefaultAddr
+	}
+	return "http://" + addr + spotifyCallbackPath
 }

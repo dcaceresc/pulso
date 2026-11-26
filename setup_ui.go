@@ -193,12 +193,11 @@ func (m *setupModel) afterSoloist() (tea.Model, tea.Cmd) {
 	if m.service.authorize == nil || m.spotifyDone {
 		return m.openPlayer()
 	}
+	// Always show the instructions first, even when a Client ID is already known.
 	m.phase = setupSpotify
-	if strings.TrimSpace(m.service.clientID) == "" {
-		m.spotify = setupSpotifyClientID
-		return m, nil
-	}
-	return m, m.startSpotify()
+	m.spotify = setupSpotifyClientID
+	m.clientID = []rune(strings.TrimSpace(m.service.clientID))
+	return m, nil
 }
 
 func (m *setupModel) startSpotify() tea.Cmd {
@@ -528,11 +527,11 @@ func (m *setupModel) screen() setupScreen {
 		case setupSpotifyClientID:
 			screen.action = m.text("Connect Spotify to search tracks and see your playlists:\n"+
 				"1. Create an app at https://developer.spotify.com/dashboard\n"+
-				"2. Add http://127.0.0.1/callback as a redirect URI.\n"+
+				"2. Add "+spotifyRedirectHint()+" as a redirect URI; the port must match exactly.\n"+
 				"3. Paste its Client ID below. Only the public Client ID is saved.",
 				"Conecta Spotify para buscar canciones y ver tus listas:\n"+
 					"1. Crea una app en https://developer.spotify.com/dashboard\n"+
-					"2. Añade http://127.0.0.1/callback como URI de redirección.\n"+
+					"2. Añade "+spotifyRedirectHint()+" como URI de redirección; el puerto debe coincidir.\n"+
 					"3. Pega abajo su Client ID. Solo se guarda el Client ID público.")
 			screen.status = m.text("Waiting for the Client ID", "Esperando el Client ID")
 			if m.clientIssue {

@@ -674,3 +674,30 @@ func TestSetupRejectsNonSpotifyClientID(t *testing.T) {
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 	expectSetupText(t, model.View(), "32 hex characters")
 }
+
+func TestSetupShowsInstructionsBeforeURL(t *testing.T) {
+	const stored = "0123456789abcdef0123456789abcdef"
+	var gotID string
+	model := newSetupModelWithPreferences(context.Background(), setupService{
+		inspect:  func(context.Context) (setupState, error) { return setupReady, nil },
+		clientID: stored,
+		authorize: func(_ context.Context, id string, showURL func(string)) (catalogAPI, error) {
+			gotID = id
+			showURL("http://127.0.0.1:8888/callback?state=x")
+			return catalogViewFake{}, nil
+		},
+		playerWithPreferences: func(int, int, preferences, catalogAPI) tea.Model { return setupTestPlayer{} },
+	}, preferences{}, nil)
+	model, _ = runSetupCmd(t, model, model.Init())
+	expectSetupText(t, model.View(), "Connect Spotify", "http://127.0.0.1:8888/callback", "Client ID: "+stored)
+	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("confirming the shown Client ID should start authorization")
+	}
+	model, cmd = runSetupCmd(t, model, cmd)
+	expectSetupText(t, model.View(), "Waiting for Spotify authorization")
+	model, cmd = runSetupCmd(t, model, cmd)
+	if gotID != stored || cmd == nil || cmd() != "player initialized" {
+		t.Fatalf("handoff failed: id=%q", gotID)
+	}
+}
