@@ -2,38 +2,30 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
-	"net"
-	"net/http"
-	"net/netip"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/coder/websocket"
+
+	"github.com/dcaceresc/pulso/internal/config"
+	"github.com/dcaceresc/pulso/internal/soloist"
+	"github.com/dcaceresc/pulso/internal/spotify"
+	"github.com/dcaceresc/pulso/internal/ui"
 )
 
 const (
-	soloistProbeTimeout   = time.Second
 	soloistStartupTimeout = 10 * time.Second
 	soloistStartupPoll    = 50 * time.Millisecond
-	soloistMarkerLimit    = 128
-	soloistEventLimit     = 4 << 10
 )
 
 var (
-	errSoloistRuntime        = errors.New("Soloist runtime is unreachable or invalid. Run pulso doctor.")
-	errSoloistNotListening   = errors.New(errSoloistRuntime.Error()) // Same diagnostic; pairing can distinguish a refused socket.
 	errSoloistDataDir        = errors.New("Could not locate Soloist's default data directory. Run pulso doctor.")
 	errSoloistDiscovery      = errors.New("Could not locate Soloist. Run pulso doctor.")
 	errSoloistStart          = errors.New("Could not start Soloist. Run pulso doctor.")
@@ -64,33 +56,51 @@ func runSetup(stdout io.Writer) error {
 		local.startMu.Lock()
 		local.startMu.Unlock()
 	}()
-	model := newSetupModelWithPreferences(ctx, setupService{
-		inspect: local.inspect,
-		watch:   local.watchPairing,
-		install: installManagedSoloist,
-		start:   local.start,
-		authorize: func(ctx context.Context, clientID string, showURL func(string)) (catalogAPI, error) {
-			return authorizeSpotify(ctx, clientID, openAndShow(showURL))
+	model := ui.NewSetupModelWithPreferences(ctx, ui.SetupService{
+		Inspect: local.inspect,
+		Watch:   local.watchPairing,
+		Install: installManagedSoloist,
+		Start:   local.start,
+		Authorize: func(ctx context.Context, clientID string, showURL func(string)) (ui.CatalogAPI, error) {
+			return authorizeSpotifyCatalog(ctx, clientID, openAndShow(showURL))
 		},
-		clientID: firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), loadClientID()),
+		ClientID: firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), spotify.LoadClientID()),
 		// A saved session means the Spotify step never appears; any failure
 		// falls through to the interactive flow.
-		restore: func(ctx context.Context) (catalogAPI, bool) {
-			return restoreSpotifyCatalogAPI(ctx, firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), loadClientID()))
+		Restore: restoreSpotifyCatalog,
+		PlayerWithPreferences: func(width, height int, p config.Preferences, api ui.CatalogAPI) tea.Model {
+			states, commands := soloist.NewStream(ctx, local.dataDir)
+			return ui.NewPlayerModelWithCatalog(ctx, states, commands, width, height, p, config.Save, api,
+				func(ctx context.Context, clientID string, showURL func(string)) (ui.CatalogAPI, error) {
+					return authorizeSpotifyCatalog(ctx, clientID, openAndShow(showURL))
+				}, firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), spotify.LoadClientID()))
 		},
-		playerWithPreferences: func(width, height int, p preferences, api catalogAPI) tea.Model {
-			states, commands := newPlayerStream(ctx, local.dataDir)
-			return newPlayerModelWithCatalog(ctx, states, commands, width, height, p, savePreferences, api,
-				func(ctx context.Context, clientID string, showURL func(string)) (catalogAPI, error) {
-					return authorizeSpotify(ctx, clientID, openAndShow(showURL))
-				}, firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), loadClientID()))
-		},
-	}, loadPreferences(), savePreferences)
+	}, config.Load(), config.Save)
 	_, err := tea.NewProgram(model, tea.WithOutput(stdout), tea.WithAltScreen()).Run()
 	if err == nil {
-		pauseSoloist(context.Background(), local.dataDir)
+		soloist.Pause(context.Background(), local.dataDir)
 	}
 	return err
+}
+
+// authorizeSpotifyCatalog adapta el flujo OAuth al punto de unión de la UI sin
+// entregar nunca al reproductor un catálogo nil con tipo.
+func authorizeSpotifyCatalog(ctx context.Context, clientID string, showURL func(string)) (ui.CatalogAPI, error) {
+	catalog, err := spotify.Authorize(ctx, clientID, showURL)
+	if catalog == nil {
+		return nil, err
+	}
+	return catalog, err
+}
+
+// restoreSpotifyCatalog adapta la sesión guardada al hook del asistente. La
+// variable de entorno tiene prioridad, igual que en el flujo interactivo.
+func restoreSpotifyCatalog(ctx context.Context) (ui.CatalogAPI, bool) {
+	catalog, ok := spotify.Restore(ctx, firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), spotify.LoadClientID()))
+	if !ok || catalog == nil {
+		return nil, false
+	}
+	return catalog, true
 }
 
 func installManagedSoloist(ctx context.Context) error {
@@ -98,7 +108,7 @@ func installManagedSoloist(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return installSoloist(ctx, path)
+	return soloist.Install(ctx, path)
 }
 
 func soloistDataDir(goos string, getenv func(string) string) (string, error) {
@@ -124,129 +134,49 @@ func soloistDataDir(goos string, getenv func(string) string) (string, error) {
 	return dir, nil
 }
 
-func (s *localSetup) inspect(ctx context.Context) (setupState, error) {
+func (s *localSetup) inspect(ctx context.Context) (ui.SetupState, error) {
 	dir, err := s.dataDir()
 	if err != nil {
-		return setupMissing, err
+		return ui.SetupMissing, err
 	}
-	state, err := soloistRuntimeState(ctx, dir)
-	if err != nil || state != setupNeedsKey {
+	status, err := soloist.Inspect(ctx, dir)
+	state := setupStateOf(status)
+	if err != nil || state != ui.SetupNeedsKey {
 		return state, err
 	}
 	path, err := s.find()
 	if err != nil {
-		return setupMissing, errSoloistDiscovery
+		return ui.SetupMissing, errSoloistDiscovery
 	}
 	if path == "" {
-		return setupMissing, nil
+		return ui.SetupMissing, nil
 	}
-	return setupNeedsKey, nil
+	return ui.SetupNeedsKey, nil
 }
 
-func soloistRuntimeState(ctx context.Context, dir string) (setupState, error) {
-	endpoint, err := soloistRuntimeEndpoint(dir)
-	if err != nil || endpoint == "" {
-		return setupNeedsKey, err
+// setupStateOf traduce el estado del runtime de Soloist al checklist del
+// asistente.
+func setupStateOf(status soloist.Status) ui.SetupState {
+	switch status {
+	case soloist.StatusReady:
+		return ui.SetupReady
+	case soloist.StatusAwaitPairing:
+		return ui.SetupAwaitPairing
+	case soloist.StatusNeedsKey:
+		return ui.SetupNeedsKey
+	default:
+		return ui.SetupMissing
 	}
-	return soloistAuthState(ctx, endpoint)
 }
 
-func soloistRuntimeEndpoint(dir string) (string, error) {
-	addr, hasAddr, addrErr := readSoloistMarker(filepath.Join(dir, "ws.addr"))
-	port, hasPort, portErr := readSoloistMarker(filepath.Join(dir, "ws.port"))
-	if addrErr != nil || portErr != nil || hasAddr != hasPort {
-		return "", errSoloistRuntime
-	}
-	if !hasAddr {
-		for _, name := range []string{"pid", "soloist.pid"} {
-			if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-				return "", errSoloistRuntime
-			}
-		}
-		return "", nil
-	}
-	ip, ipErr := netip.ParseAddr(addr)
-	number, portErr := strconv.ParseUint(port, 10, 16)
-	if ipErr != nil || !ip.IsLoopback() || ip.Zone() != "" || portErr != nil || number == 0 {
-		return "", errSoloistRuntime
-	}
-	endpoint := url.URL{Scheme: "ws", Host: net.JoinHostPort(ip.String(), strconv.FormatUint(number, 10)), Path: "/"}
-	return endpoint.String(), nil
-}
-
-func readSoloistMarker(path string) (string, bool, error) {
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		return "", false, nil
-	}
-	if err != nil || !info.Mode().IsRegular() || info.Size() > soloistMarkerLimit {
-		return "", true, errSoloistRuntime
-	}
-	file, err := os.Open(path)
+// watchPairing mantiene el socket de emparejamiento del asistente. El protocolo
+// vive con el daemon de Soloist; esto solo aporta su directorio de datos.
+func (s *localSetup) watchPairing(ctx context.Context, report func(string) bool) error {
+	dir, err := s.dataDir()
 	if err != nil {
-		return "", true, errSoloistRuntime
+		return err
 	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, soloistMarkerLimit+1))
-	if err != nil || len(data) > soloistMarkerLimit {
-		return "", true, errSoloistRuntime
-	}
-	return strings.TrimSpace(string(data)), true, nil
-}
-
-type soloistAuthEvent struct {
-	Type       string          `json:"type"`
-	LoggedIn   *bool           `json:"logged_in"`
-	DeviceName json.RawMessage `json:"device_name"`
-}
-
-func readSoloistAuthEvent(ctx context.Context, conn *websocket.Conn) (soloistAuthEvent, error) {
-	kind, data, err := conn.Read(ctx)
-	var message soloistAuthEvent
-	if err != nil || kind != websocket.MessageText || json.Unmarshal(data, &message) != nil {
-		return soloistAuthEvent{}, errSoloistRuntime
-	}
-	return message, nil
-}
-
-// openSoloistAuth bounds the handshake and first event together. On success the
-// caller owns a live socket whose subsequent reads use the caller's context.
-func openSoloistAuth(ctx context.Context, endpoint string) (*websocket.Conn, soloistAuthEvent, error) {
-	ctx, cancel := context.WithTimeout(ctx, soloistProbeTimeout)
-	defer cancel()
-	transport := &http.Transport{MaxResponseHeaderBytes: 8 << 10, DisableCompression: true}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{
-		Transport:     transport, // No proxy lookup, including from the environment.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	conn, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{HTTPClient: client})
-	if err != nil {
-		const wsaConnRefused = syscall.Errno(10061)
-		if errors.Is(err, syscall.ECONNREFUSED) || runtime.GOOS == "windows" && errors.Is(err, wsaConnRefused) {
-			return nil, soloistAuthEvent{}, errSoloistNotListening
-		}
-		return nil, soloistAuthEvent{}, errSoloistRuntime
-	}
-	conn.SetReadLimit(soloistEventLimit)
-	message, err := readSoloistAuthEvent(ctx, conn)
-	if err != nil || message.Type != "auth_state" || message.LoggedIn == nil {
-		_ = conn.CloseNow()
-		return nil, soloistAuthEvent{}, errSoloistRuntime
-	}
-	return conn, message, nil
-}
-
-func soloistAuthState(ctx context.Context, endpoint string) (setupState, error) {
-	conn, message, err := openSoloistAuth(ctx, endpoint)
-	if err != nil {
-		return setupNeedsKey, err
-	}
-	defer conn.CloseNow()
-	if *message.LoggedIn {
-		return setupReady, nil
-	}
-	return setupAwaitPairing, nil
+	return soloist.WatchPairing(ctx, dir, report)
 }
 
 func (s *localSetup) start(ctx context.Context, key string) error {
@@ -260,7 +190,7 @@ func (s *localSetup) start(ctx context.Context, key string) error {
 		return err
 	}
 	// Inspect again after key entry: Soloist might have started in the meantime.
-	if state, err := soloistRuntimeState(ctx, dir); err != nil || state != setupNeedsKey {
+	if status, err := soloist.Inspect(ctx, dir); err != nil || status != soloist.StatusNeedsKey {
 		return err
 	}
 	path, err := s.find()
@@ -297,7 +227,7 @@ func waitForSoloist(ctx context.Context, cmd *exec.Cmd, dir string, timeout time
 	ticker := time.NewTicker(soloistStartupPoll)
 	defer ticker.Stop()
 	for {
-		state, err := soloistRuntimeState(ctx, dir)
+		status, err := soloist.Inspect(ctx, dir)
 		select {
 		case <-done:
 			return errSoloistExited
@@ -306,7 +236,7 @@ func waitForSoloist(ctx context.Context, cmd *exec.Cmd, dir string, timeout time
 		if ctx.Err() != nil {
 			return errSoloistStartupTimeout
 		}
-		if err == nil && state != setupNeedsKey {
+		if err == nil && status != soloist.StatusNeedsKey {
 			ready = true
 			return nil
 		}
@@ -316,6 +246,7 @@ func waitForSoloist(ctx context.Context, cmd *exec.Cmd, dir string, timeout time
 		}
 	}
 }
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value = strings.TrimSpace(value); value != "" {
@@ -328,7 +259,7 @@ func firstNonEmpty(values ...string) string {
 // openAndShow opens the authorization page and still reports the URL in the UI.
 func openAndShow(showURL func(string)) func(string) {
 	return func(raw string) {
-		_ = openBrowser(raw)
+		_ = spotify.OpenBrowser(raw)
 		showURL(raw)
 	}
 }

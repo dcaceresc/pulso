@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/dcaceresc/pulso/internal/ui"
 )
 
 func TestLocalSetupDataDir(t *testing.T) {
@@ -88,12 +90,12 @@ func TestLocalSetupInspect(t *testing.T) {
 	for _, tc := range []struct {
 		name, binary, event, addr, port string
 		marker, server, broken          bool
-		want                            setupState
+		want                            ui.SetupState
 	}{
-		{name: "missing", want: setupMissing},
-		{name: "stopped", binary: "soloist", want: setupNeedsKey},
-		{name: "paired existing", server: true, marker: true, event: `{"type":"auth_state","logged_in":true}`, want: setupReady},
-		{name: "mobile pairing", server: true, binary: "soloist", event: `{"type":"auth_state","logged_in":false}`, want: setupAwaitPairing},
+		{name: "missing", want: ui.SetupMissing},
+		{name: "stopped", binary: "soloist", want: ui.SetupNeedsKey},
+		{name: "paired existing", server: true, marker: true, event: `{"type":"auth_state","logged_in":true}`, want: ui.SetupReady},
+		{name: "mobile pairing", server: true, binary: "soloist", event: `{"type":"auth_state","logged_in":false}`, want: ui.SetupAwaitPairing},
 		{name: "stale pid", marker: true, broken: true},
 		{name: "incomplete address", addr: "127.0.0.1", broken: true},
 		{name: "reject hostname", addr: "localhost", port: "1234", broken: true},
@@ -172,7 +174,7 @@ func TestLocalSetupStart(t *testing.T) {
 			if tc.mode == "wait" {
 				local.startupTimeout = 200 * time.Millisecond
 			}
-			if got, err := local.inspect(context.Background()); got != setupNeedsKey || err != nil {
+			if got, err := local.inspect(context.Background()); got != ui.SetupNeedsKey || err != nil {
 				t.Fatalf("initial inspection = %v, %v", got, err)
 			}
 			if tc.marker != "" {
@@ -219,7 +221,7 @@ func TestLocalSetupStart(t *testing.T) {
 				}
 			}
 			if tc.mode == "ready" || tc.mode == "reuse" {
-				if got, err := local.inspect(context.Background()); got != setupAwaitPairing || err != nil {
+				if got, err := local.inspect(context.Background()); got != ui.SetupAwaitPairing || err != nil {
 					t.Fatalf("after start: %v, %v", got, err)
 				}
 			}

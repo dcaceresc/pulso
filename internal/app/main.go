@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/dcaceresc/pulso/internal/soloist"
 )
 
 const usage = `Pulso — Spotify in the terminal
@@ -18,8 +20,6 @@ Usage:
   pulso doctor [--data-dir PATH]  Report local Soloist status
   pulso --help                   Show this help
 `
-
-const downloads = "https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates"
 
 type commandDeps struct {
 	setup func(io.Writer) error
@@ -63,7 +63,7 @@ func run(args []string, stdout, stderr io.Writer, deps commandDeps) int {
 		return 1
 	}
 	if path == "" {
-		fmt.Fprintf(stderr, "Soloist not found. Install it from %s\n", downloads)
+		fmt.Fprintf(stderr, "Soloist not found. Install it from %s\n", soloist.DownloadsURL)
 		return 1
 	}
 	fmt.Fprintf(stdout, "Soloist: %s\n", path)

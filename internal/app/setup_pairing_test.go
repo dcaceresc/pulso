@@ -12,11 +12,72 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/coder/websocket"
+
+	"github.com/dcaceresc/pulso/internal/ui"
 )
 
 const setupTestLoggedOut = `{"type":"auth_state","logged_in":false}`
 const setupTestLoggedIn = `{"type":"auth_state","logged_in":true}`
+
+func expectSetupView(t *testing.T, model tea.Model, body, hints string) {
+	t.Helper()
+	got := model.View()
+	expectSetupBounds(t, got, 80, 24)
+	expectSetupText(t, got, "Welcome to Pulso", hints)
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "Key: ") {
+			found := false
+			for _, rendered := range strings.Split(got, "\n") {
+				if strings.TrimSpace(rendered) == strings.TrimSpace(line) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("missing exact masked input %q in view:\n%s", line, got)
+			}
+		} else if line != "" {
+			expectSetupText(t, got, line)
+		}
+	}
+}
+
+func expectSetupBounds(t *testing.T, view string, width, height int) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		t.Fatalf("view has %d lines, want at most %d", len(lines), height)
+	}
+	for _, line := range lines {
+		if lipgloss.Width(line) > width {
+			t.Fatalf("line exceeds %d columns: %q", width, line)
+		}
+	}
+}
+
+func expectSetupText(t *testing.T, view string, parts ...string) {
+	t.Helper()
+	for _, part := range parts {
+		if !strings.Contains(view, part) {
+			t.Errorf("view missing %q:\n%s", part, view)
+		}
+	}
+}
+
+func runSetupCmd(t *testing.T, model tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected a command")
+	}
+	return model.Update(cmd())
+}
+
+type setupTestPlayer struct{}
+
+func (setupTestPlayer) Init() tea.Cmd                         { return func() tea.Msg { return "player initialized" } }
+func (p setupTestPlayer) Update(tea.Msg) (tea.Model, tea.Cmd) { return p, nil }
+func (setupTestPlayer) View() string                          { return "Now Playing" }
 
 func setupPairFixture(t *testing.T, ctx context.Context, handle func(context.Context, *websocket.Conn, int32)) (string, *atomic.Int32) {
 	t.Helper()
@@ -39,11 +100,11 @@ func setupPairWrite(ctx context.Context, conn *websocket.Conn, event string) {
 func setupPairModel(t *testing.T, ctx context.Context, local *localSetup) (tea.Model, *int) {
 	t.Helper()
 	var players int
-	return newSetupModel(ctx, setupService{
-		inspect: local.inspect,
-		watch:   local.watchPairing,
-		start:   func(context.Context, string) error { t.Error("pairing must not start Soloist"); return nil },
-		player:  func(int, int) tea.Model { players++; return setupTestPlayer{} },
+	return ui.NewSetupModel(ctx, ui.SetupService{
+		Inspect: local.inspect,
+		Watch:   local.watchPairing,
+		Start:   func(context.Context, string) error { t.Error("pairing must not start Soloist"); return nil },
+		Player:  func(int, int) tea.Model { players++; return setupTestPlayer{} },
 	}), &players
 }
 
@@ -236,12 +297,12 @@ func TestSetupManualPairingCheckCancelsBeforeReplacingWatcher(t *testing.T) {
 	releaseFirst, secondStarted := make(chan struct{}), make(chan struct{})
 	var watches atomic.Int32
 	checks := 0
-	model := newSetupModel(ctx, setupService{
-		inspect: func(context.Context) (setupState, error) {
+	model := ui.NewSetupModel(ctx, ui.SetupService{
+		Inspect: func(context.Context) (ui.SetupState, error) {
 			checks++
-			return setupAwaitPairing, nil
+			return ui.SetupAwaitPairing, nil
 		},
-		watch: func(watchCtx context.Context, _ func(string) bool) error {
+		Watch: func(watchCtx context.Context, _ func(string) bool) error {
 			if watches.Add(1) == 1 {
 				defer close(firstFinished)
 				close(firstStarted)
@@ -290,16 +351,16 @@ func TestSetupManualPairingCheckFencesOldWatcher(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	inspections, players := 0, 0
-	model := newSetupModel(ctx, setupService{
-		inspect: func(context.Context) (setupState, error) {
+	model := ui.NewSetupModel(ctx, ui.SetupService{
+		Inspect: func(context.Context) (ui.SetupState, error) {
 			inspections++
 			if inspections < 3 {
-				return setupAwaitPairing, nil
+				return ui.SetupAwaitPairing, nil
 			}
-			return setupReady, nil
+			return ui.SetupReady, nil
 		},
-		watch: func(context.Context, func(string) bool) error { return nil },
-		player: func(int, int) tea.Model {
+		Watch: func(context.Context, func(string) bool) error { return nil },
+		Player: func(int, int) tea.Model {
 			players++
 			return setupTestPlayer{}
 		},
