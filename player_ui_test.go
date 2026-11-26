@@ -634,3 +634,381 @@ func TestPlayerViewPlayingBarKeepsAlbum(t *testing.T) {
 	m, _ = m.Update(playerViewRun(t, cmd))
 	playerViewText(t, m, "Record")
 }
+
+// playerViewPrefsModel applies one snapshot to a 120x40 workspace.
+func playerViewPrefsModel(t *testing.T, p preferences, state playerState) tea.Model {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	states := make(chan playerState, 1)
+	states <- state
+	m := newPlayerModelWithPreferences(ctx, states, nil, 120, 40, p, nil, "", nil)
+	m, _ = m.Update(playerViewRun(t, m.Init()))
+	return m
+}
+
+// playerViewPlayingFocus is the same workspace with the playing bar focused.
+func playerViewPlayingFocus(t *testing.T, p preferences, state playerState) (tea.Model, chan playerCommand) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	states, out := make(chan playerState, 1), make(chan playerCommand, 4)
+	states <- state
+	m := newPlayerModelWithPreferences(ctx, states, out, 120, 40, p, nil, "", nil)
+	m, _ = m.Update(playerViewRun(t, m.Init()))
+	for range 2 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	}
+	return m, out
+}
+
+// playerViewClockModel applies one snapshot with an injected clock.
+func playerViewClockModel(t *testing.T, clock func() time.Time, state playerState) *playerModel {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	states := make(chan playerState, 1)
+	states <- state
+	model := newPlayerModel(ctx, states, nil, 100, 30)
+	model.(*playerModel).clock = clock
+	model, _ = model.Update(playerViewRun(t, model.Init()))
+	return model.(*playerModel)
+}
+
+func TestPlayerViewPlayingBarSeekKeys(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		key      tea.KeyMsg
+		position int64
+		duration int64
+		want     int64
+	}{
+		{"forward", tea.KeyMsg{Type: tea.KeyRight}, 60000, 200000, 70000},
+		{"back", tea.KeyMsg{Type: tea.KeyLeft}, 60000, 200000, 50000},
+		{"forward stops at the duration", tea.KeyMsg{Type: tea.KeyRight}, 195000, 200000, 200000},
+		{"back stops at the start", tea.KeyMsg{Type: tea.KeyLeft}, 3000, 200000, 0},
+		{"unknown duration keeps only the floor", tea.KeyMsg{Type: tea.KeyLeft}, 3000, 0, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, out := playerViewPlayingFocus(t, preferences{}, playerState{
+				Connected: true, SessionID: 4, Status: "paused", PositionMS: tt.position,
+				Track: playerTrack{Title: "Song", DurationMS: tt.duration},
+			})
+			if _, cmd := m.Update(tt.key); cmd != nil {
+				t.Fatal("seeking scheduled work")
+			}
+			select {
+			case got := <-out:
+				want := playerCommand{Name: "seek", PositionMS: tt.want, SessionID: 4}
+				if got != want {
+					t.Fatalf("got %+v, want %+v", got, want)
+				}
+				if len(out) != 0 {
+					t.Fatal("one keypress sent more than one command")
+				}
+			default:
+				t.Fatal("the playing bar did not seek")
+			}
+			// The bar moves at once and Soloist confirms with position_sync.
+			playerViewText(t, m, playerElapsed(tt.want))
+		})
+	}
+	t.Run("disconnected", func(t *testing.T) {
+		m, out := playerViewPlayingFocus(t, preferences{}, playerState{PositionMS: 60000, Track: playerTrack{DurationMS: 200000}})
+		for _, key := range []tea.KeyMsg{{Type: tea.KeyLeft}, {Type: tea.KeyRight}} {
+			if _, cmd := m.Update(key); cmd != nil {
+				t.Fatal("a disconnected session scheduled work")
+			}
+		}
+		if len(out) != 0 {
+			t.Fatal("a disconnected session accepted a seek")
+		}
+		playerViewText(t, m, "1:00")
+	})
+	t.Run("seeks from the interpolated playhead", func(t *testing.T) {
+		anchor := time.Unix(1700000000, 0)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		states, out := make(chan playerState, 1), make(chan playerCommand, 1)
+		states <- playerState{
+			Connected: true, SessionID: 7, Status: "playing", PositionMS: 60000, Speed: 1, AnchorAt: anchor,
+			Track: playerTrack{Title: "Song", DurationMS: 200000},
+		}
+		m := newPlayerModelWithPreferences(ctx, states, out, 120, 40, preferences{}, nil, "", nil)
+		m.(*playerModel).clock = func() time.Time { return anchor.Add(5 * time.Second) }
+		m, _ = m.Update(playerViewRun(t, m.Init()))
+		for range 2 {
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		}
+		if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRight}); cmd != nil {
+			t.Fatal("seeking scheduled work")
+		}
+		select {
+		case got := <-out:
+			if got != (playerCommand{Name: "seek", PositionMS: 75000, SessionID: 7}) {
+				t.Fatalf("the seek ignored the five elapsed seconds: %+v", got)
+			}
+		default:
+			t.Fatal("the playing bar did not seek")
+		}
+		playerViewText(t, m, "1:15")
+	})
+}
+
+func TestPlayerViewPlayingBarCyclesModes(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		key     string
+		shuffle bool
+		repeat  string
+		want    playerCommand
+	}{
+		{"shuffle on", "s", false, "", playerCommand{Name: "set_shuffle", Shuffle: true}},
+		{"shuffle off", "s", true, "", playerCommand{Name: "set_shuffle", Shuffle: false}},
+		{"repeat off to context", "r", false, "", playerCommand{Name: "set_repeat", Repeat: "context"}},
+		{"repeat context to track", "r", false, "context", playerCommand{Name: "set_repeat", Repeat: "track"}},
+		{"repeat track to off", "r", false, "track", playerCommand{Name: "set_repeat", Repeat: "off"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, out := playerViewPlayingFocus(t, preferences{}, playerState{
+				Connected: true, SessionID: 9, Shuffle: tt.shuffle, Repeat: tt.repeat,
+			})
+			before := ansi.Strip(m.View())
+			if _, cmd := m.Update(playerViewKey(tt.key)); cmd != nil {
+				t.Fatal("a mode key scheduled work")
+			}
+			want := tt.want
+			want.SessionID = 9
+			select {
+			case got := <-out:
+				if got != want {
+					t.Fatalf("got %+v, want %+v", got, want)
+				}
+				if len(out) != 0 {
+					t.Fatal("one keypress sent more than one command")
+				}
+			default:
+				t.Fatalf("%q sent no command", tt.key)
+			}
+			// The bar waits for Soloist's event instead of guessing.
+			if after := ansi.Strip(m.View()); after != before {
+				t.Fatalf("the mode changed before the event:\n%s", after)
+			}
+		})
+	}
+}
+
+func TestPlayerViewPlayingBarOwnsItsKeys(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		tabs int
+	}{
+		{"table", 0},
+		{"search", 1},
+		{"sidebar", 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, out := playerViewModel(t, 120, 40, playerState{
+				Connected: true, SessionID: 3, Status: "playing", PositionMS: 60000,
+				Track: playerTrack{Title: "Song", DurationMS: 200000},
+			})
+			for range tt.tabs {
+				m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+			}
+			for _, key := range []tea.KeyMsg{{Type: tea.KeyLeft}, {Type: tea.KeyRight}, playerViewKey("s"), playerViewKey("r")} {
+				if _, cmd := m.Update(key); cmd != nil {
+					t.Fatalf("%q scheduled work in the %s panel", key.String(), tt.name)
+				}
+			}
+			if len(out) != 0 {
+				t.Fatalf("the %s panel sent a playing-bar command", tt.name)
+			}
+		})
+	}
+}
+
+func TestPlayerViewPlayingBarKeepsTheCatalog(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	states, out := make(chan playerState, 1), make(chan playerCommand, 1)
+	api := catalogViewFake{search: func(context.Context, string, int) ([]catalogItem, bool, error) {
+		return []catalogItem{{Name: "Fixture result", URI: "spotify:track:AbC123"}}, false, nil
+	}}
+	m := newPlayerModelWithPreferences(ctx, states, out, 120, 40, preferences{}, nil, "fixture-id", catalogViewReply(api))
+	states <- playerState{Connected: true, SessionID: 5}
+	m, _ = m.Update(playerViewRun(t, m.Init()))
+	// Outside the playing bar s still opens the catalog overlay.
+	m, cmd := m.Update(playerViewKey("s"))
+	playerViewCatalogDrain(t, m, cmd)
+	m, _ = m.Update(playerViewKey("song"))
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	playerViewCatalogDrain(t, m, cmd)
+	playerViewText(t, m, "Search tracks", "Fixture result")
+	// Inside the playing bar s is shuffle, so the overlay stays closed.
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil {
+		t.Fatal("Esc in the catalog should not quit")
+	}
+	for range 2 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	}
+	m, _ = m.Update(playerViewKey("s"))
+	select {
+	case got := <-out:
+		if got != (playerCommand{Name: "set_shuffle", Shuffle: true, SessionID: 5}) {
+			t.Fatalf("the playing bar sent %+v, want set_shuffle", got)
+		}
+	default:
+		t.Fatal("the playing bar did not shuffle")
+	}
+	if view := ansi.Strip(m.View()); strings.Contains(view, "Search tracks") {
+		t.Fatalf("s in the playing bar reopened the catalog:\n%s", view)
+	}
+	playerViewText(t, m, "Pulso")
+}
+
+func TestPlayerViewPlayingBarModes(t *testing.T) {
+	for _, tt := range []struct {
+		language string
+		shuffle  bool
+		repeat   string
+		want     []string
+	}{
+		{"en", false, "off", []string{"⇄ off", "↻ off"}},
+		{"en", true, "context", []string{"⇄ on", "↻ all"}},
+		{"en", false, "track", []string{"⇄ off", "↻ one"}},
+		{"es", false, "off", []string{"⇄ apagado", "↻ apagado"}},
+		{"es", true, "context", []string{"⇄ activado", "↻ todo"}},
+		{"es", false, "track", []string{"⇄ apagado", "↻ una"}},
+	} {
+		t.Run(tt.language+"-"+tt.repeat, func(t *testing.T) {
+			m := playerViewPrefsModel(t, preferences{Language: tt.language}, playerState{
+				Connected: true, Shuffle: tt.shuffle, Repeat: tt.repeat, Volume: 40,
+				Track: playerTrack{Title: "Song", DurationMS: 200000},
+			})
+			playerViewText(t, m, append(tt.want, "Song")...)
+		})
+	}
+}
+
+func TestPlayerViewPlayingBarHints(t *testing.T) {
+	m, _ := playerViewPlayingFocus(t, preferences{}, playerState{Connected: true})
+	playerViewText(t, m, "Space: pause", "←→: seek", "s: shuffle", "r: repeat")
+	// Other panels keep their own hints.
+	table, _ := playerViewModel(t, 120, 40, playerState{Connected: true})
+	view := playerViewText(t, table, "s: search", "l: playlists")
+	if strings.Contains(view, "s: shuffle") {
+		t.Fatalf("the table advertised the playing-bar hints:\n%s", view)
+	}
+}
+
+func TestPlayerViewPlayingBarInterpolation(t *testing.T) {
+	anchor := time.Unix(1700000000, 0)
+	now := anchor
+	clock := func() time.Time { return now }
+	state := playerState{
+		Connected: true, Status: "playing", PositionMS: 30000, Speed: 1, AnchorAt: anchor,
+		Track: playerTrack{Title: "Song", DurationMS: 200000},
+	}
+	m := playerViewClockModel(t, clock, state)
+	if got := m.playhead(); got != 30000 {
+		t.Fatalf("playhead %d, want the reported 30000", got)
+	}
+	playerViewText(t, m, "0:30")
+	now = anchor.Add(5 * time.Second)
+	if got := m.playhead(); got != 35000 {
+		t.Fatalf("playhead %d, want 35000 after five seconds", got)
+	}
+	playerViewText(t, m, "0:35")
+	// The playhead never passes the duration.
+	now = anchor.Add(time.Hour)
+	if got := m.playhead(); got != 200000 {
+		t.Fatalf("playhead %d, want the 200000 duration", got)
+	}
+	playerViewText(t, m, "3:20")
+	// Speed scales the elapsed time.
+	now = anchor.Add(5 * time.Second)
+	fast := state
+	fast.Speed = 2
+	if got := playerViewClockModel(t, clock, fast).playhead(); got != 40000 {
+		t.Fatalf("playhead %d at double speed, want 40000", got)
+	}
+	// A paused session reports speed 0 and holds still.
+	paused := state
+	paused.Status, paused.Speed = "paused", 0
+	if got := playerViewClockModel(t, clock, paused).playhead(); got != 30000 {
+		t.Fatalf("playhead %d while paused, want 30000", got)
+	}
+	// Without an anchor the reported position is final.
+	unanchored := state
+	unanchored.AnchorAt = time.Time{}
+	if got := playerViewClockModel(t, clock, unanchored).playhead(); got != 30000 {
+		t.Fatalf("playhead %d without an anchor, want 30000", got)
+	}
+}
+
+func TestPlayerViewPlayingBarTicks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	states := make(chan playerState, 1)
+	states <- playerState{Connected: true, Status: "playing", PositionMS: 1000, Speed: 1, AnchorAt: time.Now(), Track: playerTrack{Title: "Song", DurationMS: 200000}}
+	m := newPlayerModel(ctx, states, nil, 100, 30)
+	m, cmd := m.Update(playerViewRun(t, m.Init()))
+	msg := playerViewRun(t, cmd)
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("a playing state scheduled %T with %d commands, want the state read and one tick", msg, len(batch))
+	}
+	// The playhead tick is the second command of the pair.
+	if _, ok := playerViewRun(t, batch[1]).(playerTickMsg); !ok {
+		t.Fatal("the scheduled command was not a playhead tick")
+	}
+	m, again := m.Update(playerTickMsg{})
+	if again == nil {
+		t.Fatal("the playhead tick did not re-arm while playing")
+	}
+	// Paused and disconnected sessions stop scheduling it.
+	for _, tt := range []struct {
+		name      string
+		status    string
+		connected bool
+	}{
+		{"paused", "paused", true},
+		{"disconnected", "playing", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			inner, innerCancel := context.WithCancel(context.Background())
+			defer innerCancel()
+			innerStates := make(chan playerState, 1)
+			innerStates <- playerState{Connected: tt.connected, Status: tt.status, AnchorAt: time.Now()}
+			model := newPlayerModel(inner, innerStates, nil, 100, 30)
+			model, _ = model.Update(playerViewRun(t, model.Init()))
+			if _, next := model.Update(playerTickMsg{}); next != nil {
+				t.Fatal("the playhead tick kept scheduling")
+			}
+		})
+	}
+	// Quitting and a closed stream stop it too.
+	m, quit := m.Update(playerViewKey("q"))
+	if _, ok := playerViewRun(t, quit).(tea.QuitMsg); !ok {
+		t.Fatal("q did not quit")
+	}
+	if _, next := m.Update(playerTickMsg{}); next != nil {
+		t.Fatal("the playhead tick survived the quit")
+	}
+	closedCtx, closedCancel := context.WithCancel(context.Background())
+	defer closedCancel()
+	closed := make(chan playerState, 1)
+	closed <- playerState{Connected: true, Status: "playing", AnchorAt: time.Now()}
+	closedModel := newPlayerModel(closedCtx, closed, nil, 100, 30)
+	closedModel, closedCmd := closedModel.Update(playerViewRun(t, closedModel.Init()))
+	closedBatch, ok := playerViewRun(t, closedCmd).(tea.BatchMsg)
+	if !ok || len(closedBatch) != 2 {
+		t.Fatalf("a playing state scheduled %d commands", len(closedBatch))
+	}
+	close(closed)
+	closedModel, _ = closedModel.Update(playerViewRun(t, closedBatch[0]))
+	if _, next := closedModel.Update(playerTickMsg{}); next != nil {
+		t.Fatal("the playhead tick survived a closed stream")
+	}
+}

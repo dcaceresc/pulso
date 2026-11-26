@@ -352,3 +352,148 @@ func TestPauseSoloistOnExit(t *testing.T) {
 		t.Fatal("pauseSoloist did not send a command")
 	}
 }
+
+// TestPlayerTransportOptionsSeekAndModes drives Soloist's transport options,
+// anchored positions and the seek/shuffle/repeat command frames.
+func TestPlayerTransportOptionsSeekAndModes(t *testing.T) {
+	dir := t.TempDir()
+	next, complete := make(chan struct{}), make(chan struct{})
+	var anchored time.Time
+	steps := []struct {
+		event string
+		match func(playerState) bool
+		send  []playerCommand
+		want  []string
+		// delay keeps consecutive anchors distinguishable on coarse clocks.
+		delay time.Duration
+	}{
+		{
+			// A full snapshot carries the position, its speed and the modes.
+			event: `{"type":"playback_state","item":` + playerTestItem + `,"status":"playing","position":{"position_ms":1000,"speed":1.5},"options":{"shuffle":true,"repeat":"context"},"volume":40}`,
+			match: func(s playerState) bool {
+				ok := s.Connected && s.Shuffle && s.Repeat == "context" && s.Speed == 1.5 && s.PositionMS == 1000 && !s.AnchorAt.IsZero() && s.Volume == 40
+				anchored = s.AnchorAt
+				return ok
+			},
+			send: []playerCommand{
+				{Name: "seek", PositionMS: 12345},
+				{Name: "seek", PositionMS: -5000},
+				{Name: "set_shuffle", Shuffle: true},
+				{Name: "set_shuffle", Shuffle: false},
+			},
+			want: []string{
+				`{"type":"command","command":"seek","position_ms":12345}`,
+				`{"type":"command","command":"seek","position_ms":0}`,
+				`{"type":"command","command":"set_shuffle","enabled":true}`,
+				`{"type":"command","command":"set_shuffle","enabled":false}`,
+			},
+		},
+		{
+			// Options travel on their own event; each repeat mode is two frames.
+			event: `{"type":"options_changed","options":{"shuffle":false,"repeat":"track"}}`,
+			match: func(s playerState) bool { return !s.Shuffle && s.Repeat == "track" },
+			send: []playerCommand{
+				{Name: "set_repeat", Repeat: "off"},
+				{Name: "set_repeat", Repeat: "context"},
+				{Name: "set_repeat", Repeat: "track"},
+				{Name: "set_repeat", Repeat: "bogus"},
+				{Name: "set_repeat", Repeat: ""},
+				{Name: "set_shuffle", Shuffle: true},
+			},
+			want: []string{
+				`{"type":"command","command":"set_repeat_track","enabled":false}`,
+				`{"type":"command","command":"set_repeat_context","enabled":false}`,
+				`{"type":"command","command":"set_repeat_track","enabled":false}`,
+				`{"type":"command","command":"set_repeat_context","enabled":true}`,
+				`{"type":"command","command":"set_repeat_context","enabled":false}`,
+				`{"type":"command","command":"set_repeat_track","enabled":true}`,
+				`{"type":"command","command":"set_shuffle","enabled":true}`,
+			},
+		},
+		{
+			// position_sync is the periodic correction; it reports 0 while paused.
+			event: `{"type":"position_sync","position":{"position_ms":5000,"speed":0}}`,
+			match: func(s playerState) bool {
+				if s.PositionMS != 5000 || s.Speed != 0 {
+					return false
+				}
+				ok := s.AnchorAt.After(anchored)
+				anchored = s.AnchorAt
+				return ok
+			},
+			send:  []playerCommand{{Name: "seek", PositionMS: 5000}},
+			want:  []string{`{"type":"command","command":"seek","position_ms":5000}`},
+			delay: 5 * time.Millisecond,
+		},
+		{
+			// A new track resets the position and the anchor, and a mode value
+			// outside the three is ignored instead of guessed.
+			event: `{"type":"track_changed","item":{"decorations":{"identity":{"name":"Next"}}},"options":{"repeat":"bogus"}}`,
+			match: func(s playerState) bool {
+				if s.Track.Title != "Next" || s.PositionMS != 0 || s.Repeat != "track" {
+					return false
+				}
+				ok := s.AnchorAt.After(anchored)
+				anchored = s.AnchorAt
+				return ok
+			},
+			// A keypress bound to an older session must not reach this socket.
+			send: []playerCommand{
+				{Name: "seek", PositionMS: 9999, SessionID: 1 << 40},
+				{Name: "set_shuffle", Shuffle: true},
+			},
+			want:  []string{`{"type":"command","command":"set_shuffle","enabled":true}`},
+			delay: 5 * time.Millisecond,
+		},
+	}
+	server := playerTestServer(t, func(ctx context.Context, conn *websocket.Conn) {
+		if !playerTestSend(t, ctx, conn, `{"type":"auth_state","logged_in":true,"device_name":"Desk"}`) ||
+			!playerTestRead(t, ctx, conn, `{"type":"command","command":"get_state"}`) ||
+			!playerTestRead(t, ctx, conn, `{"type":"command","command":"get_queue","limit":10}`) {
+			return
+		}
+		for _, step := range steps {
+			if step.delay > 0 {
+				time.Sleep(step.delay)
+			}
+			if !playerTestSend(t, ctx, conn, step.event) {
+				return
+			}
+			select {
+			case <-next:
+			case <-ctx.Done():
+				return
+			}
+			for _, want := range step.want {
+				if !playerTestRead(t, ctx, conn, want) {
+					return
+				}
+			}
+		}
+		close(complete)
+		_, _, _ = conn.Read(ctx)
+	})
+	playerTestMarkers(t, dir, server.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	states, commands := newPlayerStream(ctx, func() (string, error) { return dir, nil })
+	for _, step := range steps {
+		state := playerTestState(t, states, step.match)
+		for _, command := range step.send {
+			if command.SessionID == 0 {
+				command.SessionID = state.SessionID
+			}
+			playerTestCommand(t, commands, command)
+		}
+		select {
+		case next <- struct{}{}:
+		case <-time.After(5 * time.Second):
+			t.Fatal("fixture did not advance")
+		}
+	}
+	select {
+	case <-complete:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fixture not complete")
+	}
+}

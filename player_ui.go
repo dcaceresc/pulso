@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -30,6 +31,8 @@ const (
 	playerHintsWidth  = 80 // Two hint rows start here.
 	playerHintsHeight = 14
 	playerMinBodyRoom = 4 // Content wins over separator rules in short windows.
+	playerSeekStepMS  = 10_000
+	playerTickEvery   = time.Second
 )
 
 type playerViewState struct {
@@ -58,6 +61,8 @@ type playerModel struct {
 	tableSelected int
 	query         string
 	library       *libraryState
+	// clock is the source of the interpolated playhead; tests replace it.
+	clock func() time.Time
 }
 
 func newPlayerModel(ctx context.Context, states <-chan playerState, commands chan<- playerCommand, width, height int) tea.Model {
@@ -75,7 +80,7 @@ func newPlayerModelWithCatalog(ctx context.Context, states <-chan playerState, c
 	m := &playerModel{
 		ctx: ctx, cancel: cancel, states: states, commands: commands,
 		width: width, height: height, preferences: p.normalized(), save: save,
-		focus: playerFocusTable,
+		focus: playerFocusTable, clock: time.Now,
 	}
 	clientID := ""
 	if authorize != nil {
@@ -172,7 +177,10 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.state = msg.state
 		m.clampSelections()
-		return m, m.awaitState()
+		// A playing session needs a second of wall time to advance its playhead.
+		return m, tea.Batch(m.awaitState(), m.tick())
+	case playerTickMsg:
+		return m, m.tick()
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyF2 {
 			m.changePreferences(true)
@@ -232,6 +240,11 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 		m.focus = playerFocusSearch
 		return nil
 	}
+	// The playing bar owns seek, shuffle and repeat; everywhere else they keep
+	// their own meaning, including the catalog overlay on `s` and `l`.
+	if m.handlePlayingKey(key) {
+		return nil
+	}
 	if m.catalog != nil {
 		switch key.String() {
 		case "s", "l":
@@ -253,7 +266,7 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	switch key.String() {
 	case " ":
 		command.Name = "play"
-		if strings.EqualFold(strings.TrimSpace(m.state.Status), "playing") {
+		if playerPlaying(m.state.Status) {
 			command.Name = "pause"
 		}
 	case "n":
@@ -269,21 +282,56 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	default:
 		return nil
 	}
+	if m.send(command) && command.Name == "set_volume" {
+		m.state.Volume = command.Volume
+	}
+	return nil
+}
 
-	// Bind the keypress to the session visible when it was made.
+// handlePlayingKey owns the keys of the playing bar: seek, shuffle and repeat.
+// It reports whether the key belonged to that panel.
+func (m *playerModel) handlePlayingKey(key tea.KeyMsg) bool {
+	if m.focus != playerFocusPlaying {
+		return false
+	}
+	var command playerCommand
+	switch {
+	case key.Type == tea.KeyLeft, key.Type == tea.KeyRight:
+		delta := int64(playerSeekStepMS)
+		if key.Type == tea.KeyLeft {
+			delta = -delta
+		}
+		command = playerCommand{Name: "seek", PositionMS: playerSeekTarget(m.playhead(), delta, m.state.Track.DurationMS)}
+	case key.String() == "s":
+		command = playerCommand{Name: "set_shuffle", Shuffle: !m.state.Shuffle}
+	case key.String() == "r":
+		command = playerCommand{Name: "set_repeat", Repeat: playerNextRepeat(m.state.Repeat)}
+	default:
+		return false
+	}
+	if m.commands == nil || !m.state.Connected {
+		return true
+	}
+	if m.send(command) && command.Name == "seek" {
+		// Move the bar at once; Soloist confirms with position_sync.
+		m.state.PositionMS, m.state.AnchorAt = command.PositionMS, m.now()
+	}
+	return true
+}
+
+// send binds a command to the session on screen and reports whether it fit
+// through the bounded command channel. There is no retry: the bar shows busy.
+func (m *playerModel) send(command playerCommand) bool {
 	command.SessionID = m.state.SessionID
-	// A bounded try-send preserves key order without queuing goroutines.
 	select {
 	case <-m.ctx.Done():
 	case m.commands <- command:
 		m.busy = false
-		if command.Name == "set_volume" {
-			m.state.Volume = command.Volume
-		}
+		return true
 	default:
 		m.busy = true
 	}
-	return nil
+	return false
 }
 
 // handleSearchKey edits the query buffer. Esc and Enter leave the field
@@ -448,6 +496,72 @@ func playerFit(text string, width int) string {
 }
 
 func playerVolume(value int) int { return min(100, max(0, value)) }
+
+// playerPlaying reports whether Soloist is advancing the playhead.
+func playerPlaying(status string) bool {
+	return strings.EqualFold(strings.TrimSpace(status), "playing")
+}
+
+// playerTickMsg re-renders the interpolated playhead.
+type playerTickMsg struct{}
+
+// tick keeps one second of wall time flowing into the bar while a session plays.
+func (m *playerModel) tick() tea.Cmd {
+	if m.quit || m.ended || m.ctx.Err() != nil || !m.state.Connected || !playerPlaying(m.state.Status) {
+		return nil
+	}
+	ctx := m.ctx
+	return tea.Tick(playerTickEvery, func(time.Time) tea.Msg {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return playerTickMsg{}
+	})
+}
+
+func (m *playerModel) now() time.Time {
+	if m.clock == nil {
+		return time.Now()
+	}
+	return m.clock()
+}
+
+// playhead interpolates from the reported position: the wall time since the
+// anchor at Soloist's speed, capped at the track duration.
+func (m *playerModel) playhead() int64 {
+	position := m.state.PositionMS
+	if anchor, speed := m.state.AnchorAt, m.state.Speed; !anchor.IsZero() && speed > 0 {
+		if elapsed := m.now().Sub(anchor); elapsed > 0 {
+			position += int64(float64(elapsed) / float64(time.Millisecond) * speed)
+		}
+	}
+	if duration := m.state.Track.DurationMS; duration > 0 {
+		position = min(duration, position)
+	}
+	return max(0, position)
+}
+
+// playerSeekTarget moves the playhead inside [0, duration]. A track without a
+// known duration keeps only the lower bound.
+func playerSeekTarget(position, delta, duration int64) int64 {
+	target := max(0, position+delta)
+	if duration > 0 {
+		target = min(duration, target)
+	}
+	return target
+}
+
+// playerNextRepeat cycles repeat off → context → track. An unreported mode
+// counts as off, which is what the bar shows.
+func playerNextRepeat(mode string) string {
+	switch mode {
+	case "context":
+		return "track"
+	case "track":
+		return "off"
+	}
+	return "context"
+}
 
 func playerElapsed(ms int64) string {
 	seconds := max(0, ms) / 1000
@@ -665,9 +779,9 @@ func (m *playerModel) playingRows(width int, styles playerStyles) []playerRow {
 	if width < playerNarrowWidth {
 		return []playerRow{{text: playerSpread(line, volume, width), style: playerLabel}}
 	}
-	modes := "⇄ " + m.text("off", "apagado") + "  ↻ " + m.text("off", "apagado")
+	modes := "⇄ " + m.shuffleMode() + "  ↻ " + m.repeatMode()
 	rows := []playerRow{{text: playerSpread(line, modes, width), style: playerLabel}}
-	progress := playerProgress(m.state.PositionMS, m.state.Track.DurationMS, width)
+	progress := playerProgress(m.playhead(), m.state.Track.DurationMS, width)
 	if album := playerText(m.state.Track.Album); album != "" && width >= 90 {
 		progress = album + "  " + progress
 	}
@@ -676,6 +790,26 @@ func (m *playerModel) playingRows(width int, styles playerStyles) []playerRow {
 	}
 	rows = append(rows, playerRow{text: playerSpread(progress, volume, width), style: styles.muted})
 	return rows
+}
+
+// shuffleMode renders the shuffle state Soloist last reported.
+func (m *playerModel) shuffleMode() string {
+	if m.state.Shuffle {
+		return m.text("on", "activado")
+	}
+	return m.text("off", "apagado")
+}
+
+// repeatMode renders off, all (context) or one (track).
+func (m *playerModel) repeatMode() string {
+	switch m.state.Repeat {
+	case "context":
+		return m.text("all", "todo")
+	case "track":
+		return m.text("one", "una")
+	default:
+		return m.text("off", "apagado")
+	}
 }
 
 func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
@@ -715,13 +849,18 @@ func (m *playerModel) hintRows(width int) []string {
 		primary = m.text("Tab: panel | ↑↓/jk: library | /: search | Esc/q: quit",
 			"Tab: panel | ↑↓/jk: biblioteca | /: buscar | Esc/q: salir")
 	case playerFocusPlaying:
-		primary = m.text("Tab: panel | Space: pause | n/p: track | +/-: volume | Esc/q: quit",
-			"Tab: panel | Espacio: pausa | n/p: pista | +/-: volumen | Esc/q: salir")
+		primary = m.text("Tab: panel | Space: pause | ←→: seek | n/p: track | s: shuffle | r: repeat | +/-: volume | Esc/q: quit",
+			"Tab: panel | Espacio: pausa | ←→: salto | n/p: pista | s: aleatorio | r: repetir | +/-: volumen | Esc/q: salir")
 	}
 	rows := []string{primary}
 	if m.height >= playerHintsHeight {
-		rows = append(rows, m.text("s: search | l: playlists | +/-: volume | F2: language | F3: theme",
-			"s: buscar | l: listas | +/-: volumen | F2: idioma | F3: tema"))
+		secondary := m.text("s: search | l: playlists | +/-: volume | F2: language | F3: theme",
+			"s: buscar | l: listas | +/-: volumen | F2: idioma | F3: tema")
+		if m.focus == playerFocusPlaying {
+			secondary = m.text("s: shuffle | r: repeat | +/-: volume | F2: language | F3: theme",
+				"s: aleatorio | r: repetir | +/-: volumen | F2: idioma | F3: tema")
+		}
+		rows = append(rows, secondary)
 	}
 	return rows
 }

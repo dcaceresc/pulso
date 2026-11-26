@@ -35,22 +35,31 @@ type playerTrack struct {
 }
 
 type playerState struct {
-	Track      playerTrack
-	Queue      []playerTrack
-	Status     string
-	Device     string
+	Track  playerTrack
+	Queue  []playerTrack
+	Status string
+	Device string
+	// PositionMS is the playhead Soloist reported at AnchorAt; the UI adds the
+	// elapsed time at Speed on top of it. AnchorAt is zero when unknown.
 	PositionMS int64
+	AnchorAt   time.Time
+	Speed      float64
 	Volume     int
+	Shuffle    bool
+	Repeat     string // "off", "context" or "track", empty until Soloist says.
 	Connected  bool
 	Notice     string
 	SessionID  uint64
 }
 
 type playerCommand struct {
-	Name      string
-	Volume    int
-	URI       string
-	SessionID uint64
+	Name       string
+	Volume     int
+	URI        string
+	PositionMS int64
+	Shuffle    bool
+	Repeat     string
+	SessionID  uint64
 }
 
 func newPlayerStream(ctx context.Context, dataDir func() (string, error)) (<-chan playerState, chan<- playerCommand) {
@@ -129,8 +138,13 @@ type playerEvent struct {
 	Item       *playerWireTrack `json:"item"`
 	PositionMS *int64           `json:"position_ms"`
 	Position   *struct {
-		MS *int64 `json:"position_ms"`
+		MS    *int64   `json:"position_ms"`
+		Speed *float64 `json:"speed"`
 	} `json:"position"`
+	Options *struct {
+		Shuffle *bool   `json:"shuffle"`
+		Repeat  *string `json:"repeat"`
+	} `json:"options"`
 	Upcoming []struct {
 		Item *playerWireTrack `json:"item"`
 	} `json:"upcoming"`
@@ -263,7 +277,13 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 				*input = nil
 				continue
 			}
-			if packet, allowed := playerCommandPacket(command); state.Connected && command.SessionID == state.SessionID && allowed {
+			packets, allowed := playerCommandPacket(command)
+			if !allowed || !state.Connected || command.SessionID != state.SessionID {
+				continue
+			}
+			// Frames of one command go out in order; a failed write ends the
+			// session instead of replaying it.
+			for _, packet := range packets {
 				if !playerWrite(ctx, conn, packet) {
 					return authenticated
 				}
@@ -315,12 +335,45 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 	return authenticated
 }
 
+// playerRepeatMode normalizes the repeat modes Soloist reports and accepts.
+func playerRepeatMode(raw string) (string, bool) {
+	switch mode := strings.ToLower(strings.TrimSpace(raw)); mode {
+	case "off", "context", "track":
+		return mode, true
+	}
+	return "", false
+}
+
 func (state *playerState) apply(event playerEvent) bool {
+	now := time.Now()
+	// Every reported position starts a new interpolation anchor.
 	updatePosition := func() {
 		if event.Position != nil && event.Position.MS != nil {
 			state.PositionMS = max(0, *event.Position.MS)
 		} else if event.PositionMS != nil {
 			state.PositionMS = max(0, *event.PositionMS)
+		} else {
+			return
+		}
+		state.AnchorAt = now
+	}
+	updateSpeed := func() {
+		if event.Position != nil && event.Position.Speed != nil {
+			state.Speed = max(0, *event.Position.Speed)
+		}
+	}
+	// A mode outside the three is ignored instead of guessed.
+	updateOptions := func() {
+		if event.Options == nil {
+			return
+		}
+		if event.Options.Shuffle != nil {
+			state.Shuffle = *event.Options.Shuffle
+		}
+		if event.Options.Repeat != nil {
+			if repeat, ok := playerRepeatMode(*event.Options.Repeat); ok {
+				state.Repeat = repeat
+			}
 		}
 	}
 	updateStatus := func() {
@@ -337,12 +390,14 @@ func (state *playerState) apply(event playerEvent) bool {
 	switch event.Type {
 	case "playback_state", "track_changed":
 		state.Track = event.Item.track()
-		state.PositionMS = 0
+		state.PositionMS, state.AnchorAt = 0, now
 		if event.Type == "playback_state" || event.Item == nil {
 			state.Status = ""
 		}
 		updateStatus()
+		updateSpeed()
 		updatePosition()
+		updateOptions()
 		if event.Volume != nil {
 			state.Volume = min(100, max(0, *event.Volume))
 		}
@@ -351,6 +406,9 @@ func (state *playerState) apply(event playerEvent) bool {
 		updatePosition()
 	case "position_sync":
 		updatePosition()
+		updateSpeed()
+	case "options_changed":
+		updateOptions()
 	case "volume_changed":
 		if event.Volume != nil {
 			state.Volume = min(100, max(0, *event.Volume))
@@ -377,33 +435,55 @@ func (state *playerState) apply(event playerEvent) bool {
 }
 
 type playerRequest struct {
-	Command string `json:"command"`
-	URI     string `json:"uri,omitempty"`
-	Limit   int    `json:"limit,omitempty"`
-	Volume  *int   `json:"volume,omitempty"`
+	Command    string `json:"command"`
+	URI        string `json:"uri,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+	Volume     *int   `json:"volume,omitempty"`
+	PositionMS *int64 `json:"position_ms,omitempty"`
+	Enabled    *bool  `json:"enabled,omitempty"`
 }
 
-func playerCommandPacket(command playerCommand) (playerRequest, bool) {
-	packet := playerRequest{Command: command.Name}
+// playerCommandPacket translates one keypress into the frames Soloist expects in
+// order, or rejects the command when it is not on the allowlist.
+func playerCommandPacket(command playerCommand) ([]playerRequest, bool) {
 	switch command.Name {
 	case "play", "pause", "skip_next", "skip_prev":
+		packet := playerRequest{Command: command.Name}
 		if command.URI == "" {
-			return packet, true
+			return []playerRequest{packet}, true
 		}
 		// Only play accepts a target, and only a playable Spotify URI.
 		uri, ok := playerSpotifyURI(command.URI)
 		if command.Name != "play" || !ok {
-			return playerRequest{}, false
+			return nil, false
 		}
 		packet.URI = uri
-		return packet, true
+		return []playerRequest{packet}, true
 	case "set_volume":
 		volume := min(100, max(0, command.Volume))
-		packet.Volume = &volume
-		return packet, true
-	default:
-		return playerRequest{}, false
+		return []playerRequest{{Command: "set_volume", Volume: &volume}}, true
+	case "seek":
+		position := max(0, command.PositionMS)
+		return []playerRequest{{Command: "seek", PositionMS: &position}}, true
+	case "set_shuffle":
+		enabled := command.Shuffle
+		return []playerRequest{{Command: "set_shuffle", Enabled: &enabled}}, true
+	case "set_repeat":
+		repeat, ok := playerRepeatMode(command.Repeat)
+		if !ok {
+			return nil, false
+		}
+		// Repeat is two independent flags. Soloist wants the one being cleared
+		// first, so a mode never re-enables its other half by accident.
+		track, context := repeat == "track", repeat == "context"
+		trackPacket := playerRequest{Command: "set_repeat_track", Enabled: &track}
+		contextPacket := playerRequest{Command: "set_repeat_context", Enabled: &context}
+		if track {
+			return []playerRequest{contextPacket, trackPacket}, true
+		}
+		return []playerRequest{trackPacket, contextPacket}, true
 	}
+	return nil, false
 }
 
 func playerSpotifyURI(raw string) (string, bool) {
