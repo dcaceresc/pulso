@@ -36,6 +36,8 @@ type spotifyCatalog struct {
 
 	mu    sync.Mutex
 	token spotifyToken
+	// persist stores a rotated refresh token so the next launch stays signed in.
+	persist func(spotifyToken)
 }
 
 type spotifyPage[T any] struct {
@@ -202,5 +204,8 @@ func (c *spotifyCatalog) accessToken(ctx context.Context) (string, error) {
 		token.refresh = c.token.refresh
 	}
 	c.token = token
+	if c.persist != nil {
+		c.persist(token)
+	}
 	return token.access, nil
 }

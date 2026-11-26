@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,10 +30,22 @@ const (
 	setupSpotifyFailed
 )
 
+// spotifyRestoreTimeout bounds the silent session restore so a slow or missing
+// session falls back to the interactive step quickly.
+const spotifyRestoreTimeout = 5 * time.Second
+
 type setupSpotifyMsg struct {
-	url  string
-	api  catalogAPI
-	done bool
+	attempt uint64
+	url     string
+	api     catalogAPI
+	done    bool
+}
+
+// setupSpotifyRestored reports whether a saved session was usable. It carries
+// no error: any failure simply continues with the interactive step.
+type setupSpotifyRestored struct {
+	api catalogAPI
+	ok  bool
 }
 
 type setupService struct {
@@ -43,6 +56,7 @@ type setupService struct {
 	player                func(width, height int) tea.Model
 	playerWithPreferences func(width, height int, p preferences, api catalogAPI) tea.Model
 	authorize             func(context.Context, string, func(string)) (catalogAPI, error)
+	restore               func(context.Context) (catalogAPI, bool)
 	clientID              string
 }
 
@@ -60,6 +74,7 @@ const (
 	setupPairing
 	setupPairingChecking
 	setupPairingStopped
+	setupRestoringSpotify
 	setupDone
 	setupSpotify
 	setupQuit
@@ -95,28 +110,30 @@ func setupInstallResult(err error) setupInstalled {
 type setupStarted bool
 
 type setupModel struct {
-	ctx           context.Context
-	service       setupService
-	phase         setupPhase
-	progress      setupState // Last confirmed inspection, retained while rechecking.
-	installIssue  setupInstalled
-	key           []rune
-	pairing       *setupPairingSession
-	pairingDone   <-chan struct{}
-	pairingState  setupPairingStatus
-	deviceName    string
-	preferences   preferences
-	spotify       setupSpotifyState
-	spotifyURL    string
-	spotifyAPI    catalogAPI
-	spotifyDone   bool
-	spotifyEvents chan setupSpotifyMsg
-	clientID      []rune
-	clientIssue   bool
-	save          func(preferences) error
-	saveFailed    bool
-	width         int
-	height        int
+	ctx            context.Context
+	service        setupService
+	phase          setupPhase
+	progress       setupState // Last confirmed inspection, retained while rechecking.
+	installIssue   setupInstalled
+	key            []rune
+	pairing        *setupPairingSession
+	pairingDone    <-chan struct{}
+	pairingState   setupPairingStatus
+	deviceName     string
+	preferences    preferences
+	spotify        setupSpotifyState
+	spotifyURL     string
+	spotifyAPI     catalogAPI
+	spotifyDone    bool
+	spotifyEvents  chan setupSpotifyMsg
+	spotifyAttempt uint64
+	cancelAuth     context.CancelFunc
+	clientID       []rune
+	clientIssue    bool
+	save           func(preferences) error
+	saveFailed     bool
+	width          int
+	height         int
 }
 
 func newSetupModel(ctx context.Context, service setupService) tea.Model {
@@ -186,38 +203,80 @@ func (m *setupModel) openPlayer() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// afterSoloist offers the Spotify catalog sign-in once Soloist is ready. Search
-// and playlists need their own authorization; playback does not.
+// afterSoloist offers the Spotify catalog sign-in once Soloist is ready. A
+// saved session restores silently; search and playlists need their own
+// authorization, and playback does not.
 func (m *setupModel) afterSoloist() (tea.Model, tea.Cmd) {
 	m.progress = setupReady
-	if m.service.authorize == nil || m.spotifyDone {
+	if m.spotifyDone {
 		return m.openPlayer()
 	}
-	// Always show the instructions first, even when a Client ID is already known.
+	if m.service.restore != nil {
+		return m.restoreSpotify()
+	}
+	return m.beginSpotify()
+}
+
+// restoreSpotify asks the service for a saved session behind a short deadline
+// so a slow or missing file never holds the wizard.
+func (m *setupModel) restoreSpotify() (tea.Model, tea.Cmd) {
+	m.phase = setupRestoringSpotify
+	restore, ctx := m.service.restore, m.ctx
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(ctx, spotifyRestoreTimeout)
+		defer cancel()
+		api, ok := restore(ctx)
+		return setupSpotifyRestored{api: api, ok: ok}
+	}
+}
+
+// beginSpotify opens the Spotify step. A remembered Client ID only needs the
+// browser approval, so the instructions appear only when nothing is stored.
+func (m *setupModel) beginSpotify() (tea.Model, tea.Cmd) {
+	if m.service.authorize == nil {
+		return m.openPlayer()
+	}
 	m.phase = setupSpotify
 	m.spotify = setupSpotifyClientID
 	m.clientID = []rune(strings.TrimSpace(m.service.clientID))
+	if _, ok := normalizeClientID(string(m.clientID)); ok {
+		return m, m.startSpotify()
+	}
 	return m, nil
 }
 
 func (m *setupModel) startSpotify() tea.Cmd {
+	m.cancelSpotify()
 	m.spotify, m.spotifyURL = setupSpotifyPending, ""
-	authorize, clientID, ctx := m.service.authorize, strings.TrimSpace(m.service.clientID), m.ctx
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.cancelAuth, m.spotifyAttempt = cancel, m.spotifyAttempt+1
+	authorize, clientID, attempt := m.service.authorize, strings.TrimSpace(m.service.clientID), m.spotifyAttempt
 	events := make(chan setupSpotifyMsg, 2)
 	m.spotifyEvents = events
 	return func() tea.Msg {
 		go func() {
 			var once sync.Once
 			api, err := authorize(ctx, clientID, func(url string) {
-				once.Do(func() { events <- setupSpotifyMsg{url: url} })
+				once.Do(func() { events <- setupSpotifyMsg{attempt: attempt, url: url} })
 			})
 			if err != nil {
 				api = nil
 			}
-			events <- setupSpotifyMsg{api: api, done: true}
+			events <- setupSpotifyMsg{attempt: attempt, api: api, done: true}
 		}()
 		return <-events
 	}
+}
+
+// cancelSpotify ends an in-flight authorization attempt and fences off its
+// late messages, so editing the Client ID or skipping releases the loopback port.
+func (m *setupModel) cancelSpotify() {
+	if m.cancelAuth != nil {
+		m.cancelAuth()
+		m.cancelAuth = nil
+		m.spotifyAttempt++
+	}
+	m.spotifyEvents = nil
 }
 
 func awaitSpotify(events <-chan setupSpotifyMsg) tea.Cmd {
@@ -230,7 +289,8 @@ func awaitSpotify(events <-chan setupSpotifyMsg) tea.Cmd {
 }
 
 func (m *setupModel) skipSpotify() (tea.Model, tea.Cmd) {
-	m.spotifyDone, m.spotifyEvents = true, nil
+	m.cancelSpotify()
+	m.spotifyDone = true
 	return m.openPlayer()
 }
 
@@ -313,15 +373,24 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.phase = setupStartFailed
 		}
+	case setupSpotifyRestored:
+		if m.phase != setupRestoringSpotify {
+			break
+		}
+		if msg.ok && msg.api != nil {
+			m.spotifyAPI, m.spotifyDone = msg.api, true
+			return m.openPlayer()
+		}
+		return m.beginSpotify()
 	case setupSpotifyMsg:
-		if m.phase != setupSpotify {
+		if m.phase != setupSpotify || msg.attempt != m.spotifyAttempt {
 			break
 		}
 		if !msg.done {
 			m.spotifyURL = msg.url
 			return m, awaitSpotify(m.spotifyEvents)
 		}
-		m.spotifyEvents = nil
+		m.cancelSpotify()
 		if msg.api != nil {
 			m.spotifyAPI, m.spotifyDone = msg.api, true
 			return m.openPlayer()
@@ -333,6 +402,7 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case 's', 'S':
 				return m.skipSpotify()
 			case 'e', 'E':
+				m.cancelSpotify()
 				m.spotify, m.clientIssue, m.spotifyURL = setupSpotifyClientID, false, ""
 				m.clientID = []rune(m.service.clientID)
 				return m, nil
@@ -448,6 +518,8 @@ func (m *setupModel) screen() setupScreen {
 	switch m.phase {
 	case setupChecking, setupPairingChecking:
 		screen.action, screen.status = m.text("Checking Soloist...", "Comprobando Soloist..."), m.text("Working", "Trabajando")
+	case setupRestoringSpotify:
+		screen.action, screen.status = m.text("Restoring your Spotify session...", "Restaurando tu sesión de Spotify..."), m.text("Working", "Trabajando")
 	case setupCheckFailed:
 		screen.action, screen.status = m.text("Could not check Soloist. Try again.", "No se pudo comprobar Soloist. Inténtalo de nuevo."), m.text("Retry needed", "Reintento necesario")
 		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar")}
@@ -550,7 +622,7 @@ func (m *setupModel) screen() setupScreen {
 				"Abre esta URL en tu navegador y aprueba el acceso. La reproducción funciona sin esto.")
 			screen.link = m.spotifyURL
 			screen.status = m.text("Waiting for Spotify authorization", "Esperando autorización de Spotify")
-			screen.hints = []string{m.text("s: skip", "s: omitir"), m.text("pulso login prints the URL", "pulso login muestra la URL")}
+			screen.hints = []string{m.text("s: skip", "s: omitir"), m.text("e: edit Client ID", "e: cambiar Client ID")}
 		}
 	}
 	if m.saveFailed {

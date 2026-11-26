@@ -28,7 +28,9 @@ const (
 var (
 	errSpotifyRateLimited = errors.New("Spotify rate limit reached; try again later")
 	errSpotifyToken       = errors.New("Spotify token request failed")
-	errSpotifyClientID    = errors.New("Spotify rejected the Client ID or redirect URI")
+	// A definitive rejection means the saved approval is gone for good.
+	errSpotifyTokenRejected = errors.New("Spotify rejected the authorization; approve access again")
+	errSpotifyClientID      = errors.New("Spotify rejected the Client ID or redirect URI")
 	// Spotify only accepts loopback redirects with an explicit port, so the
 	// address is fixed and must match the one registered in the dashboard.
 	spotifyCallbackAddr = spotifyCallbackDefaultAddr
@@ -40,13 +42,28 @@ type spotifyToken struct {
 	expires         time.Time
 }
 
-// authorizeSpotify displays the authorization link and waits for the local callback.
+// authorizeSpotify restores the saved session when possible and otherwise
+// displays the authorization link and waits for the local callback.
 // showURL should return promptly so the caller can cancel while waiting for Spotify.
 func authorizeSpotify(ctx context.Context, clientID string, showURL func(string)) (*spotifyCatalog, error) {
-	return authorizeSpotifyWithTransport(ctx, clientID, showURL, nil)
+	path, err := spotifySessionPath()
+	if err != nil {
+		path = ""
+	}
+	return authorizeSpotifyAt(ctx, path, clientID, showURL, nil)
 }
 
+// authorizeSpotifyWithTransport keeps the interactive-only protocol seam. It
+// never reads or writes a stored session.
 func authorizeSpotifyWithTransport(ctx context.Context, clientID string, showURL func(string), transport http.RoundTripper) (*spotifyCatalog, error) {
+	return authorizeSpotifyAt(ctx, "", clientID, showURL, transport)
+}
+
+// authorizeSpotifyAt tries the saved session first. A valid access token needs
+// no network call, an expired one is refreshed silently, and only a missing or
+// rejected approval falls back to the browser and the loopback listener.
+// An empty sessionPath means no persistence, which the protocol fixtures use.
+func authorizeSpotifyAt(ctx context.Context, sessionPath, clientID string, showURL func(string), transport http.RoundTripper) (*spotifyCatalog, error) {
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" || showURL == nil {
 		return nil, errors.New("Spotify login needs a client ID and an authorization link handler")
@@ -56,7 +73,12 @@ func authorizeSpotifyWithTransport(ctx context.Context, clientID string, showURL
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
+	client := newSpotifyHTTPClient(transport)
+	if catalog, ok, err := restoreSpotifyCatalog(ctx, sessionPath, clientID, client); err != nil {
+		return nil, err
+	} else if ok {
+		return catalog, nil
+	}
 	// Independent 256-bit random values produce a 43-character verifier and state.
 	var random [64]byte
 	if _, err := rand.Read(random[:]); err != nil {
@@ -88,7 +110,6 @@ func authorizeSpotifyWithTransport(ctx context.Context, clientID string, showURL
 		return nil, err
 	}
 
-	client := newSpotifyHTTPClient(transport)
 	token, err := requestSpotifyToken(ctx, client, url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {clientID},
@@ -99,7 +120,69 @@ func authorizeSpotifyWithTransport(ctx context.Context, clientID string, showURL
 	if err != nil {
 		return nil, err
 	}
-	return &spotifyCatalog{client: client, clientID: clientID, token: token}, nil
+	// Best effort: the approved session is what makes the next launch silent.
+	if sessionPath != "" {
+		_ = saveSpotifySessionAt(sessionPath, spotifySession{access: token.access, refresh: token.refresh, expires: token.expires})
+	}
+	return newSpotifyCatalog(client, clientID, token, sessionPath), nil
+}
+
+// restoreSpotifyCatalog uses the saved session without any user interaction.
+// A false result with no error means "no usable session"; an error is a
+// temporary failure that must not discard the saved approval.
+func restoreSpotifyCatalog(ctx context.Context, sessionPath, clientID string, client *http.Client) (*spotifyCatalog, bool, error) {
+	clientID = strings.TrimSpace(clientID)
+	if sessionPath == "" || clientID == "" {
+		return nil, false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	session, ok := loadSpotifySessionAt(sessionPath)
+	if !ok {
+		return nil, false, nil
+	}
+	if time.Now().Before(session.expires) {
+		return newSpotifyCatalog(client, clientID, session.token(), sessionPath), true, nil
+	}
+	token, err := requestSpotifyToken(ctx, client, url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {clientID},
+		"refresh_token": {session.refresh},
+	})
+	if err != nil {
+		if errors.Is(err, errSpotifyTokenRejected) {
+			_ = deleteSpotifySessionAt(sessionPath)
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if token.refresh == "" {
+		token.refresh = session.refresh
+	}
+	_ = saveSpotifySessionAt(sessionPath, spotifySession{access: token.access, refresh: token.refresh, expires: token.expires})
+	return newSpotifyCatalog(client, clientID, token, sessionPath), true, nil
+}
+
+// storedSpotifyCatalog restores the user's saved session for the setup
+// wizard's narrow hook, where any failure simply means "no session yet".
+func storedSpotifyCatalog(ctx context.Context, clientID string) (*spotifyCatalog, bool) {
+	path, err := spotifySessionPath()
+	if err != nil {
+		return nil, false
+	}
+	catalog, ok, _ := restoreSpotifyCatalog(ctx, path, clientID, newSpotifyHTTPClient(nil))
+	return catalog, ok
+}
+
+// restoreSpotifyCatalogAPI adapts the saved session to the wizard hook without
+// ever handing a typed nil catalog to the player.
+func restoreSpotifyCatalogAPI(ctx context.Context, clientID string) (catalogAPI, bool) {
+	catalog, ok := storedSpotifyCatalog(ctx, clientID)
+	if !ok {
+		return nil, false
+	}
+	return catalog, true
 }
 
 func waitSpotifyCallback(ctx context.Context, listener net.Listener, host, state string, showURL func()) (string, error) {
@@ -198,22 +281,42 @@ func newSpotifyHTTPClient(transport http.RoundTripper) *http.Client {
 }
 
 func requestSpotifyToken(ctx context.Context, client *http.Client, form url.Values) (spotifyToken, error) {
+	token, status, err := exchangeSpotifyToken(ctx, client, form)
+	switch {
+	case err != nil:
+		return spotifyToken{}, err
+	case status == http.StatusOK:
+		return token, nil
+	case status == http.StatusBadRequest || status == http.StatusUnauthorized:
+		return spotifyToken{}, errSpotifyTokenRejected
+	default:
+		return spotifyToken{}, errSpotifyToken
+	}
+}
+
+// exchangeSpotifyToken reports the status so a rejected authorization can be
+// told apart from a temporary failure.
+func exchangeSpotifyToken(ctx context.Context, client *http.Client, form url.Values) (spotifyToken, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, spotifyTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return spotifyToken{}, errSpotifyToken
+		return spotifyToken{}, 0, errSpotifyToken
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return spotifyToken{}, ctx.Err()
+			return spotifyToken{}, 0, ctx.Err()
 		}
-		return spotifyToken{}, errSpotifyToken
+		return spotifyToken{}, 0, errSpotifyToken
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return spotifyToken{}, errSpotifyRateLimited
+		return spotifyToken{}, resp.StatusCode, errSpotifyRateLimited
+	}
+	if resp.StatusCode != http.StatusOK {
+		// The status alone classifies a rejection; an error body is never surfaced.
+		return spotifyToken{}, resp.StatusCode, nil
 	}
 	var token struct {
 		Access  string `json:"access_token"`
@@ -221,10 +324,10 @@ func requestSpotifyToken(ctx context.Context, client *http.Client, form url.Valu
 		Type    string `json:"token_type"`
 		Expires int64  `json:"expires_in"`
 	}
-	if resp.StatusCode != http.StatusOK || !readSpotifyJSON(resp.Body, 64<<10, &token) || !strings.EqualFold(token.Type, "Bearer") || !spotifyBearer.MatchString(token.Access) || token.Expires <= 0 || token.Expires > int64((1<<63-1)/time.Second) {
-		return spotifyToken{}, errSpotifyToken
+	if !readSpotifyJSON(resp.Body, 64<<10, &token) || !strings.EqualFold(token.Type, "Bearer") || !spotifyBearer.MatchString(token.Access) || token.Expires <= 0 || token.Expires > int64((1<<63-1)/time.Second) {
+		return spotifyToken{}, resp.StatusCode, errSpotifyToken
 	}
-	return spotifyToken{access: token.Access, refresh: token.Refresh, expires: time.Now().Add(time.Duration(token.Expires) * time.Second)}, nil
+	return spotifyToken{access: token.Access, refresh: token.Refresh, expires: time.Now().Add(time.Duration(token.Expires) * time.Second)}, resp.StatusCode, nil
 }
 
 func readSpotifyJSON(r io.Reader, limit int64, dst any) bool {
@@ -239,4 +342,16 @@ func spotifyRedirectHint() string {
 		addr = spotifyCallbackDefaultAddr
 	}
 	return "http://" + addr + spotifyCallbackPath
+}
+
+// newSpotifyCatalog keeps the rotated refresh token on disk so an expiring
+// access token never forces a new browser approval.
+func newSpotifyCatalog(client *http.Client, clientID string, token spotifyToken, sessionPath string) *spotifyCatalog {
+	catalog := &spotifyCatalog{client: client, clientID: clientID, token: token}
+	if sessionPath != "" {
+		catalog.persist = func(refreshed spotifyToken) {
+			_ = saveSpotifySessionAt(sessionPath, spotifySession{access: refreshed.access, refresh: refreshed.refresh, expires: refreshed.expires})
+		}
+	}
+	return catalog
 }

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -675,7 +676,7 @@ func TestSetupRejectsNonSpotifyClientID(t *testing.T) {
 	expectSetupText(t, model.View(), "32 hex characters")
 }
 
-func TestSetupShowsInstructionsBeforeURL(t *testing.T) {
+func TestSetupSpotifyStoredClientIDSkipsInstructions(t *testing.T) {
 	const stored = "0123456789abcdef0123456789abcdef"
 	var gotID string
 	model := newSetupModelWithPreferences(context.Background(), setupService{
@@ -688,16 +689,176 @@ func TestSetupShowsInstructionsBeforeURL(t *testing.T) {
 		},
 		playerWithPreferences: func(int, int, preferences, catalogAPI) tea.Model { return setupTestPlayer{} },
 	}, preferences{}, nil)
-	model, _ = runSetupCmd(t, model, model.Init())
-	expectSetupText(t, model.View(), "Connect Spotify", "http://127.0.0.1:8888/callback", "Client ID: "+stored)
-	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, cmd := runSetupCmd(t, model, model.Init())
+	if cmd == nil {
+		t.Fatal("a stored Client ID should start authorization without instructions")
+	}
+	if view := model.View(); strings.Contains(view, "Create an app at") {
+		t.Fatalf("instructions were shown for a stored Client ID:\n%s", view)
+	}
+	expectSetupText(t, model.View(), "Waiting for Spotify authorization")
+	// e still replaces the remembered Client ID, with the instructions to retry.
+	model, _ = model.Update(setupRunes("e"))
+	expectSetupText(t, model.View(), "Connect Spotify", "Client ID: "+stored)
+	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("confirming the shown Client ID should start authorization")
 	}
 	model, cmd = runSetupCmd(t, model, cmd)
-	expectSetupText(t, model.View(), "Waiting for Spotify authorization")
+	expectSetupText(t, model.View(), "http://127.0.0.1:8888/callback", "e: edit Client ID")
 	model, cmd = runSetupCmd(t, model, cmd)
 	if gotID != stored || cmd == nil || cmd() != "player initialized" {
 		t.Fatalf("handoff failed: id=%q", gotID)
 	}
+}
+
+func TestSetupRestoresSpotifySession(t *testing.T) {
+	api := &catalogViewFake{}
+	restores, restoresDeadline := 0, false
+	model := newSetupModelWithPreferences(context.Background(), setupService{
+		inspect: func(context.Context) (setupState, error) { return setupReady, nil },
+		restore: func(ctx context.Context) (catalogAPI, bool) {
+			restores++
+			if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= spotifyRestoreTimeout {
+				restoresDeadline = true
+			}
+			return api, true
+		},
+		authorize: func(context.Context, string, func(string)) (catalogAPI, error) {
+			t.Error("a restored session still asked for approval")
+			return nil, errors.New("unexpected authorization")
+		},
+		playerWithPreferences: func(_ int, _ int, _ preferences, got catalogAPI) tea.Model {
+			if got != catalogAPI(api) {
+				t.Errorf("player received %v, want the restored session", got)
+			}
+			return setupTestPlayer{}
+		},
+	}, preferences{}, nil)
+	model, cmd := runSetupCmd(t, model, model.Init())
+	if cmd == nil {
+		t.Fatal("a configured session hook should be asked for a saved session")
+	}
+	if view := model.View(); strings.Contains(view, "Connect Spotify") {
+		t.Fatalf("the Spotify step was shown while restoring:\n%s", view)
+	}
+	model, cmd = runSetupCmd(t, model, cmd)
+	if restores != 1 || !restoresDeadline {
+		t.Fatalf("restore calls = %d, bounded deadline = %v", restores, restoresDeadline)
+	}
+	if cmd == nil || cmd() != "player initialized" {
+		t.Fatalf("a restored session should open the player: %q", model.View())
+	}
+	if view := model.View(); view != "Now Playing" {
+		t.Fatalf("restored handoff view = %q", view)
+	}
+}
+
+func TestSetupRestoreFailureFallsBackToStoredClientID(t *testing.T) {
+	const stored = "0123456789abcdef0123456789abcdef"
+	started := false
+	model := newSetupModelWithPreferences(context.Background(), setupService{
+		inspect:  func(context.Context) (setupState, error) { return setupReady, nil },
+		clientID: stored,
+		restore:  func(context.Context) (catalogAPI, bool) { return nil, false },
+		authorize: func(_ context.Context, id string, showURL func(string)) (catalogAPI, error) {
+			started = true
+			showURL("http://127.0.0.1:8888/callback?state=x")
+			return &catalogViewFake{}, nil
+		},
+		playerWithPreferences: func(int, int, preferences, catalogAPI) tea.Model { return setupTestPlayer{} },
+	}, preferences{}, nil)
+	model, cmd := runSetupCmd(t, model, model.Init())
+	if cmd == nil {
+		t.Fatal("the restore hook was never consulted")
+	}
+	model, cmd = runSetupCmd(t, model, cmd)
+	if cmd == nil {
+		t.Fatal("a failed restore with a stored Client ID should authorize directly")
+	}
+	if view := model.View(); strings.Contains(view, "Create an app at") {
+		t.Fatalf("instructions were shown for a stored Client ID:\n%s", view)
+	}
+	expectSetupText(t, model.View(), "Waiting for Spotify authorization")
+	model, cmd = runSetupCmd(t, model, cmd)
+	if !started {
+		t.Fatal("authorization never started after a failed restore")
+	}
+	expectSetupText(t, model.View(), "http://127.0.0.1:8888/callback", "e: edit Client ID")
+	model, _ = model.Update(setupRunes("e"))
+	expectSetupText(t, model.View(), "Connect Spotify", "Client ID: "+stored)
+}
+
+func TestSetupRestoreFailureWithoutClientIDShowsInstructions(t *testing.T) {
+	authorized := false
+	player := &catalogViewFake{}
+	model := newSetupModelWithPreferences(context.Background(), setupService{
+		inspect: func(context.Context) (setupState, error) { return setupReady, nil },
+		restore: func(context.Context) (catalogAPI, bool) { return player, false },
+		authorize: func(context.Context, string, func(string)) (catalogAPI, error) {
+			authorized = true
+			return nil, errors.New("unexpected authorization")
+		},
+		playerWithPreferences: func(int, int, preferences, catalogAPI) tea.Model { return setupTestPlayer{} },
+	}, preferences{}, nil)
+	model, cmd := runSetupCmd(t, model, model.Init())
+	model, cmd = runSetupCmd(t, model, cmd)
+	if cmd != nil || authorized {
+		t.Fatal("authorization started without a stored Client ID")
+	}
+	expectSetupText(t, model.View(), "Connect Spotify", "Client ID: _", "Waiting for the Client ID")
+}
+
+func TestSetupRestoreIgnoresIncompleteResult(t *testing.T) {
+	model := newSetupModelWithPreferences(context.Background(), setupService{
+		inspect:               func(context.Context) (setupState, error) { return setupReady, nil },
+		clientID:              "0123456789abcdef0123456789abcdef",
+		restore:               func(context.Context) (catalogAPI, bool) { return nil, true },
+		authorize:             func(context.Context, string, func(string)) (catalogAPI, error) { return &catalogViewFake{}, nil },
+		playerWithPreferences: func(int, int, preferences, catalogAPI) tea.Model { return setupTestPlayer{} },
+	}, preferences{}, nil)
+	model, cmd := runSetupCmd(t, model, model.Init())
+	model, cmd = runSetupCmd(t, model, cmd)
+	if cmd == nil {
+		t.Fatal("an incomplete restore should fall through to authorization")
+	}
+}
+
+func TestSetupSpotifyEditCancelsPendingAuthorization(t *testing.T) {
+	const stored = "0123456789abcdef0123456789abcdef"
+	cancelled := make(chan struct{})
+	model := newSetupModelWithPreferences(context.Background(), setupService{
+		inspect:  func(context.Context) (setupState, error) { return setupReady, nil },
+		clientID: stored,
+		authorize: func(ctx context.Context, _ string, _ func(string)) (catalogAPI, error) {
+			<-ctx.Done()
+			close(cancelled)
+			return nil, ctx.Err()
+		},
+		playerWithPreferences: func(int, int, preferences, catalogAPI) tea.Model { return setupTestPlayer{} },
+	}, preferences{}, nil)
+	model, cmd := runSetupCmd(t, model, model.Init())
+	if cmd == nil {
+		t.Fatal("a stored Client ID should start authorization")
+	}
+	// The command only returns once the pending attempt is cancelled.
+	results := make(chan tea.Msg, 1)
+	go func() { results <- cmd() }()
+	model, _ = model.Update(setupRunes("e"))
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("editing the Client ID did not cancel the pending authorization")
+	}
+	expectSetupText(t, model.View(), "Connect Spotify", "Client ID: "+stored)
+	select {
+	case msg := <-results:
+		model, cmd = model.Update(msg)
+		if cmd != nil {
+			t.Fatal("a cancelled attempt moved the wizard")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled attempt never finished")
+	}
+	expectSetupText(t, model.View(), "Client ID: "+stored)
 }

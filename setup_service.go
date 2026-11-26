@@ -73,6 +73,11 @@ func runSetup(stdout io.Writer) error {
 			return authorizeSpotify(ctx, clientID, openAndShow(showURL))
 		},
 		clientID: firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), loadClientID()),
+		// A saved session means the Spotify step never appears; any failure
+		// falls through to the interactive flow.
+		restore: func(ctx context.Context) (catalogAPI, bool) {
+			return restoreSpotifyCatalogAPI(ctx, firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), loadClientID()))
+		},
 		playerWithPreferences: func(width, height int, p preferences, api catalogAPI) tea.Model {
 			states, commands := newPlayerStream(ctx, local.dataDir)
 			return newPlayerModelWithCatalog(ctx, states, commands, width, height, p, savePreferences, api,
