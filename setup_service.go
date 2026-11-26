@@ -64,16 +64,19 @@ func runSetup(stdout io.Writer) error {
 		local.startMu.Lock()
 		local.startMu.Unlock()
 	}()
-	model := newSetupModel(ctx, setupService{
+	model := newSetupModelWithPreferences(ctx, setupService{
 		inspect: local.inspect,
 		watch:   local.watchPairing,
 		install: installManagedSoloist,
 		start:   local.start,
-		player: func(width, height int) tea.Model {
+		playerWithPreferences: func(width, height int, p preferences) tea.Model {
 			states, commands := newPlayerStream(ctx, local.dataDir)
-			return newPlayerModel(ctx, states, commands, width, height)
+			return newPlayerModelWithPreferences(ctx, states, commands, width, height, p, savePreferences,
+				os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), func(ctx context.Context, clientID string, showURL func(string)) (catalogAPI, error) {
+					return authorizeSpotify(ctx, clientID, showURL)
+				})
 		},
-	})
+	}, loadPreferences(), savePreferences)
 	_, err := tea.NewProgram(model, tea.WithOutput(stdout), tea.WithAltScreen()).Run()
 	return err
 }

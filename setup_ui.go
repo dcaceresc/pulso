@@ -21,11 +21,12 @@ const (
 )
 
 type setupService struct {
-	inspect func(context.Context) (setupState, error)
-	watch   func(context.Context, func(string) bool) error
-	install func(context.Context) error
-	start   func(context.Context, string) error
-	player  func(width, height int) tea.Model
+	inspect               func(context.Context) (setupState, error)
+	watch                 func(context.Context, func(string) bool) error
+	install               func(context.Context) error
+	start                 func(context.Context, string) error
+	player                func(width, height int) tea.Model
+	playerWithPreferences func(width, height int, p preferences) tea.Model
 }
 
 type setupPhase uint8
@@ -86,12 +87,19 @@ type setupModel struct {
 	pairingDone  <-chan struct{}
 	pairingState setupPairingStatus
 	deviceName   string
+	preferences  preferences
+	save         func(preferences) error
+	saveFailed   bool
 	width        int
 	height       int
 }
 
 func newSetupModel(ctx context.Context, service setupService) tea.Model {
-	return &setupModel{ctx: ctx, service: service, phase: setupChecking, width: 80, height: 24}
+	return newSetupModelWithPreferences(ctx, service, defaultPreferences(), nil)
+}
+
+func newSetupModelWithPreferences(ctx context.Context, service setupService, p preferences, save func(preferences) error) tea.Model {
+	return &setupModel{ctx: ctx, service: service, phase: setupChecking, width: 80, height: 24, preferences: p.normalized(), save: save}
 }
 
 func (m *setupModel) Init() tea.Cmd {
@@ -142,11 +150,30 @@ func (m *setupModel) cancelPairing() {
 func (m *setupModel) openPlayer() (tea.Model, tea.Cmd) {
 	m.cancelPairing()
 	m.progress, m.phase = setupReady, setupDone
+	if m.service.playerWithPreferences != nil {
+		player := m.service.playerWithPreferences(m.width, m.height, m.preferences)
+		return player, player.Init()
+	}
 	if m.service.player != nil {
 		player := m.service.player(m.width, m.height)
 		return player, player.Init()
 	}
 	return m, nil
+}
+
+// changePreferences toggles language or cycles the theme and persists the result.
+func (m *setupModel) changePreferences(language bool) {
+	if language {
+		m.preferences.Language = map[string]string{"en": "es", "es": "en"}[m.preferences.Language]
+	} else {
+		next := map[string]string{"standard": "dark", "dark": "light", "light": "standard"}
+		m.preferences.Theme = next[m.preferences.Theme]
+	}
+	m.preferences = m.preferences.normalized()
+	m.saveFailed = false
+	if m.save != nil && m.save(m.preferences) != nil {
+		m.saveFailed = true
+	}
 }
 
 func (m *setupModel) clearKey() {
@@ -220,6 +247,10 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if msg.Type == tea.KeyF2 || msg.Type == tea.KeyF3 {
+		m.changePreferences(msg.Type == tea.KeyF2)
+		return nil
+	}
 	if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC {
 		m.clearKey()
 		m.cancelPairing()
@@ -285,68 +316,86 @@ func (m *setupModel) screen() setupScreen {
 	var screen setupScreen
 	switch m.phase {
 	case setupChecking, setupPairingChecking:
-		screen.action, screen.status = "Checking Soloist...", "Working"
+		screen.action, screen.status = m.text("Checking Soloist...", "Comprobando Soloist..."), m.text("Working", "Trabajando")
 	case setupCheckFailed:
-		screen.action, screen.status = "Could not check Soloist. Try again.", "Retry needed"
-		screen.hints = []string{"Enter: recheck"}
+		screen.action, screen.status = m.text("Could not check Soloist. Try again.", "No se pudo comprobar Soloist. Inténtalo de nuevo."), m.text("Retry needed", "Reintento necesario")
+		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar")}
 	case setupConfirmInstall:
-		screen.action, screen.status = "Soloist is not installed. Install it now?", "Waiting for confirmation"
-		screen.hints = []string{"Y: install"}
+		screen.action, screen.status = m.text("Soloist is not installed. Install it now?", "Soloist no está instalado. ¿Quieres instalarlo ahora?"), m.text("Waiting for confirmation", "Esperando confirmación")
+		screen.hints = []string{m.text("Y: install", "Y: instalar")}
 	case setupInstalling:
-		screen.action, screen.status = "Installing Soloist...", "Working"
+		screen.action, screen.status = m.text("Installing Soloist...", "Instalando Soloist..."), m.text("Working", "Trabajando")
 	case setupInstallFailed:
-		screen.action = "Install Soloist manually from the official downloads.\nPut the executable on your PATH, then recheck."
-		screen.link, screen.status = downloads, "Retry needed"
-		screen.hints = []string{"Y: retry install", "Enter: recheck"}
+		screen.action = m.text("Install Soloist manually from the official downloads.\nPut the executable on your PATH, then recheck.",
+			"Instala Soloist manualmente desde las descargas oficiales.\nColoca el ejecutable en tu PATH y vuelve a comprobar.")
+		screen.link, screen.status = downloads, m.text("Retry needed", "Reintento necesario")
+		screen.hints = []string{m.text("Y: retry install", "Y: reintentar instalación"), m.text("Enter: recheck", "Enter: volver a comprobar")}
 		switch m.installIssue {
 		case setupInstallPermission:
-			screen.reason = "Cannot write to the install location."
-			screen.action += "\nCheck write permissions before retrying the automatic install."
+			screen.reason = m.text("Cannot write to the install location.", "No se puede escribir en la ubicación de instalación.")
+			screen.action += m.text("\nCheck write permissions before retrying the automatic install.",
+				"\nRevisa los permisos de escritura antes de reintentar la instalación automática.")
 		case setupInstallTimeout:
-			screen.reason = "Soloist download timed out."
-			screen.action += "\nCheck your connection before retrying the automatic install."
+			screen.reason = m.text("Soloist download timed out.", "Se agotó el tiempo de descarga de Soloist.")
+			screen.action += m.text("\nCheck your connection before retrying the automatic install.",
+				"\nRevisa tu conexión antes de reintentar la instalación automática.")
 		default:
-			screen.reason = "Automatic install failed."
+			screen.reason = m.text("Automatic install failed.", "Error en la instalación automática.")
 		}
 	case setupEnterKey, setupStartFailed:
-		screen.action = "Soloist is installed. To create your Soloist key:\n" +
-			"1. Open https://developer.spotify.com/dashboard/soloist\n" +
-			"2. Sign in with your Spotify Premium account.\n" +
-			"3. Create a Soloist key and paste it below."
-		screen.status = "Waiting for key"
+		screen.action = m.text("Soloist is installed. To create your Soloist key:\n"+
+			"1. Open https://developer.spotify.com/dashboard/soloist\n"+
+			"2. Sign in with your Spotify Premium account.\n"+
+			"3. Create a Soloist key and paste it below.",
+			"Soloist está instalado. Para crear tu clave de Soloist:\n"+
+				"1. Abre https://developer.spotify.com/dashboard/soloist\n"+
+				"2. Inicia sesión con tu cuenta de Spotify Premium.\n"+
+				"3. Crea una clave de Soloist y pégala aquí.")
+		screen.status = m.text("Waiting for key", "Esperando la clave")
 		if m.phase == setupStartFailed {
-			screen.status = "Retry needed"
-			screen.action += "\nCould not start Soloist. Enter your key to retry."
+			screen.status = m.text("Retry needed", "Reintento necesario")
+			screen.action += m.text("\nCould not start Soloist. Enter your key to retry.",
+				"\nNo se pudo iniciar Soloist. Introduce tu clave para reintentar.")
 		}
 		screen.keyPrompt = true
-		screen.hints = []string{"Enter: start"}
+		screen.hints = []string{m.text("Enter: start", "Enter: iniciar")}
 	case setupStarting:
-		screen.action, screen.status = "Starting Soloist...", "Working"
+		screen.action, screen.status = m.text("Starting Soloist...", "Iniciando Soloist..."), m.text("Working", "Trabajando")
 	case setupPairing:
-		deviceStep := "4. Select Pulso or your existing Soloist device name.\n"
+		deviceStep := m.text("4. Select Pulso or your existing Soloist device name.\n",
+			"4. Selecciona Pulso o el nombre de tu dispositivo Soloist.\n")
 		if m.deviceName != "" {
-			deviceStep = "4. Select the device shown below.\n"
-			screen.device = "Device: " + m.deviceName
+			deviceStep = m.text("4. Select the device shown below.\n", "4. Selecciona el dispositivo que aparece abajo.\n")
+			screen.device = m.text("Device: ", "Dispositivo: ") + m.deviceName
 		}
-		screen.action = "1. Leave Pulso open. On your phone, open Spotify with the same account.\n" +
-			"2. Connect both devices to the same local network.\n" +
-			"3. Play a song and tap Connect to a device.\n" + deviceStep +
-			"5. Pulso opens Now Playing when Spotify connects.\n" +
-			"Device missing? Check Wi-Fi, guest network isolation, and VPN settings."
-		screen.status = "Waiting for pairing"
+		screen.action = m.text("1. Leave Pulso open. On your phone, open Spotify with the same account.\n"+
+			"2. Connect both devices to the same local network.\n"+
+			"3. Play a song and tap Connect to a device.\n"+deviceStep+
+			"5. Pulso opens Now Playing when Spotify connects.\n"+
+			"Device missing? Check Wi-Fi, guest network isolation, and VPN settings.",
+			"1. Deja Pulso abierto. En tu teléfono, abre Spotify con la misma cuenta.\n"+
+				"2. Conecta ambos dispositivos a la misma red local.\n"+
+				"3. En reproducción, toca Conectar a un dispositivo.\n"+deviceStep+
+				"5. Pulso abre Ahora suena cuando Spotify se conecte.\n"+
+				"¿No aparece el dispositivo? Revisa el Wi-Fi, el aislamiento de invitados y la VPN.")
+		screen.status = m.text("Waiting for pairing", "Esperando el emparejamiento")
 		if m.pairingState == setupPairingReconnecting {
-			screen.status = "Reconnecting to Soloist"
-			screen.reason = "Run pulso doctor if it does not reconnect."
+			screen.status = m.text("Reconnecting to Soloist", "Reconectando con Soloist")
+			screen.reason = m.text("Run pulso doctor if it does not reconnect.", "Ejecuta pulso doctor si no se reconecta.")
 		}
-		screen.hints = []string{"Enter: recheck"}
+		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar")}
 	case setupPairingStopped:
-		screen.action = "Soloist stopped. Start it again, then press Enter to recheck."
-		screen.status = "Soloist stopped"
-		screen.hints = []string{"Enter: recheck"}
+		screen.action = m.text("Soloist stopped. Start it again, then press Enter to recheck.",
+			"Soloist se detuvo. Inícialo de nuevo y pulsa Enter para volver a comprobar.")
+		screen.status = m.text("Soloist stopped", "Soloist detenido")
+		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar")}
 	case setupDone:
-		screen.action, screen.status = "Soloist is ready.", "Setup complete"
+		screen.action, screen.status = m.text("Soloist is ready.", "Soloist está listo."), m.text("Setup complete", "Configuración completa")
 	}
-	screen.hints = append(screen.hints, "Esc: quit")
+	if m.saveFailed {
+		screen.reason = m.text("Could not save preferences.", "No se pudieron guardar las preferencias.")
+	}
+	screen.hints = append(screen.hints, m.text("Esc: quit", "Esc: salir"))
 	return screen
 }
 
@@ -355,8 +404,12 @@ var (
 	setupLabel  = lipgloss.NewStyle().Bold(true)
 )
 
+func (m *setupModel) text(english, spanish string) string {
+	return m.preferences.text(english, spanish)
+}
+
 func (m *setupModel) checklist() []string {
-	steps := []string{"Soloist", "Key", "Pairing"}
+	steps := []string{"Soloist", m.text("Key", "Clave"), m.text("Pairing", "Emparejamiento")}
 	for i, step := range steps {
 		mark := "[ ] "
 		switch {
@@ -395,8 +448,8 @@ func setupRows(groups []string, separator string, width int) []string {
 	return rows
 }
 
-func setupActionRows(action string, width int) []string {
-	rows := []string{setupLabel.Render("ACTION"[:min(width, len("ACTION"))])}
+func setupActionRows(label, action string, width int) []string {
+	rows := []string{setupLabel.Render(label[:min(width, len(label))])}
 	for _, paragraph := range strings.Split(action, "\n") {
 		rows = append(rows, setupRows(strings.Fields(paragraph), " ", width)...)
 	}
@@ -415,8 +468,10 @@ func (m *setupModel) View() string {
 	indent := strings.Repeat(" ", inset)
 	screen, steps := m.screen(), m.checklist()
 
-	title := "Welcome to Pulso"
-	header := []string{setupBanner.Width(m.width).Render(indent + title[:min(len(title), width)])}
+	title := m.text("Welcome to Pulso", "Bienvenido a Pulso")
+	palette := m.preferences.palette()
+	banner := lipgloss.NewStyle().Bold(true).Foreground(palette.AccentText).Background(palette.Accent)
+	header := []string{banner.Width(m.width).Render(indent + title[:min(len(title), width)])}
 	if m.height >= 12 && width >= 25 {
 		header = append(header, indent+setupLabel.Render("[ SETUP ]")+"  /  Soloist")
 		if m.height >= 18 {
@@ -424,7 +479,7 @@ func (m *setupModel) View() string {
 		}
 	}
 
-	status := []string{"STATUS  " + screen.status}
+	status := []string{m.text("STATUS  ", "ESTADO  ") + screen.status}
 	if screen.reason != "" {
 		status = append(status, screen.reason)
 	}
@@ -435,8 +490,15 @@ func (m *setupModel) View() string {
 	if screen.device != "" {
 		footer = append([]string{playerFit(screen.device, width)}, footer...)
 	}
-	footer = append(footer, setupRows(screen.hints, " | ", width)...)
-	// Keep the title and the key hints in unusually short terminals.
+	themeLabel := map[string]string{"standard": "Standard", "dark": "Dark", "light": "Light"}[m.preferences.Theme]
+	hints := append([]string{}, screen.hints...)
+	if width >= 60 {
+		hints = append(hints,
+			m.text("F2: language", "F2: idioma")+" ("+m.text("English", "Español")+")",
+			m.text("F3: theme", "F3: tema")+" ("+m.text(themeLabel,
+				map[string]string{"standard": "Estándar", "dark": "Oscuro", "light": "Claro"}[m.preferences.Theme])+")")
+	}
+	footer = append(footer, setupRows(hints, " | ", width)...)
 	footer = footer[max(0, len(footer)-(m.height-1)):]
 	room := m.height - len(header) - len(footer)
 
@@ -444,8 +506,8 @@ func (m *setupModel) View() string {
 	if m.width >= 95 && m.height >= 27 {
 		const sidebarWidth = 25
 		actionWidth := width - sidebarWidth - 3
-		actionRows := setupActionRows(screen.action, actionWidth)
-		checklist := append([]string{setupLabel.Render("PROGRESS")}, steps...)
+		actionRows := setupActionRows(m.text("ACTION", "ACCIÓN"), screen.action, actionWidth)
+		checklist := append([]string{setupLabel.Render(m.text("PROGRESS", "PROGRESO"))}, steps...)
 		for i := 0; i < max(len(actionRows), len(checklist)); i++ {
 			left, right := "", ""
 			if i < len(actionRows) {
@@ -461,7 +523,7 @@ func (m *setupModel) View() string {
 		if m.height >= 18 {
 			body = append(body, "")
 		}
-		body = append(body, setupActionRows(screen.action, width)...)
+		body = append(body, setupActionRows(m.text("ACTION", "ACCIÓN"), screen.action, width)...)
 	}
 
 	var essential []string
@@ -469,7 +531,7 @@ func (m *setupModel) View() string {
 		essential = setupRows([]string{screen.link}, "", width)
 	}
 	if screen.keyPrompt {
-		prompt := "Key: "
+		prompt := m.text("Key: ", "Clave: ")
 		essential = append(essential, prompt[:min(width, len(prompt))]+strings.Repeat("*", min(len(m.key), 64, max(0, width-len(prompt)))))
 	}
 	if room > 0 {

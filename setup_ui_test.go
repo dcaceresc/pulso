@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 const setupKeyGuide = "Soloist is installed. To create your Soloist key:\n" +
@@ -408,6 +411,171 @@ func TestSetupInstallFailureActions(t *testing.T) {
 				t.Fatal("manual install recheck should inspect exactly once")
 			}
 			expectSetupText(t, model.View(), "Key:", "Enter: start")
+		})
+	}
+}
+
+func TestSetupBilingualKeyFlowAndHandoff(t *testing.T) {
+	const key = "fixture-key"
+	checks, starts, handoffs := 0, 0, 0
+	var saved []preferences
+	model := newSetupModelWithPreferences(context.Background(), setupService{
+		inspect: func(context.Context) (setupState, error) {
+			checks++
+			switch checks {
+			case 1:
+				return setupNeedsKey, nil
+			case 2:
+				return setupAwaitPairing, nil
+			default:
+				return setupReady, nil
+			}
+		},
+		start: func(_ context.Context, got string) error {
+			starts++
+			if got != key {
+				t.Fatal("start did not receive the unchanged key")
+			}
+			if starts == 1 {
+				return errors.New("raw error: " + got)
+			}
+			return nil
+		},
+		player: func(int, int) tea.Model {
+			t.Fatal("legacy player used instead of preferences-aware player")
+			return nil
+		},
+		playerWithPreferences: func(width, height int, p preferences) tea.Model {
+			handoffs++
+			if width != 80 || height != 24 || p != (preferences{Language: "es", Theme: "light"}) {
+				t.Fatalf("unexpected handoff: %dx%d, %+v", width, height, p)
+			}
+			return setupTestPlayer{}
+		},
+	}, preferences{Language: "es", Theme: "light"}, func(p preferences) error {
+		saved = append(saved, p)
+		return nil
+	})
+	expectSetupText(t, model.View(), "Bienvenido a Pulso", "Comprobando Soloist...", "F2: idioma (Español)", "F3: tema (Claro)")
+	model, _ = runSetupCmd(t, model, model.Init())
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key + "x"), Paste: true})
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	mask := strings.Repeat("*", len(key))
+	expectSetupText(t, model.View(), "Crea una clave de Soloist", "Esperando la clave", "Clave: "+mask, "Enter: iniciar | Esc: salir")
+	if len(saved) != 0 || starts != 0 {
+		t.Fatal("initial inspection or key editing saved preferences or started Soloist")
+	}
+
+	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyF2})
+	if cmd != nil {
+		t.Fatal("language shortcut scheduled setup work")
+	}
+	expectSetupText(t, model.View(), "Welcome to Pulso", "Key: "+mask, "Enter: start | Esc: quit", "F2: language (English)")
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyF2})
+	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	expectSetupText(t, model.View(), "Iniciando Soloist...")
+	model, cmd = runSetupCmd(t, model, cmd)
+	expectSetupText(t, model.View(), "No se pudo iniciar Soloist. Introduce tu clave para reintentar.", "Reintento necesario", "Enter: iniciar")
+	if cmd != nil || starts != 1 || strings.Contains(model.View(), key) || strings.Contains(model.View(), "raw error") || strings.Contains(model.View(), mask) {
+		t.Fatal("failed start did not require an empty, sanitized retry")
+	}
+	model, _ = model.Update(setupRunes(key))
+	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, cmd = runSetupCmd(t, model, cmd)
+	model, cmd = runSetupCmd(t, model, cmd)
+	if cmd != nil || handoffs != 0 || checks != 2 || starts != 2 {
+		t.Fatal("successful start failed to enter pairing without opening the player")
+	}
+	expectSetupText(t, model.View(), "Selecciona Pulso o el nombre de tu dispositivo Soloist.", "En reproducción", "Esperando el emparejamiento", "Enter: volver a comprobar | Esc: salir")
+	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, cmd = runSetupCmd(t, model, cmd)
+	if cmd == nil || cmd() != "player initialized" || model.View() != "Now Playing" || handoffs != 1 || checks != 3 || starts != 2 {
+		t.Fatal("pairing did not hand off to the player exactly once")
+	}
+	if want := []preferences{{Language: "en", Theme: "light"}, {Language: "es", Theme: "light"}}; !slices.Equal(saved, want) {
+		t.Fatalf("saved preferences = %+v, want %+v", saved, want)
+	}
+}
+
+func TestSetupThemeCyclesAndPersists(t *testing.T) {
+	profile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(profile) })
+
+	var saved []preferences
+	model := newSetupModelWithPreferences(context.Background(), setupService{
+		inspect: func(context.Context) (setupState, error) { return setupReady, nil },
+	}, preferences{Language: "en", Theme: "unknown"}, func(p preferences) error {
+		saved = append(saved, p)
+		if p.Theme == "dark" {
+			return errors.New("raw save error")
+		}
+		return nil
+	})
+	model, _ = runSetupCmd(t, model, model.Init())
+	model, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if len(saved) != 0 {
+		t.Fatal("initial inspection or resizing saved preferences")
+	}
+	var previousBanner string
+	for i, theme := range []struct{ value, label string }{{"standard", "Standard"}, {"dark", "Dark"}, {"light", "Light"}, {"standard", "Standard"}} {
+		if i > 0 {
+			var cmd tea.Cmd
+			model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyF3})
+			if cmd != nil || len(saved) != i || saved[i-1] != (preferences{Language: "en", Theme: theme.value}) {
+				t.Fatalf("theme shortcut did not save exactly the new preferences: %+v", saved)
+			}
+		}
+		view := model.View()
+		expectSetupBounds(t, view, 100, 30)
+		expectSetupText(t, view, "Soloist is ready.", "F2: language (English)", "F3: theme ("+theme.label+")")
+		p := preferences{Theme: theme.value}.palette()
+		wantBanner := lipgloss.NewStyle().Bold(true).Foreground(p.AccentText).Background(p.Accent).Width(100).Render(" Welcome to Pulso")
+		banner, _, _ := strings.Cut(view, "\n")
+		if banner != wantBanner || banner == previousBanner {
+			t.Fatalf("banner did not use the %s palette: %q", theme.value, banner)
+		}
+		previousBanner = banner
+		if (theme.value == "dark") != strings.Contains(view, "Could not save preferences.") || strings.Contains(view, "raw save error") {
+			t.Fatal("preferences save failure was not shown safely or not cleared on success")
+		}
+	}
+}
+
+func TestSetupSpanishErrorsAndBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		err          error
+	}{
+		{"generic", "Error en la instalación automática.", errors.New("raw install details")},
+		{"permission", "No se puede escribir en la ubicación de instalación.", fs.ErrPermission},
+		{"timeout", "Se agotó el tiempo de descarga de Soloist.", context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := newSetupModelWithPreferences(context.Background(), setupService{
+				inspect: func(context.Context) (setupState, error) { return setupMissing, nil },
+				install: func(context.Context) error { return tc.err },
+			}, preferences{Language: "es", Theme: "dark"}, nil)
+			model, _ = runSetupCmd(t, model, model.Init())
+			expectSetupText(t, model.View(), "Soloist no está instalado. ¿Quieres instalarlo ahora?", "Y: instalar | Esc: salir")
+			model, cmd := model.Update(setupRunes("Y"))
+			expectSetupText(t, model.View(), "Instalando Soloist...")
+			model, cmd = runSetupCmd(t, model, cmd)
+			if cmd != nil || strings.Contains(model.View(), "raw install details") {
+				t.Fatal("install failure scheduled work or exposed the raw error")
+			}
+			expectSetupText(t, model.View(), "Instala Soloist manualmente", tc.reason, "Y: reintentar instalación", "Enter: volver a comprobar")
+			for _, size := range []tea.WindowSizeMsg{{Width: 100, Height: 30}, {Width: 40, Height: 16}, {Width: 25, Height: 12}, {Width: 5, Height: 3}, {Width: 1, Height: 1}} {
+				model, _ = model.Update(size)
+				view := model.View()
+				expectSetupBounds(t, view, size.Width, size.Height)
+				if !utf8.ValidString(view) {
+					t.Fatalf("render split a UTF-8 character at %dx%d", size.Width, size.Height)
+				}
+				if size.Width == 100 {
+					expectSetupText(t, view, "ACCIÓN", "PROGRESO", "ESTADO", "F2: idioma (Español)", "F3: tema (Oscuro)")
+				}
+			}
 		})
 	}
 }

@@ -14,7 +14,24 @@ While waiting for pairing, Pulso retries a lost connection with a short delay be
 
 Pulso searches `PATH` first, then `pulso/bin` under your user configuration directory (`%APPDATA%` on Windows; `$XDG_CONFIG_HOME` or `~/.config` on Linux). Installing via Pulso does not require admin access or change `PATH`; the install directory's filesystem must support hard links. The wizard only uses Soloist's default session directory: `%LOCALAPPDATA%/soloist/data` on Windows, or `$STATE_DIRECTORY` if set on Linux, then `$XDG_DATA_HOME/soloist`, then `$HOME/.local/share/soloist`. It only connects to numeric loopback WebSocket addresses; custom data directories and non-loopback endpoints aren't supported by the wizard.
 
-Setup is intended for the official Windows and Linux x86-64 Soloist builds. Pulso does not install system audio dependencies, configure audio devices, or update Soloist automatically. Real playback, account pairing, and versioned installation on both targets have not yet been verified. When Soloist is ready, Pulso opens **Now Playing** with the current track, progress, volume, and upcoming queue. Press **Space** to play or pause, **n/p** for next or previous, **+/-** for volume, and **Esc** or **q** to exit. Search and playlist browsing via Spotify Web API are not implemented yet.
+Setup is intended for the official Windows and Linux x86-64 Soloist builds. Pulso does not install system audio dependencies, configure audio devices, or update Soloist automatically. Spotify Connect pairing and playback were confirmed by a user on Windows; native Linux, the Web API flow, and versioned installation still need verification. When Soloist is ready, Pulso opens **Now Playing** with the current track, progress, volume, and upcoming queue. Press **Space** to play or pause, **n/p** for next or previous, **+/-** for volume, and **Esc** or **q** to exit. Press **s** to search and **l** to browse playlists; see below.
+
+## Search and playlists
+
+Press **s** to search Spotify tracks and **l** to list your playlists. In the overlay, **Enter** runs a search or opens a playlist, **p** starts a playlist, **Esc** returns to playback, and **Tab** or the arrows move the selection.
+
+Searching uses the official Spotify Web API, which is a separate sign-in from Soloist:
+
+1. Create a free app in the [Spotify developer dashboard](https://developer.spotify.com/dashboard) to get a Client ID. The app owner needs Spotify Premium, and Spotify allows up to five signed-in users.
+2. Add `http://127.0.0.1/callback` as a redirect URI for that app. A dynamically assigned port is allowed for loopback redirects.
+3. Start Pulso with the Client ID: `PULSO_SPOTIFY_CLIENT_ID=<client-id> pulso` (PowerShell: `$env:PULSO_SPOTIFY_CLIENT_ID="<client-id>"; pulso`). Pulso can also ask for it inside the overlay.
+4. Approve access in your browser. Pulso opens a temporary loopback listener and does not store the token, so you sign in again on the next start.
+
+Playlist contents are only returned for playlists you own or collaborate on. For other playlists, Pulso says the contents are restricted and can still play the playlist by its Spotify URI. Playback never depends on this sign-in, so the player keeps working when the Web API is unavailable.
+
+## Language and theme
+
+Press **F2** to switch between English and Spanish, and **F3** to cycle the **standard**, **dark**, and **light** themes. Pulso saves the choice in `preferences.json` under your user configuration directory and only writes it when you press one of those keys.
 
 ## Diagnose Soloist
 

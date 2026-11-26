@@ -34,9 +34,9 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - T8 [done for local fixtures] S6, S7 — Default launch and pairing in `4434863`; follow-up commit `fix: guide pairing for existing Soloist devices`. Real Spotify pairing stays in T2.
 - T4 [done for automated checks] S1, S2, S9, S10 — Playback transport and Now Playing UI in `941ed85` and `b00273a`; protocol and reconnect fixes in `4cbb8e1` and `8fbcadf`. Native Linux and live playback verification stay in T2/T6.
 - T11 [done] S9 — Pairing instructions in `ddb56eb`; ready-session handoff in `b00273a`; independent fixture verification passed.
-- T5 [in progress] S1, S2, S12 — Build Spotify Web API login (OAuth PKCE), catalog search and playlist reads; worker.
-- T13 [pending] S12 — Add persisted English/Spanish and terminal theme selection; worker.
-- T14 [pending] S12 — Integrate search and playlist views into Now Playing and play selected URIs through Soloist.
+- T5 [in progress] S1, S2, S12 — Spotify Web API OAuth PKCE, search and playlist reads implemented; UI and live verification pending; commit `feat: add Spotify catalog access`.
+- T13 [in progress] S12 — English/Spanish and standard/dark/light themes in setup and player; commit `feat: add language and theme choices`.
+- T14 [in progress] S12 — Catalog overlays wired into playback; same commit.
 - T15 [done] S12 — Document Spotatui features and a phased Pulso roadmap in `ROADMAP.md`; commit `docs: map the Pulso feature roadmap`.
 - T6 [pending] S2, S3, S5 — Verify versioned `go install` and real end-to-end behavior on both platforms; route pending; commit pending.
 
@@ -67,3 +67,4 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - L18: Independent Windows fixture verification of `5524547` passed (`go test -count=1 -run '^(TestSetup|TestLocalSetup)' ./...`, exit 0). A WebSocket connection refusal can also happen during daemon restart; that path requires a manual Enter recheck. No live first pairing or native Linux run was performed.
 - L19: “funciona ahora quiero que añadas la funcion de busqueda y playlist y tambien listes las funciones que tiene spotatui y generes un plan para agregalas quiero tambien que la aplicacion tenga localizacion tenga español e ingles y tambien tenga temas”. User confirms the new pairing flow works on their environment. Native Linux real pairing remains unverified.
 - L20: This slice means track search and read-only playlist browsing/playback, not playlist editing. Spotify Web API login is separate from Soloist. Users supply their own developer Client ID; register `http://127.0.0.1/callback` and use an ephemeral loopback port for OAuth. Keep Soloist playback independent of API access. Use English and Spanish, with English fallback, plus Standard, Dark and Light themes. Do not persist access tokens or keys in this initial slice. Never request live credentials for tests.
+- L21: Three implementation workers failed on quota. The parent completed their pending scope inline: localized setup and player, F2/F3 persistence, catalog overlay integration, Spotify URI commands, and production wiring. Fixture tests covering catalog, OAuth, preferences, setup and player pass, as do vet and the Windows suite; Linux cross-build pending confirmation. OAuth token storage is memory-only and playlist content is read-only.
