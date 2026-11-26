@@ -16,7 +16,7 @@ const usage = `Pulso — Spotify in the terminal
 Usage:
   pulso                          Open the Soloist setup wizard
   pulso doctor [--data-dir PATH]  Report local Soloist status
-  pulso login                    Print the Spotify authorization URL
+  pulso login [CLIENT_ID]        Print the Spotify authorization URL
   pulso --help                   Show this help
 `
 
@@ -56,8 +56,12 @@ func run(args []string, stdout, stderr io.Writer, deps commandDeps) int {
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
-	if len(args) == 1 && args[0] == "login" {
-		return deps.login(deps.key(), stdout, stderr)
+	if len(args) >= 1 && len(args) <= 2 && args[0] == "login" {
+		clientID := deps.key()
+		if len(args) == 2 {
+			clientID = args[1]
+		}
+		return deps.login(clientID, stdout, stderr)
 	}
 	if args[0] != "doctor" || (len(args) != 1 && (len(args) != 3 || args[1] != "--data-dir" || args[2] == "")) {
 		fmt.Fprintln(stderr, "Invalid arguments. Run pulso --help.")

@@ -13,12 +13,12 @@ func TestClientIDRoundTrip(t *testing.T) {
 	if got := loadClientIDAt(path); got != "" {
 		t.Fatalf("missing file returned %q", got)
 	}
-	const want = "0123456789abcdef0123456789ABCDEF"
+	const want = "0123456789ABCDEF0123456789abcdef"
 	if err := saveClientIDAt(path, "  "+want+"  "); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadClientIDAt(path); got != want {
-		t.Fatalf("loaded %q, want %q", got, want)
+	if got, lowered := loadClientIDAt(path), strings.ToLower(want); got != lowered {
+		t.Fatalf("loaded %q, want %q", got, lowered)
 	}
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(path)
@@ -28,6 +28,12 @@ func TestClientIDRoundTrip(t *testing.T) {
 	}
 	if err := saveClientIDAt(path, strings.Repeat("a", 65)); err == nil {
 		t.Fatal("saved an oversized client id")
+	}
+	if err := saveClientIDAt(path, strings.Repeat("a", 31)); err == nil {
+		t.Fatal("saved an undersized client id")
+	}
+	if err := saveClientIDAt(path, "5o1eist-key-0123456789abcdef012345"); err == nil {
+		t.Fatal("saved a value that is not a Spotify client id")
 	}
 	if err := saveClientIDAt(path, "bad id\n"); err == nil {
 		t.Fatal("saved a client id with unsafe characters")

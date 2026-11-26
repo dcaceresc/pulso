@@ -27,6 +27,7 @@ const (
 var (
 	errSpotifyRateLimited = errors.New("Spotify rate limit reached; try again later")
 	errSpotifyToken       = errors.New("Spotify token request failed")
+	errSpotifyClientID    = errors.New("Spotify rejected the Client ID or redirect URI")
 	spotifyBearer         = regexp.MustCompile(`^[A-Za-z0-9._~+/\-]+=*$`)
 )
 
@@ -135,6 +136,11 @@ func waitSpotifyCallback(ctx context.Context, listener net.Listener, host, state
 			case accepted <- struct{}{}:
 			default:
 				http.Error(w, "Spotify callback already received", http.StatusConflict)
+				return
+			}
+			if q.Get("error") == "invalid_client" {
+				http.Error(w, "Spotify rejected the Client ID", http.StatusBadRequest)
+				results <- callback{err: errSpotifyClientID}
 				return
 			}
 			if q.Has("error") || len(q["code"]) != 1 || q.Get("code") == "" {

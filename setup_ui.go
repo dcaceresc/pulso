@@ -112,6 +112,7 @@ type setupModel struct {
 	spotifyDone   bool
 	spotifyEvents chan setupSpotifyMsg
 	clientID      []rune
+	clientIssue   bool
 	save          func(preferences) error
 	saveFailed    bool
 	width         int
@@ -328,9 +329,15 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.spotify = setupSpotifyFailed
 	case tea.KeyMsg:
-		if m.phase == setupSpotify && m.spotify != setupSpotifyClientID && msg.Type == tea.KeyRunes && !msg.Paste &&
-			len(msg.Runes) == 1 && (msg.Runes[0] == 's' || msg.Runes[0] == 'S') {
-			return m.skipSpotify()
+		if m.phase == setupSpotify && m.spotify != setupSpotifyClientID && msg.Type == tea.KeyRunes && !msg.Paste && len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case 's', 'S':
+				return m.skipSpotify()
+			case 'e', 'E':
+				m.spotify, m.clientIssue, m.spotifyURL = setupSpotifyClientID, false, ""
+				m.clientID = []rune(m.service.clientID)
+				return m, nil
+			}
 		}
 		return m, m.handleKey(msg)
 	}
@@ -367,6 +374,7 @@ func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 						m.clientID = append(m.clientID, r)
 					}
 				}
+				m.clientIssue = false
 			case tea.KeyBackspace:
 				if n := len(m.clientID); n != 0 {
 					m.clientID = m.clientID[:n-1]
@@ -374,8 +382,10 @@ func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 			case tea.KeyEnter:
 				id, ok := normalizeClientID(string(m.clientID))
 				if !ok {
+					m.clientIssue = true
 					return nil
 				}
+				m.clientIssue = false
 				m.clientID, m.service.clientID = nil, id
 				_ = saveClientID(id)
 				return m.startSpotify()
@@ -525,13 +535,17 @@ func (m *setupModel) screen() setupScreen {
 					"2. Añade http://127.0.0.1/callback como URI de redirección.\n"+
 					"3. Pega abajo su Client ID. Solo se guarda el Client ID público.")
 			screen.status = m.text("Waiting for the Client ID", "Esperando el Client ID")
+			if m.clientIssue {
+				screen.reason = m.text("A Spotify Client ID has 32 hex characters (0-9, a-f); the Soloist key is different.",
+					"El Client ID de Spotify tiene 32 caracteres hexadecimales (0-9, a-f); la clave de Soloist es distinta.")
+			}
 			screen.clientPrompt = true
 			screen.hints = []string{m.text("Enter: connect", "Enter: conectar")}
 		case setupSpotifyFailed:
 			screen.action = m.text("Spotify authorization did not finish. Retry, or continue without search and playlists.",
 				"La autorización de Spotify no se completó. Reintenta o continúa sin búsqueda ni listas.")
 			screen.status = m.text("Retry needed", "Reintento necesario")
-			screen.hints = []string{m.text("Enter: retry", "Enter: reintentar"), m.text("s: skip", "s: omitir")}
+			screen.hints = []string{m.text("Enter: retry", "Enter: reintentar"), m.text("e: edit Client ID", "e: cambiar Client ID"), m.text("s: skip", "s: omitir")}
 		default:
 			screen.action = m.text("Open this URL in your browser and approve access. Playback works without it.",
 				"Abre esta URL en tu navegador y aprueba el acceso. La reproducción funciona sin esto.")

@@ -16,6 +16,8 @@ func runLogin(clientID string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "then set PULSO_SPOTIFY_CLIENT_ID or add it in the Pulso setup wizard.")
 		return 1
 	}
+	// Presenting the ID again replaces a stale saved value.
+	_ = saveClientID(id)
 	_, err := authorizeSpotify(context.Background(), id, func(raw string) {
 		fmt.Fprintf(stdout, "Open this URL in your browser:\n%s\n", raw)
 		_ = openBrowser(raw)

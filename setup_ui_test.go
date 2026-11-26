@@ -619,7 +619,7 @@ func TestSetupSpotifySignInAfterKey(t *testing.T) {
 	model := newSetupModelWithPreferences(context.Background(), service, preferences{}, nil)
 	model, _ = runSetupCmd(t, model, model.Init())
 	expectSetupText(t, model.View(), "Connect Spotify", "Client ID: _", "Waiting for the Client ID")
-	model, _ = model.Update(setupRunes("client123"))
+	model, _ = model.Update(setupRunes("0123456789abcdef0123456789abcdef"))
 	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("entering a Client ID should start authorization")
@@ -627,7 +627,7 @@ func TestSetupSpotifySignInAfterKey(t *testing.T) {
 	model, cmd = runSetupCmd(t, model, cmd)
 	expectSetupText(t, model.View(), "http://127.0.0.1:1234/callback", "Waiting for Spotify authorization")
 	model, cmd = runSetupCmd(t, model, cmd)
-	if cmd == nil || cmd() != "player initialized" || gotID != "client123" {
+	if cmd == nil || cmd() != "player initialized" || gotID != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("handoff failed: id=%q view=%q", gotID, model.View())
 	}
 }
@@ -645,7 +645,7 @@ func TestSetupSpotifySkipKeepsPlayback(t *testing.T) {
 	}
 	model := newSetupModelWithPreferences(context.Background(), service, preferences{}, nil)
 	model, _ = runSetupCmd(t, model, model.Init())
-	model, _ = model.Update(setupRunes("client123"))
+	model, _ = model.Update(setupRunes("0123456789abcdef0123456789abcdef"))
 	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model, cmd = runSetupCmd(t, model, cmd)
 	if cmd != nil {
@@ -656,4 +656,21 @@ func TestSetupSpotifySkipKeepsPlayback(t *testing.T) {
 	if cmd == nil || cmd() != "player initialized" {
 		t.Fatalf("skip did not open the player: %q", model.View())
 	}
+}
+
+func TestSetupRejectsNonSpotifyClientID(t *testing.T) {
+	authorized := false
+	model := newSetupModelWithPreferences(context.Background(), setupService{
+		inspect:   func(context.Context) (setupState, error) { return setupReady, nil },
+		authorize: func(context.Context, string, func(string)) (catalogAPI, error) { authorized = true; return nil, nil },
+	}, preferences{}, nil)
+	model, _ = runSetupCmd(t, model, model.Init())
+	model, _ = model.Update(setupRunes("soloist-key-not-a-client-id"))
+	model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil || authorized {
+		t.Fatal("an invalid Client ID started authorization")
+	}
+	expectSetupText(t, model.View(), "32 hex characters")
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	expectSetupText(t, model.View(), "32 hex characters")
 }

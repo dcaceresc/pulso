@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-const clientIDLimit = 64
+const (
+	clientIDLimit     = 64
+	clientIDHexLength = 32
+)
 
 // loadClientID remembers only the public Spotify Client ID. Access tokens are
 // never written; a missing or unusable file simply means "ask again".
@@ -80,14 +83,16 @@ func saveClientIDAt(path, raw string) error {
 	return os.Rename(stage.Name(), path)
 }
 
-// A Client ID is public, but it must still be a single safe token.
+// A Client ID is public, but Spotify only accepts its own shape: 32 hex
+// characters. Rejecting anything else keeps a mistyped Soloist key from
+// reaching the authorization page.
 func normalizeClientID(raw string) (string, bool) {
-	id := strings.TrimSpace(raw)
-	if id == "" || len(id) > clientIDLimit {
+	id := strings.ToLower(strings.TrimSpace(raw))
+	if len(id) != clientIDHexLength {
 		return "", false
 	}
 	for _, r := range id {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
 			return "", false
 		}
 	}
