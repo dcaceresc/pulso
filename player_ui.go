@@ -28,8 +28,6 @@ const (
 	playerWideWidth   = 100 // Three columns start here.
 	playerWideHeight  = 30
 	playerNarrowWidth = 60 // Below this the table and bar keep only their essential columns.
-	playerHintsWidth  = 80 // Two hint rows start here.
-	playerHintsHeight = 14
 	playerShortTable  = 20 // Below this the table keeps only its title column.
 	playerSwitcherKey = 40 // Below this the library switcher uses the short key label.
 	playerMinBodyRoom = 4  // Content wins over separator rules in short windows.
@@ -65,6 +63,8 @@ type playerModel struct {
 	query         string
 	library       *libraryState
 	search        *searchState
+	// help reports whether the full-screen help view owns the keyboard.
+	help bool
 	// clock is the source of the interpolated playhead; tests replace it.
 	clock func() time.Time
 }
@@ -177,6 +177,12 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case playerTickMsg:
 		return m, m.tick()
 	case tea.KeyMsg:
+		// The help view swallows every key but its own: the panel underneath
+		// never acts by accident.
+		if m.help {
+			m.handleHelpKey(msg)
+			return m, nil
+		}
 		if msg.Type == tea.KeyF2 {
 			m.changePreferences(true)
 			return m, nil
@@ -195,6 +201,12 @@ func (m *playerModel) text(english, spanish string) string {
 }
 
 func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
+	// F1 opens the help view even inside the text field; `?` is text there and
+	// opens it from every other panel.
+	if key.Type == tea.KeyF1 {
+		m.help = true
+		return nil
+	}
 	switch key.Type {
 	case tea.KeyF2:
 		return m.changePreferences(true)
@@ -208,6 +220,10 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	// `-` are text there instead of shortcuts.
 	if m.focus == playerFocusSearch {
 		return m.handleSearchKey(key)
+	}
+	if key.String() == "?" {
+		m.help = true
+		return nil
 	}
 	// Esc from any panel leaves shown search results first; the next one quits.
 	if key.Type == tea.KeyEsc && m.search.active {
@@ -237,11 +253,11 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 		m.focus = playerFocusSearch
 		return nil
 	case "l":
-		// l moves to the sidebar; s is free outside the playing bar.
 		m.focus = playerFocusSidebar
 		return nil
 	}
-	// The playing bar owns seek, shuffle and repeat.
+	// Shuffle, repeat and the bar's own seek keys come next; s and r reach
+	// Soloist from every panel, while the arrows stay with the playing bar.
 	if m.handlePlayingKey(key) {
 		return nil
 	}
@@ -280,15 +296,16 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// handlePlayingKey owns the keys of the playing bar: seek, shuffle and repeat.
-// It reports whether the key belonged to that panel.
+// handlePlayingKey owns shuffle and repeat from every panel, and the seek
+// arrows from the playing bar, which is the only place they are advertised.
+// It reports whether the key belonged to those bindings.
 func (m *playerModel) handlePlayingKey(key tea.KeyMsg) bool {
-	if m.focus != playerFocusPlaying {
-		return false
-	}
 	var command playerCommand
 	switch {
 	case key.Type == tea.KeyLeft, key.Type == tea.KeyRight:
+		if m.focus != playerFocusPlaying {
+			return false
+		}
 		delta := int64(playerSeekStepMS)
 		if key.Type == tea.KeyLeft {
 			delta = -delta
@@ -751,6 +768,9 @@ func (m *playerModel) View() string {
 	if m.quit || m.width < 1 || m.height < 1 {
 		return ""
 	}
+	if m.help {
+		return m.helpView()
+	}
 	styles := m.styles()
 	width := m.width
 	rule := styles.muted.Render(strings.Repeat("─", width))
@@ -918,84 +938,123 @@ func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
 	if notice != "" {
 		rows = append(rows, playerRow{text: notice})
 	}
-	for _, hint := range m.hintRows(width) {
+	hints := m.hintRows(width)
+	if budget := m.hintBudget(width, styles, len(rows)); len(hints) > budget {
+		hints = hints[:budget]
+	}
+	for _, hint := range hints {
 		rows = append(rows, playerRow{text: hint, style: styles.muted})
 	}
 	return rows
 }
 
-// hintRows follows the focused panel and never advertises a key that does
-// nothing there. Narrow windows use short labels.
-func (m *playerModel) hintRows(width int) []string {
-	if m.focus == playerFocusSearch {
-		if width < playerHintsWidth {
-			return []string{m.text("Enter: search | Esc: leave", "Enter: buscar | Esc: salir")}
+// hintBudget keeps the footer inside the window: the frame, the playing bar,
+// any notice row and one content row come first. One footer row is always kept
+// so the keys stay discoverable.
+func (m *playerModel) hintBudget(width int, styles playerStyles, noticeRows int) int {
+	fixed := 2 + len(m.playingRows(width, styles)) + noticeRows
+	return max(1, m.height-fixed-1)
+}
+
+// playerHint is one footer binding: the key as it is pressed and the localized
+// action it performs. Labels stay one word so a pair parses as `Key label`.
+type playerHint struct {
+	key   string
+	label string
+}
+
+// playerHintLines wraps bindings into sqlterm's flat footer shape: one leading
+// space, `Key label` pairs, two spaces between pairs and one trailing space.
+// Narrow windows wrap onto another row of the same shape instead of falling
+// back to shortened labels.
+func playerHintLines(hints []playerHint, width int) []string {
+	if width <= 0 || len(hints) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(hints))
+	line := ""
+	flush := func() {
+		if line != "" {
+			lines = append(lines, line+" ")
+			line = ""
 		}
-		return []string{m.text("Type: edit | Backspace: delete | Enter: search | Esc: leave",
-			"Escribe: editar | Retroceso: borrar | Enter: buscar | Esc: salir")}
 	}
-	if width < playerNarrowWidth {
-		return []string{m.shortHints()}
+	for _, hint := range hints {
+		item := hint.key + " " + hint.label
+		if line == "" {
+			line = " " + item
+			continue
+		}
+		// A pair that cannot fit even alone stays on its own row and is
+		// truncated by the row renderer, never split across rows.
+		if lipgloss.Width(line)+2+lipgloss.Width(item)+1 <= width {
+			line += "  " + item
+			continue
+		}
+		flush()
+		line = " " + item
 	}
-	if width < playerHintsWidth {
-		return []string{m.compactHints()}
-	}
-	rows := []string{m.wideHints()}
-	if m.height >= playerHintsHeight {
-		rows = append(rows, m.wideSecondaryHints())
-	}
-	return rows
+	flush()
+	return lines
 }
 
-// shortHints lists the focused panel's keys as bare labels when every column
-// counts.
-func (m *playerModel) shortHints() string {
+// hintPairs follows the focused panel and never advertises a key that does
+// nothing there. Shuffle and repeat work from every panel but the text field,
+// so only the playing bar advertises the seek arrows.
+func (m *playerModel) hintPairs() []playerHint {
+	if m.focus == playerFocusSearch {
+		return []playerHint{
+			{"Enter", m.text("search", "buscar")},
+			{"Esc", m.text("leave", "salir")},
+			{"Backspace", m.text("delete", "borrar")},
+			{"F1", m.text("help", "ayuda")},
+			{"F2", m.text("language", "idioma")},
+			{"F3", m.text("theme", "tema")},
+		}
+	}
+	hints := []playerHint{{"Tab", m.text("focus", "panel")}}
 	switch m.focus {
-	case playerFocusPlaying:
-		return m.text("Space | ←→ | s | r | +/- | q: quit", "Espacio | ←→ | s | r | +/- | q: salir")
 	case playerFocusSidebar:
-		return m.text("/: search | ↑↓ | Enter | q", "/: buscar | ↑↓ | Enter | q")
+		hints = append(hints,
+			playerHint{"↑↓/jk", m.text("library", "biblioteca")},
+			playerHint{"Enter", m.text("open", "abrir")},
+			playerHint{"Space", m.text("play/pause", "pausa")},
+			playerHint{"s", m.text("shuffle", "aleatorio")},
+			playerHint{"r", m.text("repeat", "repetir")},
+			playerHint{"+/-", m.text("volume", "volumen")},
+			playerHint{"/", m.text("search", "buscar")})
+	case playerFocusPlaying:
+		hints = append(hints,
+			playerHint{"Space", m.text("play/pause", "pausa")},
+			playerHint{"←→", m.text("seek", "salto")},
+			playerHint{"n/p", m.text("track", "pista")},
+			playerHint{"s", m.text("shuffle", "aleatorio")},
+			playerHint{"r", m.text("repeat", "repetir")},
+			playerHint{"+/-", m.text("volume", "volumen")},
+			playerHint{"/", m.text("search", "buscar")},
+			playerHint{"l", m.text("library", "biblioteca")})
 	default:
-		return m.text("/: search | ↑↓ | q", "/: buscar | ↑↓ | q")
+		hints = append(hints,
+			playerHint{"↑↓/jk", m.text("move", "mover")},
+			playerHint{"Enter", m.text("play", "reproducir")},
+			playerHint{"Space", m.text("play/pause", "pausa")},
+			playerHint{"s", m.text("shuffle", "aleatorio")},
+			playerHint{"r", m.text("repeat", "repetir")},
+			playerHint{"+/-", m.text("volume", "volumen")},
+			playerHint{"/", m.text("search", "buscar")},
+			playerHint{"l", m.text("library", "biblioteca")})
 	}
+	return append(hints,
+		playerHint{"F1", m.text("help", "ayuda")},
+		playerHint{"F2", m.text("language", "idioma")},
+		playerHint{"F3", m.text("theme", "tema")},
+		playerHint{"q", m.text("quit", "salir")},
+		playerHint{"Esc", m.text("back/quit", "volver/salir")})
 }
 
-// compactHints names each focused key once in a single row.
-func (m *playerModel) compactHints() string {
-	switch m.focus {
-	case playerFocusPlaying:
-		return m.text("Tab | Space: pause | ←→: seek | s | r | +/- | q: quit",
-			"Tab | Espacio: pausa | ←→: salto | s | r | +/- | q: salir")
-	case playerFocusSidebar:
-		return m.text("Tab | ↑↓/jk: library | /: search | q: quit",
-			"Tab | ↑↓/jk: biblioteca | /: buscar | q: salir")
-	default:
-		return m.text("Tab | ↑↓/jk: move | /: search | q: quit",
-			"Tab | ↑↓/jk: mover | /: buscar | q: salir")
-	}
-}
-
-func (m *playerModel) wideHints() string {
-	primary := m.text("Tab: panel | ↑↓/jk: move | /: search | Esc/q: quit",
-		"Tab: panel | ↑↓/jk: mover | /: buscar | Esc/q: salir")
-	switch m.focus {
-	case playerFocusSidebar:
-		primary = m.text("Tab: panel | ↑↓/jk: library | /: search | Esc/q: quit",
-			"Tab: panel | ↑↓/jk: biblioteca | /: buscar | Esc/q: salir")
-	case playerFocusPlaying:
-		primary = m.text("Tab: panel | Space: pause | ←→: seek | n/p: track | s: shuffle | r: repeat | +/-: volume | Esc/q: quit",
-			"Tab: panel | Espacio: pausa | ←→: salto | n/p: pista | s: aleatorio | r: repetir | +/-: volumen | Esc/q: salir")
-	}
-	return primary
-}
-
-func (m *playerModel) wideSecondaryHints() string {
-	if m.focus == playerFocusPlaying {
-		return m.text("s: shuffle | r: repeat | +/-: volume | F2: language | F3: theme",
-			"s: aleatorio | r: repetir | +/-: volumen | F2: idioma | F3: tema")
-	}
-	return m.text("l: library | +/-: volume | F2: language | F3: theme",
-		"l: biblioteca | +/-: volumen | F2: idioma | F3: tema")
+// hintRows is the footer: the focused panel's pairs in the shared flat format.
+func (m *playerModel) hintRows(width int) []string {
+	return playerHintLines(m.hintPairs(), width)
 }
 
 func (m *playerModel) bodyRows(width int, styles playerStyles, room int) []playerRow {

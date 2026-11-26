@@ -83,7 +83,7 @@ func TestPlayerViewLifecycle(t *testing.T) {
 	states := make(chan playerState, 1)
 	out := make(chan playerCommand, 1)
 	m := newPlayerModel(ctx, states, out, 80, 24)
-	playerViewText(t, m, "Pulso", "Loading", "Esc/q: quit")
+	playerViewText(t, m, "Pulso", "Loading", "Esc back/quit", "F1 help")
 	next := m.Init()
 	if m.Init() != nil {
 		t.Fatal("scheduled a second pending read")
@@ -178,15 +178,15 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 		{120, 40, []string{
 			"Pulso", "Search:", "LIBRARY", "Nothing here yet", "#", "Title", "Artist", "Duration",
 			"Estrechez de Corazón", "Tren al Sur", "1:02", "6:21", "Volume 37%", "Device Desk",
-			"⇄ off", "↻ off", "Tab: panel", "Esc/q: quit", "l: library", "F2: language",
+			"⇄ off", "↻ off", "Tab focus", "Esc back/quit", "l library", "F2 language", "F1 help",
 		}, nil},
 		{100, 30, []string{
 			"Pulso", "Search:", "LIBRARY", "Nothing here yet", "#", "Title", "Artist", "Duration",
-			"Estrechez de Corazón", "1:02", "6:21", "Volume 37%", "Device Desk", "Esc/q: quit",
+			"Estrechez de Corazón", "1:02", "6:21", "Volume 37%", "Device Desk", "Esc back/quit",
 		}, nil},
 		{80, 24, []string{
 			"Pulso", "LIBRARY:", "Nothing here yet", "#", "Title", "Artist", "Duration",
-			"Estrechez de Corazón", "Volume 37%", "Esc/q: quit",
+			"Estrechez de Corazón", "Volume 37%", "Esc back/quit",
 		}, []string{"│"}},
 		{60, 20, []string{
 			"Pulso", "LIBRARY:", "Nothing here yet", "#", "Title", "Artist", "Duration",
@@ -232,7 +232,7 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 
 func TestPlayerViewWorkspaceLocalized(t *testing.T) {
 	m := newPlayerModelWithPreferences(context.Background(), nil, nil, 120, 40, preferences{Language: "es", Theme: "standard"}, nil, "", nil)
-	playerViewText(t, m, "Pulso", "Buscar:", "BIBLIOTECA", "Aún no hay nada", "Reproducción", "Título", "Artista", "Duración", "Esc/q: salir", "F2: idioma")
+	playerViewText(t, m, "Pulso", "Buscar:", "BIBLIOTECA", "Aún no hay nada", "Reproducción", "Título", "Artista", "Duración", "Esc volver/salir", "F2 idioma")
 }
 
 func TestPlayerViewFocusCycleAndHints(t *testing.T) {
@@ -243,14 +243,14 @@ func TestPlayerViewFocusCycleAndHints(t *testing.T) {
 		want []string
 		drop []string
 	}{
-		{tea.KeyMsg{Type: tea.KeyTab}, []string{"Search: _", "Enter: search", "Backspace: delete"}, []string{"↑↓/jk: move"}},
-		{tea.KeyMsg{Type: tea.KeyTab}, []string{"Space: pause", "Esc/q: quit"}, []string{"Enter: search"}},
-		{tea.KeyMsg{Type: tea.KeyTab}, []string{"↑↓/jk: library", "Esc/q: quit"}, []string{"Space: pause"}},
-		{tea.KeyMsg{Type: tea.KeyTab}, []string{"↑↓/jk: move", "Esc/q: quit"}, []string{"↑↓/jk: library"}},
-		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"↑↓/jk: library"}, []string{"↑↓/jk: move"}},
-		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"Space: pause"}, []string{"↑↓/jk: library"}},
-		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"Enter: search"}, []string{"Space: pause"}},
-		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"↑↓/jk: move"}, []string{"Enter: keep"}},
+		{tea.KeyMsg{Type: tea.KeyTab}, []string{"Search: _", "Enter search", "Backspace delete"}, []string{"↑↓/jk", "Space play/pause"}},
+		{tea.KeyMsg{Type: tea.KeyTab}, []string{"Space play/pause", "←→ seek"}, []string{"Enter search", "↑↓/jk"}},
+		{tea.KeyMsg{Type: tea.KeyTab}, []string{"↑↓/jk library", "Enter open"}, []string{"←→ seek", "Enter search"}},
+		{tea.KeyMsg{Type: tea.KeyTab}, []string{"↑↓/jk move", "Enter play"}, []string{"Enter open"}},
+		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"↑↓/jk library", "Enter open"}, []string{"Enter play"}},
+		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"Space play/pause", "←→ seek"}, []string{"↑↓/jk library"}},
+		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"Enter search"}, []string{"Space play/pause"}},
+		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"↑↓/jk move"}, []string{"Enter search"}},
 	} {
 		var cmd tea.Cmd
 		m, cmd = m.Update(step.key)
@@ -514,7 +514,8 @@ func TestPlayerViewCatalogKeysNoLongerOpenAnOverlay(t *testing.T) {
 		t.Fatalf("a catalog overlay is still rendered:\n%s", before)
 	}
 
-	// s is free outside the playing bar: no overlay, no command, no redraw.
+	// s reaches Soloist from the table without reopening an overlay and
+	// without guessing the new state before the event.
 	m, cmd := m.Update(playerViewKey("s"))
 	if cmd != nil {
 		t.Fatal("s scheduled work outside the playing bar")
@@ -522,10 +523,18 @@ func TestPlayerViewCatalogKeysNoLongerOpenAnOverlay(t *testing.T) {
 	if after := ansi.Strip(m.View()); after != before {
 		t.Fatalf("s changed the workspace:\n%s", after)
 	}
+	select {
+	case got := <-out:
+		if got != (playerCommand{Name: "set_shuffle", Shuffle: true, SessionID: 42}) {
+			t.Fatalf("s sent %+v, want set_shuffle", got)
+		}
+	default:
+		t.Fatal("s sent no shuffle command from the table")
+	}
 
 	// l focuses the sidebar instead of opening the playlists overlay.
 	m, _ = m.Update(playerViewKey("l"))
-	playerViewText(t, m, "↑↓/jk: library")
+	playerViewText(t, m, "↑↓/jk library")
 	if view := ansi.Strip(m.View()); strings.Contains(view, "Fixture playlist") {
 		t.Fatalf("l opened the playlist overlay:\n%s", view)
 	}
@@ -549,12 +558,12 @@ func TestPlayerViewPreferenceShortcuts(t *testing.T) {
 		return nil
 	}, "", nil)
 	m.Init()
-	playerViewText(t, m, "Pulso", "Playback", "F2: language", "F3: theme")
+	playerViewText(t, m, "Pulso", "Playback", "F2 language", "F3 theme")
 	if len(saved) != 0 {
 		t.Fatalf("startup unexpectedly saved: %v", saved)
 	}
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF2})
-	playerViewText(t, m, "Pulso", "Reproducción", "Cargando", "F2: idioma", "F3: tema")
+	playerViewText(t, m, "Pulso", "Reproducción", "Cargando", "F2 idioma", "F3 tema")
 	for range 3 {
 		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF3})
 	}
@@ -596,7 +605,7 @@ func TestPlayerViewSearchFieldPreferences(t *testing.T) {
 	m.Init()
 	m, _ = m.Update(playerViewKey("/"))
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF2})
-	playerViewText(t, m, "Buscar:", "Retroceso: borrar")
+	playerViewText(t, m, "Buscar:", "Backspace borrar")
 	if len(saved) != 1 || saved[0].Language != "es" {
 		t.Fatalf("a shortcut inside the search field did not persist: %v", saved)
 	}
@@ -786,7 +795,9 @@ func TestPlayerViewPlayingBarCyclesModes(t *testing.T) {
 	}
 }
 
-func TestPlayerViewPlayingBarOwnsItsKeys(t *testing.T) {
+// TestPlayerViewSeekKeysArePlayingBarOnly keeps the arrows with the playing
+// bar: shuffle and repeat moved to every panel, seeking did not.
+func TestPlayerViewSeekKeysArePlayingBarOnly(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		tabs int
@@ -803,48 +814,79 @@ func TestPlayerViewPlayingBarOwnsItsKeys(t *testing.T) {
 			for range tt.tabs {
 				m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 			}
-			for _, key := range []tea.KeyMsg{{Type: tea.KeyLeft}, {Type: tea.KeyRight}, playerViewKey("s"), playerViewKey("r")} {
+			for _, key := range []tea.KeyMsg{{Type: tea.KeyLeft}, {Type: tea.KeyRight}} {
 				if _, cmd := m.Update(key); cmd != nil {
 					t.Fatalf("%q scheduled work in the %s panel", key.String(), tt.name)
 				}
 			}
 			if len(out) != 0 {
-				t.Fatalf("the %s panel sent a playing-bar command", tt.name)
+				t.Fatalf("the %s panel sent a seek", tt.name)
 			}
 		})
 	}
 }
 
-// TestPlayerViewPlayingBarKeepsItsOwnKeys keeps the old catalog test's intent:
-// s belongs to the playing bar and stays free everywhere else.
-func TestPlayerViewPlayingBarKeepsItsOwnKeys(t *testing.T) {
-	m, out := playerViewModel(t, 120, 40, playerState{Connected: true, SessionID: 5})
-	before := ansi.Strip(m.View())
-	if _, cmd := m.Update(playerViewKey("s")); cmd != nil {
-		t.Fatal("s scheduled work outside the playing bar")
+// TestPlayerViewShuffleAndRepeatWorkOutsideTheBar is the S17 discovery fix: s
+// and r reach Soloist from the table and the library, and only the focused
+// search field keeps them as text.
+func TestPlayerViewShuffleAndRepeatWorkOutsideTheBar(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		tabs int
+	}{
+		{"table", 0},
+		{"playing bar", 2},
+		{"sidebar", 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				key  string
+				want playerCommand
+			}{
+				{"s", playerCommand{Name: "set_shuffle", Shuffle: true}},
+				{"r", playerCommand{Name: "set_repeat", Repeat: "context"}},
+			} {
+				m, out := playerViewModel(t, 120, 40, playerState{Connected: true, SessionID: 5})
+				for range tt.tabs {
+					m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+				}
+				before := ansi.Strip(m.View())
+				if _, cmd := m.Update(playerViewKey(tc.key)); cmd != nil {
+					t.Fatal("a mode key scheduled work")
+				}
+				want := tc.want
+				want.SessionID = 5
+				select {
+				case got := <-out:
+					if got != want {
+						t.Fatalf("got %+v, want %+v", got, want)
+					}
+					if len(out) != 0 {
+						t.Fatal("one keypress sent more than one command")
+					}
+				default:
+					t.Fatalf("%q sent no command from the %s", tc.key, tt.name)
+				}
+				// The bar still waits for Soloist's event instead of guessing.
+				if after := ansi.Strip(m.View()); after != before {
+					t.Fatalf("%q changed the workspace before the event:\n%s", tc.key, after)
+				}
+			}
+		})
 	}
-	if len(out) != 0 {
-		t.Fatal("s sent a playing-bar command from the table")
-	}
-	if after := ansi.Strip(m.View()); after != before {
-		t.Fatalf("s changed the table:\n%s", after)
-	}
-	// Inside the playing bar s is shuffle.
-	for range 2 {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	}
-	m, _ = m.Update(playerViewKey("s"))
-	select {
-	case got := <-out:
-		if got != (playerCommand{Name: "set_shuffle", Shuffle: true, SessionID: 5}) {
-			t.Fatalf("the playing bar sent %+v, want set_shuffle", got)
+	t.Run("search field keeps letters", func(t *testing.T) {
+		m, out := playerViewModel(t, 120, 40, playerState{Connected: true, SessionID: 5})
+		m, _ = m.Update(playerViewKey("/"))
+		for _, key := range []string{"s", "r"} {
+			if _, cmd := m.Update(playerViewKey(key)); cmd != nil {
+				t.Fatalf("%q scheduled work while typing", key)
+			}
 		}
+		playerViewText(t, m, "Search: sr_")
 		if len(out) != 0 {
-			t.Fatal("one keypress sent more than one command")
+			t.Fatal("typing sent a playback command")
 		}
-	default:
-		t.Fatal("the playing bar did not shuffle")
-	}
+	})
 }
 
 func TestPlayerViewPlayingBarModes(t *testing.T) {
@@ -873,11 +915,11 @@ func TestPlayerViewPlayingBarModes(t *testing.T) {
 
 func TestPlayerViewPlayingBarHints(t *testing.T) {
 	m, _ := playerViewPlayingFocus(t, preferences{}, playerState{Connected: true})
-	playerViewText(t, m, "Space: pause", "←→: seek", "s: shuffle", "r: repeat")
-	// Other panels keep their own hints; s is free and l focuses the sidebar.
+	playerViewText(t, m, "Space play/pause", "←→ seek", "s shuffle", "r repeat")
+	// The table keeps its own hints and never advertises the bar-only arrows.
 	table, _ := playerViewModel(t, 120, 40, playerState{Connected: true})
-	view := playerViewText(t, table, "l: library", "/: search")
-	if strings.Contains(view, "s: shuffle") || strings.Contains(view, "s: search") {
+	view := playerViewText(t, table, "l library", "/ search", "s shuffle")
+	if strings.Contains(view, "←→ seek") || strings.Contains(view, "s: search") {
 		t.Fatalf("the table advertised the wrong hints:\n%s", view)
 	}
 }
@@ -1275,52 +1317,48 @@ func TestPlayerViewHintsFollowFocus(t *testing.T) {
 				return strings.Join(player.hintRows(player.width), "\n")
 			}
 			table := hints()
-			for _, want := range []string{"↑↓", "/"} {
+			for _, want := range []string{"↑↓/jk move", "/ search", "Enter play", "Space play/pause", "s shuffle", "r repeat", "l library"} {
 				if !strings.Contains(table, want) {
 					t.Fatalf("table hints miss %q:\n%s", want, table)
 				}
 			}
-			for _, gone := range []string{"s: shuffle", "Enter"} {
+			for _, gone := range []string{"←→ seek", "Enter open", "n/p"} {
 				if strings.Contains(table, gone) {
 					t.Fatalf("table hints advertise %q:\n%s", gone, table)
 				}
 			}
 			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 			search := hints()
-			for _, want := range []string{"Enter: search"} {
+			for _, want := range []string{"Enter search", "Esc leave", "Backspace delete", "F1 help"} {
 				if !strings.Contains(search, want) {
 					t.Fatalf("search hints miss %q:\n%s", want, search)
 				}
 			}
-			for _, gone := range []string{"q: quit", "↑↓", "Space"} {
+			for _, gone := range []string{"q quit", "↑↓", "Space", "s shuffle"} {
 				if strings.Contains(search, gone) {
 					t.Fatalf("search hints advertise %q:\n%s", gone, search)
 				}
 			}
 			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 			playing := hints()
-			for _, want := range []string{"Space", "←→", "s", "r", "+/-"} {
+			for _, want := range []string{"Space play/pause", "←→ seek", "n/p track", "s shuffle", "r repeat", "+/- volume", "l library"} {
 				if !strings.Contains(playing, want) {
 					t.Fatalf("playing-bar hints miss %q:\n%s", want, playing)
 				}
 			}
-			for _, gone := range []string{"↑↓", "Enter"} {
+			for _, gone := range []string{"↑↓/jk", "Enter", "Backspace"} {
 				if strings.Contains(playing, gone) {
 					t.Fatalf("playing-bar hints advertise %q:\n%s", gone, playing)
 				}
 			}
 			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 			sidebar := hints()
-			wantSidebar := []string{"↑↓", "/"}
-			if size.width >= playerNarrowWidth {
-				wantSidebar = append(wantSidebar, "library")
-			}
-			for _, want := range wantSidebar {
+			for _, want := range []string{"↑↓/jk library", "/ search", "Enter open", "s shuffle"} {
 				if !strings.Contains(sidebar, want) {
 					t.Fatalf("sidebar hints miss %q:\n%s", want, sidebar)
 				}
 			}
-			for _, gone := range []string{"s: shuffle", "Enter: play"} {
+			for _, gone := range []string{"s: shuffle", "Enter: play", "←→", "l library"} {
 				if strings.Contains(sidebar, gone) {
 					t.Fatalf("sidebar hints advertise %q:\n%s", gone, sidebar)
 				}
@@ -1415,5 +1453,127 @@ func TestPlayerViewUnauthorizedSearchEnterStartsAuth(t *testing.T) {
 	}
 	if m, _ = m.Update(msg); m.View() == "" {
 		t.Fatal("a failed authorization blanked the workspace")
+	}
+}
+
+// playerViewFooterPairs parses the footer back into its advertised bindings.
+// Every row must use sqlterm's flat shape: one leading and one trailing space,
+// `Key label` pairs, and two spaces between pairs.
+func playerViewFooterPairs(t *testing.T, m *playerModel, width int) map[string]string {
+	t.Helper()
+	pairs := map[string]string{}
+	for _, line := range m.hintRows(width) {
+		if !strings.HasPrefix(line, " ") || !strings.HasSuffix(line, " ") ||
+			strings.HasPrefix(line, "  ") || strings.HasSuffix(line, "  ") {
+			t.Fatalf("footer row %q does not use one leading and one trailing space", line)
+		}
+		if strings.Contains(line, " | ") || strings.Contains(line, "   ") {
+			t.Fatalf("footer row %q does not use two spaces between pairs", line)
+		}
+		for _, item := range strings.Split(strings.TrimSpace(line), "  ") {
+			key, label, ok := strings.Cut(item, " ")
+			if !ok || key == "" || label == "" || strings.HasPrefix(label, " ") {
+				t.Fatalf("footer pair %q is not `Key label`", item)
+			}
+			pairs[key] = label
+		}
+	}
+	return pairs
+}
+
+// TestPlayerViewFooterPairFormat adopts sqlterm's footer: one flat row of
+// `Key label` pairs built from the focused panel's own keys, wrapping to more
+// rows of the same shape instead of falling back to short labels.
+func TestPlayerViewFooterPairFormat(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{120, 40}, {100, 30}, {80, 24}, {40, 12}} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			m, _ := playerViewModel(t, size.width, size.height, playerState{Connected: true, Status: "paused"})
+			player := m.(*playerModel)
+			if len(player.hintRows(size.width)) == 0 {
+				t.Fatal("the workspace rendered no footer")
+			}
+
+			table := playerViewFooterPairs(t, player, size.width)
+			for _, key := range []string{"Tab", "↑↓/jk", "Enter", "Space", "s", "r", "+/-", "/", "l", "F1", "F2", "F3", "q", "Esc"} {
+				if _, ok := table[key]; !ok {
+					t.Fatalf("the table footer does not advertise %q: %v", key, table)
+				}
+			}
+			for _, gone := range []string{"←→", "n/p"} {
+				if _, ok := table[gone]; ok {
+					t.Fatalf("the table footer advertised the bar-only %q", gone)
+				}
+			}
+			if table["Tab"] != "focus" || table["F1"] != "help" || table["Esc"] != "back/quit" {
+				t.Fatalf("unexpected locale or labels: %v", table)
+			}
+			if size.width < playerNarrowWidth && len(player.hintRows(size.width)) < 2 {
+				t.Fatalf("the %d-column footer did not wrap", size.width)
+			}
+
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+			search := playerViewFooterPairs(t, m.(*playerModel), size.width)
+			for _, key := range []string{"Enter", "Esc", "Backspace", "F1"} {
+				if _, ok := search[key]; !ok {
+					t.Fatalf("the search footer does not advertise %q: %v", key, search)
+				}
+			}
+			for _, gone := range []string{"Space", "q", "↑↓/jk", "s"} {
+				if _, ok := search[gone]; ok {
+					t.Fatalf("the search footer advertised %q", gone)
+				}
+			}
+
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+			playing := playerViewFooterPairs(t, m.(*playerModel), size.width)
+			for _, key := range []string{"Space", "←→", "n/p", "s", "r", "+/-", "/", "l"} {
+				if _, ok := playing[key]; !ok {
+					t.Fatalf("the playing-bar footer does not advertise %q: %v", key, playing)
+				}
+			}
+			if _, ok := playing["Enter"]; ok {
+				t.Fatal("the playing bar advertised Enter")
+			}
+
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+			sidebar := playerViewFooterPairs(t, m.(*playerModel), size.width)
+			for _, key := range []string{"↑↓/jk", "Enter", "Space", "s", "r"} {
+				if _, ok := sidebar[key]; !ok {
+					t.Fatalf("the sidebar footer does not advertise %q: %v", key, sidebar)
+				}
+			}
+			for _, gone := range []string{"←→", "l"} {
+				if _, ok := sidebar[gone]; ok {
+					t.Fatalf("the sidebar footer advertised %q", gone)
+				}
+			}
+
+			// The rendered frame keeps the footer and never overflows.
+			view := strings.Join(playerViewRows(t, m, size.width, size.height), "\n")
+			for _, want := range []string{"Tab focus", "F1 help", "q quit"} {
+				if !strings.Contains(view, want) {
+					t.Fatalf("missing %q in the %dx%d frame:\n%s", want, size.width, size.height, view)
+				}
+			}
+		})
+	}
+}
+
+// TestPlayerViewFooterFitsEverySize renders the workspace with every panel
+// focused at each supported size; the shared rows helper fails on overflow.
+func TestPlayerViewFooterFitsEverySize(t *testing.T) {
+	for _, size := range []struct{ width, height int }{
+		{120, 40}, {100, 30}, {80, 24}, {60, 20}, {40, 12}, {20, 8}, {12, 5}, {1, 1},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			m, _ := playerViewModel(t, size.width, size.height, playerState{
+				Connected: true, Status: "playing", Volume: 37, PositionMS: 62000,
+				Track: playerTrack{Title: "Song", Artist: "Artist", DurationMS: 200000},
+			})
+			for panel := 0; panel < int(playerFocusCount); panel++ {
+				playerViewRows(t, m, size.width, size.height)
+				m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+			}
+		})
 	}
 }
