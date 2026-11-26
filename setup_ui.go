@@ -537,7 +537,7 @@ func (m *setupModel) screen() setupScreen {
 				"Abre esta URL en tu navegador y aprueba el acceso. La reproducción funciona sin esto.")
 			screen.link = m.spotifyURL
 			screen.status = m.text("Waiting for Spotify authorization", "Esperando autorización de Spotify")
-			screen.hints = []string{m.text("s: skip", "s: omitir")}
+			screen.hints = []string{m.text("s: skip", "s: omitir"), m.text("pulso login prints the URL", "pulso login muestra la URL")}
 		}
 	}
 	if m.saveFailed {

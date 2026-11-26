@@ -16,6 +16,7 @@ const usage = `Pulso — Spotify in the terminal
 Usage:
   pulso                          Open the Soloist setup wizard
   pulso doctor [--data-dir PATH]  Report local Soloist status
+  pulso login                    Print the Spotify authorization URL
   pulso --help                   Show this help
 `
 
@@ -23,6 +24,8 @@ const downloads = "https://developer.spotify.com/documentation/soloist/reference
 
 type commandDeps struct {
 	setup func(io.Writer) error
+	login func(string, io.Writer, io.Writer) int
+	key   func() string
 	find  func() (string, error)
 	probe func(context.Context, string, []string, io.Writer, io.Writer) error
 }
@@ -30,6 +33,8 @@ type commandDeps struct {
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, commandDeps{
 		setup: runSetup,
+		login: runLogin,
+		key:   func() string { return firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), loadClientID()) },
 		find:  findSoloist,
 		probe: func(ctx context.Context, path string, args []string, stdout, stderr io.Writer) error {
 			cmd := exec.CommandContext(ctx, path, args...)
@@ -50,6 +55,9 @@ func run(args []string, stdout, stderr io.Writer, deps commandDeps) int {
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		fmt.Fprint(stdout, usage)
 		return 0
+	}
+	if len(args) == 1 && args[0] == "login" {
+		return deps.login(deps.key(), stdout, stderr)
 	}
 	if args[0] != "doctor" || (len(args) != 1 && (len(args) != 3 || args[1] != "--data-dir" || args[2] == "")) {
 		fmt.Fprintln(stderr, "Invalid arguments. Run pulso --help.")

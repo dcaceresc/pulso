@@ -70,14 +70,14 @@ func runSetup(stdout io.Writer) error {
 		install: installManagedSoloist,
 		start:   local.start,
 		authorize: func(ctx context.Context, clientID string, showURL func(string)) (catalogAPI, error) {
-			return authorizeSpotify(ctx, clientID, showURL)
+			return authorizeSpotify(ctx, clientID, openAndShow(showURL))
 		},
 		clientID: firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), loadClientID()),
 		playerWithPreferences: func(width, height int, p preferences, api catalogAPI) tea.Model {
 			states, commands := newPlayerStream(ctx, local.dataDir)
 			return newPlayerModelWithCatalog(ctx, states, commands, width, height, p, savePreferences, api,
 				func(ctx context.Context, clientID string, showURL func(string)) (catalogAPI, error) {
-					return authorizeSpotify(ctx, clientID, showURL)
+					return authorizeSpotify(ctx, clientID, openAndShow(showURL))
 				}, firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), loadClientID()))
 		},
 	}, loadPreferences(), savePreferences)
@@ -318,4 +318,12 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// openAndShow opens the authorization page and still reports the URL in the UI.
+func openAndShow(showURL func(string)) func(string) {
+	return func(raw string) {
+		_ = openBrowser(raw)
+		showURL(raw)
+	}
 }

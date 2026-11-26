@@ -2,6 +2,8 @@
 Product scope: [PLAN.md](../../PLAN.md). Start with a local, read-only Soloist diagnostic.
 Target: Windows x86-64 and Linux x86-64.
 
+- S14: “se reparo lo de las teclas pero no funciona la url de spotify da error response_type must be code”
+
 ## Specs
 
 - S1: “quiero construir una tui pero en go genera un plan”
@@ -51,6 +53,8 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 
 - T18 [done for fixtures] S13 — Bubble Tea v1.3.10 maps F2–F12 on Windows consoles; Ctrl aliases removed; setup asks for the Spotify Client ID after the Soloist key and shows the authorization URL before the player; commit `feat: connect Spotify during setup`.
 
+- T19 [in progress] S14 — Open the authorization page automatically and add `pulso login` that prints the URL unwrapped; commit `fix: open the Spotify authorization page`.
+
 ## Log
 
 - L1: “comienza con la implementacion”
@@ -77,3 +81,4 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - L22: “la idea es que el propio pulso deberia dar la url para conectarse como los otrs como nscpot o spotify_player... los botones de f2 y f3 no funcionan... incluso si cierro pulso sigo escuchando la cancion...”. Explanation: Soloist is an independent daemon that keeps playing when its controller exits. Pulso now pauses it on quit and leaves the daemon paired. The Client ID is remembered in a private `client-id` file so the URL appears on the next start, and F2/F3 gained Ctrl+L/Ctrl+T aliases because a host terminal may consume function keys. No tokens are stored.
 - L23: Independent verification of c54667e passed every S12 requirement (search, playlist fallback, PKCE, loopback, redirects, memory-only tokens, stale messages, session-bound play, preference writes) plus baseline parity on CLI output. Three advisories were reported: a stray local request consuming the one callback slot, Ctrl+C swallowed by the overlay, and F2/F3 inactive in the overlay. The parent reproduced the first two with new fixtures and fixed all three.
 - L24: “f2 y f3 siguen sin funcionar y no es la terminal probe sqlterm y el f2 y el f3 funcionaron los de control l y control t quitalos deben funcionar bien las teclas ademas cuando yo hablo si el usuario se conecte es que cuando agregue la api key de soloist se genera la url para que se conecte y se pueda ver las playlist y poder buscar canciones”. Root cause: bubbletea v1.3.4 Windows console input has no VK_F1–F12 mapping, so F-keys arrived as empty runes; v1.3.10 maps them. Ctrl+L/Ctrl+T removed as requested. The wizard now has a Spotify step after Soloist that accepts the Client ID once, shows the generated authorization URL, and hands the authorized catalog to the player; `s` skips it and playback still works.
+- L25: “se reparo lo de las teclas pero no funciona la url de spotify da error response_type must be code”. The generated URL contains `response_type=code`; the terminal hard-wrapped it, so a multi-line copy reached Spotify with the parameter broken. Pulso now opens the page itself and `pulso login` prints the URL on one logical line for copying. Still needs a live confirmation that Spotify accepts the dynamic loopback port.
