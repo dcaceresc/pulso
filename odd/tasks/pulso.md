@@ -25,6 +25,8 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 
 - S12: “funciona ahora quiero que añadas la funcion de busqueda y playlist y tambien listes las funciones que tiene spotatui y generes un plan para agregalas quiero tambien que la aplicacion tenga localizacion tenga español e ingles y tambien tenga temas”
 
+- S13: “la idea es que el propio pulso deberia dar la url para conectarse como los otrs como nscpot o spotify_player y asi pueda conectarse , los botones de f2 y f3 no funcionan tambien tengo una duda incluso si cierro pulso sigo escuchando la cancion eso no tiene sentido porque pasa eso?”
+
 ## Tasks
 
 - T1 [done] S1–S5 — Bootstrap the Go command and read-only Soloist diagnostic; inline; commit: `feat: add Pulso Soloist diagnostic`.
@@ -37,7 +39,7 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - T5 [in progress] S1, S2, S12 — Spotify Web API OAuth PKCE, search and playlist reads implemented; UI and live verification pending; commit `feat: add Spotify catalog access`.
 - T13 [in progress] S12 — English/Spanish and standard/dark/light themes in setup and player; commit `feat: add language and theme choices`.
 - T14 [in progress] S12 — Catalog overlays wired into playback; same commit.
-- T15 [done] S12 — Document Spotatui features and a phased Pulso roadmap in `ROADMAP.md`; commit `docs: map the Pulso feature roadmap`.
+- T16 [done for fixtures] S13 — Remember the Client ID locally, show the authorization URL in the overlay, add Ctrl+L/Ctrl+T aliases, and pause Soloist when Pulso exits; commit `fix: keep the client id and stop audio on exit`.
 - T6 [pending] S2, S3, S5 — Verify versioned `go install` and real end-to-end behavior on both platforms; route pending; commit pending.
 
 - T9 [done] S8 — Accept known release documentation without extracting it; commit `2087a24`. The independent verifier passed 32 subtests on the committed snapshot.
@@ -68,3 +70,4 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - L19: “funciona ahora quiero que añadas la funcion de busqueda y playlist y tambien listes las funciones que tiene spotatui y generes un plan para agregalas quiero tambien que la aplicacion tenga localizacion tenga español e ingles y tambien tenga temas”. User confirms the new pairing flow works on their environment. Native Linux real pairing remains unverified.
 - L20: This slice means track search and read-only playlist browsing/playback, not playlist editing. Spotify Web API login is separate from Soloist. Users supply their own developer Client ID; register `http://127.0.0.1/callback` and use an ephemeral loopback port for OAuth. Keep Soloist playback independent of API access. Use English and Spanish, with English fallback, plus Standard, Dark and Light themes. Do not persist access tokens or keys in this initial slice. Never request live credentials for tests.
 - L21: Three implementation workers failed on quota. The parent completed their pending scope inline: localized setup and player, F2/F3 persistence, catalog overlay integration, Spotify URI commands, and production wiring. Fixture tests covering catalog, OAuth, preferences, setup and player pass, as do vet and the Windows suite; Linux cross-build pending confirmation. OAuth token storage is memory-only and playlist content is read-only.
+- L22: “la idea es que el propio pulso deberia dar la url para conectarse como los otrs como nscpot o spotify_player... los botones de f2 y f3 no funcionan... incluso si cierro pulso sigo escuchando la cancion...”. Explanation: Soloist is an independent daemon that keeps playing when its controller exits. Pulso now pauses it on quit and leaves the daemon paired. The Client ID is remembered in a private `client-id` file so the URL appears on the next start, and F2/F3 gained Ctrl+L/Ctrl+T aliases because a host terminal may consume function keys. No tokens are stored.

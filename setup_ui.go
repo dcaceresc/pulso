@@ -247,8 +247,12 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
-	if msg.Type == tea.KeyF2 || msg.Type == tea.KeyF3 {
-		m.changePreferences(msg.Type == tea.KeyF2)
+	switch msg.Type {
+	case tea.KeyF2, tea.KeyCtrlL:
+		m.changePreferences(true)
+		return nil
+	case tea.KeyF3, tea.KeyCtrlT:
+		m.changePreferences(false)
 		return nil
 	}
 	if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC {

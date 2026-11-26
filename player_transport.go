@@ -447,3 +447,27 @@ func playerWrite(ctx context.Context, conn *websocket.Conn, packet playerRequest
 	}{Type: "command", playerRequest: packet})
 	return err == nil && conn.Write(ctx, websocket.MessageText, data) == nil
 }
+
+// pauseSoloist stops audio when Pulso exits. The daemon stays running and keeps
+// its pairing, so the next launch starts playing only when you ask for it.
+func pauseSoloist(ctx context.Context, dataDir func() (string, error)) {
+	ctx, cancel := context.WithTimeout(ctx, soloistProbeTimeout)
+	defer cancel()
+	dir, err := dataDir()
+	if err != nil {
+		return
+	}
+	endpoint, err := soloistRuntimeEndpoint(dir)
+	if err != nil || endpoint == "" {
+		return
+	}
+	conn, event, err := openSoloistAuth(ctx, endpoint)
+	if err != nil {
+		return
+	}
+	defer conn.CloseNow()
+	if event.Type != "auth_state" || event.LoggedIn == nil || !*event.LoggedIn {
+		return
+	}
+	playerWrite(ctx, conn, playerRequest{Command: "pause"})
+}

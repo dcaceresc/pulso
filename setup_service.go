@@ -78,6 +78,9 @@ func runSetup(stdout io.Writer) error {
 		},
 	}, loadPreferences(), savePreferences)
 	_, err := tea.NewProgram(model, tea.WithOutput(stdout), tea.WithAltScreen()).Run()
+	if err == nil {
+		pauseSoloist(context.Background(), local.dataDir)
+	}
 	return err
 }
 

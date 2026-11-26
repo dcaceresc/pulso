@@ -45,7 +45,13 @@ func newPlayerModelWithPreferences(ctx context.Context, states <-chan playerStat
 		width: width, height: height, preferences: p.normalized(), save: save,
 	}
 	if authorize != nil {
+		if clientID == "" {
+			clientID = loadClientID()
+		}
 		m.catalog = newCatalogModel(ctx, m.preferences, width, height, clientID, authorize, m.playURI)
+		m.catalog.saveClientID = func(id string) {
+			_ = saveClientID(id)
+		}
 	}
 	return m
 }
@@ -126,8 +132,11 @@ func (m *playerModel) text(english, spanish string) string {
 }
 
 func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
-	if key.Type == tea.KeyF2 || key.Type == tea.KeyF3 {
-		return m.changePreferences(key.Type == tea.KeyF2)
+	switch key.Type {
+	case tea.KeyF2, tea.KeyCtrlL:
+		return m.changePreferences(true)
+	case tea.KeyF3, tea.KeyCtrlT:
+		return m.changePreferences(false)
 	}
 	if key.Paste || key.Alt {
 		return nil

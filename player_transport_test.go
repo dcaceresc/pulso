@@ -329,3 +329,26 @@ func TestPlayerTransportRejectsUnsafeFrames(t *testing.T) {
 		})
 	}
 }
+
+func TestPauseSoloistOnExit(t *testing.T) {
+	dir := t.TempDir()
+	got := make(chan bool, 1)
+	server := playerTestServer(t, func(ctx context.Context, conn *websocket.Conn) {
+		if !playerTestSend(t, ctx, conn, `{"type":"auth_state","logged_in":true,"device_name":"Desk"}`) {
+			return
+		}
+		got <- playerTestRead(t, ctx, conn, `{"type":"command","command":"pause"}`)
+	})
+	playerTestMarkers(t, dir, server.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pauseSoloist(ctx, func() (string, error) { return dir, nil })
+	select {
+	case ok := <-got:
+		if !ok {
+			t.Fatal("Soloist did not receive pause on exit")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pauseSoloist did not send a command")
+	}
+}

@@ -239,3 +239,21 @@ func TestCatalogViewSanitizesMetadataAndFitsWindow(t *testing.T) {
 		}
 	}
 }
+
+func TestCatalogRemembersClientID(t *testing.T) {
+	var saved []string
+	api := catalogViewFake{search: func(context.Context, string, int) ([]catalogItem, bool, error) {
+		return []catalogItem{{Name: "Track", URI: "spotify:track:1"}}, false, nil
+	}}
+	m := newCatalogModel(context.Background(), preferences{}, 80, 24, "", catalogViewReply(api), nil)
+	m.saveClientID = func(id string) { saved = append(saved, id) }
+	catalogViewDrain(t, m, m.Open("search"))
+	catalogViewKey(t, m, playerViewKey("client123"))
+	catalogViewKey(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(saved) != 1 || saved[0] != "client123" {
+		t.Fatalf("saved client ids = %v", saved)
+	}
+	if !m.Closed() && m.clientID != "client123" {
+		t.Fatalf("client id was not kept for this session: %q", m.clientID)
+	}
+}

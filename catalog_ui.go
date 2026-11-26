@@ -57,6 +57,7 @@ type catalogModel struct {
 	authorize     func(context.Context, string, func(string)) (catalogAPI, error)
 	play          func(string)
 	clientID      string
+	saveClientID  func(string)
 	api           catalogAPI
 
 	view               string
@@ -277,6 +278,9 @@ func (m *catalogModel) handleKey(key tea.KeyMsg) tea.Cmd {
 			m.clientID = strings.TrimSpace(m.draft)
 			if m.clientID == "" {
 				return nil
+			}
+			if m.saveClientID != nil {
+				m.saveClientID(m.clientID)
 			}
 			m.draft = ""
 			return m.startAuthorization()
