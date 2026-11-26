@@ -1,47 +1,42 @@
 # Pulso
 
-Pulso is a Go terminal app in development for using Spotify with the official [Soloist](https://developer.spotify.com/documentation/soloist) playback engine. See [the plan](PLAN.md) for the Windows and Linux MVP.
+Español (predeterminado) · [English](README.en.md)
 
-## Run the setup wizard
+Pulso es un reproductor de Spotify para la terminal escrito en Go sobre **Spotify Soloist**, el reproductor oficial de Spotify, y la **Spotify Web API** para buscar y navegar tus listas. Lo creé para mi uso personal porque `ncspot` y `spotify_player` dependen de `librespot` y dejaron de reproducir audio en mi cuenta por los cambios de Spotify en las claves de audio.
 
-From a Windows or Linux x86-64 terminal with Go 1.22 or newer, run `go run .`, or install a development checkout with `go install .` and run `pulso` with no arguments. The versioned install path will be available once the project has a published module path. The full-screen wizard shows a setup checklist and collapses to one pane in smaller terminals.
+No pretende ser el mejor cliente de Spotify ni competir con otros proyectos. Su alcance prioriza lo que uso: abrir la terminal, buscar una canción, elegir una lista y escuchar sin mantener abierta la aplicación oficial. Mientras me funcione a mí, me sirve.
 
-1. Pulso checks for Soloist and reuses a running session when its local WebSocket is available. If Soloist is missing, press **Y** to download and install the [official Spotify build](https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates). Nothing downloads unless you confirm.
-2. If Pulso needs to start a stopped daemon, open the [Soloist dashboard](https://developer.spotify.com/dashboard/soloist), sign in with Spotify Premium, and create a Soloist key. Paste it into the masked prompt and press **Enter**. Pulso does not save the key. Spotify requires it in the daemon's launch arguments, so local process inspection may reveal it. Pulso asks for the key again whenever it needs to launch a stopped daemon.
-3. If you're already paired, Pulso opens **Now Playing** immediately. Otherwise, leave Pulso open and connect your phone and computer to the same local network. Open Spotify on your phone with the same account, play a song, tap **Connect to a device**, and select the device name shown by Pulso. If no name is available, select **Pulso** or your existing Soloist device name. Pulso opens **Now Playing** automatically when Spotify connects. If the device is missing, check that guest Wi-Fi or a VPN isn't blocking local discovery.
+## Características principales
 
-While waiting for pairing, Pulso retries a lost connection with a short delay between attempts. Press **Enter** to check immediately or **Esc** to quit. If Soloist has stopped, start it again and press **Enter**; the wizard will not restart it during pairing.
+- Reproducción con el motor oficial de Spotify (Soloist), sin `librespot`.
+- Emparejamiento guiado una sola vez y detección automática cuando Spotify conecta el dispositivo.
+- Reproducción reanudada al abrir: pausa, siguiente, anterior, volumen, avance, aleatorio y repetición.
+- Biblioteca con tus listas de reproducción y tabla de canciones con artista y duración.
+- Búsqueda de canciones desde la barra superior.
+- Interfaz en terminal con paneles, atajos por contexto y pantalla de ayuda.
+- Inglés y español, y temas estándar, oscuro y claro.
+- Instalación y actualización de Soloist desde la propia aplicación, sin permisos de administrador.
+- Sesión de Spotify guardada de forma privada: no repites el Client ID ni la aprobación del navegador en cada arranque.
 
-Pulso searches `PATH` first, then `pulso/bin` under your user configuration directory (`%APPDATA%` on Windows; `$XDG_CONFIG_HOME` or `~/.config` on Linux). Installing via Pulso does not require admin access or change `PATH`; the install directory's filesystem must support hard links. The wizard only uses Soloist's default session directory: `%LOCALAPPDATA%/soloist/data` on Windows, or `$STATE_DIRECTORY` if set on Linux, then `$XDG_DATA_HOME/soloist`, then `$HOME/.local/share/soloist`. It only connects to numeric loopback WebSocket addresses; custom data directories and non-loopback endpoints aren't supported by the wizard.
+## Plataformas
 
-Setup is intended for the official Windows and Linux x86-64 Soloist builds. Pulso does not install system audio dependencies, configure audio devices, or update Soloist automatically. Spotify Connect pairing and playback were confirmed by a user on Windows; native Linux, the Web API flow, and versioned installation still need verification. When Soloist is ready, Pulso opens the **Now Playing** workspace with search on top, the library on the left, the queue or playlist in the middle, and a live playing bar above the key hints. Press **Space** to play or pause, **n/p** for next or previous, **+/-** for volume, **←/→** to seek, **s** to cycle shuffle, **r** to cycle repeat, **/** to search, **l** or **Tab** for the library, and **Esc** or **q** to exit. Below 100 columns or 30 rows the sidebar collapses to a one-line library switcher; below 60 columns the table keeps the number, title and duration, and the playing bar keeps the title and volume.
+Windows x86-64 y Linux x86-64 son las plataformas previstas. macOS compila, pero no lo he probado. Spotify Soloist se distribuye para Linux (x86-64, arm64 y arm32), macOS con Apple Silicon y Windows x86-64: Pulso no puede reproducir audio en una plataforma para la que Spotify no publique Soloist.
 
-Pulso pauses playback when you quit. Soloist is a separate daemon: it keeps running with its pairing so the next launch is instant. To stop the daemon itself, end the `soloist` process or use `soloist ctl`.
+## Instalación y uso
 
-## Search and playlists
+Requiere **Go 1.22 o posterior** para compilar y una cuenta de **Spotify Premium**.
 
-Press **/** to focus the search field and **Enter** to search Spotify tracks; the results replace the table. Press **l** (or **Tab** to the sidebar) to browse your playlists, **Enter** to open one, **p** to play a playlist by its Spotify URI, and **Enter** on a track to play it. **Esc** leaves the search field or the results before it quits, and **Tab**/Shift+**Tab** move between the sidebar, the table, the search field and the playing bar. The hints at the bottom of the workspace follow the focused panel.
+```sh
+go install ./cmd/pulso
+pulso
+```
 
-The same workspace shows one localized row for loading, empty, error, unauthorized and restricted states, in English or Spanish. Press **F2** for the language and **F3** for the theme at any size.
+La primera vez, el asistente comprueba si Soloist está instalado, ofrece descargarlo desde Spotify, te guía para crear la clave de Soloist y empareja el dispositivo desde la aplicación de Spotify del teléfono. Después pide, una única vez, el Client ID de tu propia app de Spotify para buscar y listar playlists.
 
-Searching uses the official Spotify Web API, which is a separate sign-in from Soloist:
+Sigue las [instrucciones completas](INSTRUCTIONS.md) para el emparejamiento, la app de Spotify, los atajos, los temas y la solución de problemas.
 
-1. Create a free app in the [Spotify developer dashboard](https://developer.spotify.com/dashboard) to get a Client ID. The app owner needs Spotify Premium, and Spotify allows up to five signed-in users.
-2. Add `http://127.0.0.1:8888/callback` as a redirect URI for that app. Spotify requires the port in the URI, and it must match exactly.
-3. Pulso keeps two private files next to your preferences, under the user configuration directory: `client-id` holds only the public Client ID, and `spotify-session.json` holds the Spotify session (access token, refresh token and expiry) with owner-only permissions. The access token is refreshed automatically, so you approve access once instead of at every start. You can also set `PULSO_SPOTIFY_CLIENT_ID` (PowerShell: `$env:PULSO_SPOTIFY_CLIENT_ID="<client-id>"`) to skip the prompt.
-4. The first time, the wizard shows these instructions with your saved Client ID prefilled and editable, then opens the authorization page. When a saved session is restored, the Spotify step does not appear at all: Pulso goes straight to **Now Playing** with your library. When only a Client ID is stored, the wizard skips the instructions, opens the approval URL directly, and **e** replaces the remembered Client ID. Press **s** during the Spotify step to continue without search and playlists. The fixed port keeps the redirect URI identical to the one Spotify accepts.
-5. Approve access in the browser Pulso opens. Pulso waits on http://127.0.0.1:8888/callback; if that port is busy, close whatever uses it and retry. Deleting `spotify-session.json` or revoking Pulso in your Spotify account forces a new approval, and the next start asks for it again.
+## Estado
 
-Playlist contents are only returned for playlists you own or collaborate on. For other playlists, Pulso says the contents are restricted and can still play the playlist by its Spotify URI. Playback never depends on this sign-in, so the player keeps working when the Web API is unavailable.
+Funciona en mi equipo con Windows: reproducción, biblioteca, búsqueda, idiomas, temas y sesión guardada. Lo que aún no está verificado en vivo: la ejecución nativa en Linux, la aceptación real del refresco de sesión por parte de Spotify y el aspecto visual en otras terminales.
 
-## Language and theme
-
-Press **F2** to switch between English and Spanish, and **F3** to cycle the **standard**, **dark**, and **light** themes. Pulso saves the choice in `preferences.json` under your user configuration directory and only writes it when you press one of those keys.
-
-## Diagnose Soloist
-
-If the automatic install fails, the wizard offers recovery steps. You can use the official Spotify download, add its executable directory to `PATH`, and reopen Pulso from a terminal with the updated `PATH`.
-
-Run `pulso doctor` (or `go run . doctor` from the checkout) if the wizard can't check or start Soloist. The diagnostic reports Soloist's own daemon, WebSocket, and sign-in status without installing or starting it. Use `pulso doctor --data-dir PATH` for an existing daemon with a custom directory.
-
-If runtime files are stale or the WebSocket is broken, Pulso leaves them and any existing daemon alone rather than starting a duplicate. Check the diagnostic and restore the daemon's loopback WebSocket or stop the existing instance with Soloist's controls before retrying. Don't delete runtime files while a daemon may be using them.
+Los límites de Spotify también aplican: en modo desarrollo solo se ven las canciones de playlists propias o colaborativas, y la búsqueda devuelve diez resultados por página.

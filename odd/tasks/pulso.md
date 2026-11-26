@@ -1,5 +1,5 @@
 # Pulso implementation
-Product scope: [PLAN.md](../../PLAN.md). Start with a local, read-only Soloist diagnostic.
+Product scope: [PLAN.md](../../docs/PLAN.md). Start with a local, read-only Soloist diagnostic.
 Target: Windows x86-64 and Linux x86-64.
 
 - S14: “se reparo lo de las teclas pero no funciona la url de spotify da error response_type must be code”
@@ -34,7 +34,7 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 
 ## Tasks
 
-- T22 [done for automated checks] S16 — Workspace UI per [UI-PLAN.md](../UI-PLAN.md). U1 shell (48eba12), U2 library (d63025a), U3 playing bar (f4091c7) and U4 search (b084d59) and U5 polish (commit `feat: polish the workspace`) are implemented.
+- T22 [done for automated checks] S16 — Workspace UI per [UI-PLAN.md](../../docs/UI-PLAN.md). U1 shell (48eba12), U2 library (d63025a), U3 playing bar (f4091c7) and U4 search (b084d59) and U5 polish (commit `feat: polish the workspace`) are implemented.
 
 - T1 [done] S1–S5 — Bootstrap the Go command and read-only Soloist diagnostic; inline; commit: `feat: add Pulso Soloist diagnostic`.
 - T2 [blocked] S2, S4 — Verify Soloist playback and Web API access on both target platforms; waits for a paired Soloist and authorized Spotify developer app on the target environments.
@@ -100,3 +100,5 @@ Y: retry install | Esc: quit ademas quiero una interfaz grafica como la de spoti
 - L35: T23 and T24 implemented. Session persistence: `<config>/pulso/spotify-session.json` (0600, bounded, strict JSON) restored silently at startup, refreshed without a browser, deleted only on a rejected refresh (400/401); a rotated refresh token is now written back from the catalog refresh path (parent follow-up) so rotation never forces re-approval. Setup skips the Spotify step entirely when a session restores, and skips the instructions when only a Client ID is stored. Footer: sqlterm-style flat `Key label` pairs with leading/trailing space and wrapping; F1/? opens a grouped help screen that returns to the same panel; `s`/`r` work from every panel except the focused search field. Full suite, vet, gofmt, Linux amd64 and macOS arm64 builds passed.
 - S18: “encontre 2 bugs el boton de aletorio funciono la primera vez y ahora ya no funciona no puedo desactivarlo y el de repetir no se activa”
 - L36: S18 accepted. Both toggles were computed from Soloist's reported options only, so a missing or delayed options event left shuffle stuck on and repeat never advancing. The player now remembers the requested mode, asks for a fresh `get_state` after each mode command, drops the intent when Soloist reports the matching value or the session changes, and renders the requested value until then. Regression tests cover toggling without confirming events and reconciliation with a report.
+- S19: “funciona ahora quiero organizar el repositorio antes de enviar el push, primero el agents.md de sqlterm y copialo a este repositorio tambien quiero que organices los archivos como el de sqlterm para que quede ordenado tambien lo del readme e instrucciones separado y por idioma principal el español y el readme debe seguir la estrucuta del de sqlterm que esta implementacion es mi implementacion debido a la limitacion de librepost que no pretende ser el mejor y que mientras me funcione a mi me sirve”
+- L37: S19 accepted. T25 restructure the repository like sqlterm (cmd/pulso + internal/app, docs/), T26 add AGENTS.md adapted from sqlterm (Spanish commits and comments, English identifiers) and rewrite README/INSTRUCTIONS in Spanish with English companions, following sqlterm's shape and carrying the human's own statement about this being a personal implementation limited by librespot. Commit messages switch to Spanish per AGENTS.md.
