@@ -16,8 +16,8 @@ Target: Windows x86-64 and Linux x86-64.
 
 - T1 [done] S1–S5 — Bootstrap the Go command and read-only Soloist diagnostic; inline; commit: `feat: add Pulso Soloist diagnostic`.
 - T2 [blocked] S2, S4 — Verify Soloist playback and Web API access on both target platforms; waits for a paired Soloist and authorized Spotify developer app on the target environments.
-- T3 [pending independent verification] S2, S4, S6 — Managed Soloist installer for missing Windows/Linux amd64 builds; worker; candidate `feat: add managed Soloist installer`.
-- T7 [pending independent verification] S6, S7 — Bubble Tea welcome, setup status, installation confirmation, and masked key entry; worker; candidate `feat: add Pulso welcome wizard`.
+- T3 [done] S2, S4, S6 — Managed Soloist installer for missing Windows/Linux amd64 builds; worker; commit `2502892`; independent fixture checks passed.
+- T7 [done] S6, S7 — Bubble Tea welcome, setup status, installation confirmation, and masked key entry; worker; commit `dac65d9`; independent model checks passed.
 - T8 [in progress] S6, S7 — Wire the default command to setup, launch Soloist locally, guide and confirm pairing, and preserve `doctor`; worker; commit pending.
 - T4 [pending] S1, S2 — Build the TUI player, playback controls, queue, and reconnect behavior; route pending; commit pending.
 - T5 [pending] S1, S2 — Add Web API search and playlist browsing; route pending; commit pending.
@@ -31,4 +31,4 @@ Target: Windows x86-64 and Linux x86-64.
 - L4: “quiero una interfaz grafica que de la bienvenida y verifique si esta instalado soloist sino te lo instale y te de los pasos para crear la key y poder agregarla”
 - L5: Selected “Dentro de la terminal (TUI)”. Fake-backed implementation can proceed while real account/platform validation in T2 remains blocked.
 - L6: Setup visual brief: one compact pane with a Pulso welcome, a clear status or next action, and one row of keyboard hints. Let prose fit an 80-column terminal. Key entry must be masked and not written to disk by Pulso in this slice. Use the key for a local Soloist launch; Spotify owns the persistent pairing. A running external instance is not restarted or replaced by the wizard.
-- L7: Installer and model fixture checks passed. The independent verifier could only inspect committed code; it identified a zero-CRC ZIP gap by static inspection. The parent reproduced that bug with a fixture, fixed it, and confirmed the installer and model suite passed. Candidate verification must not use the old baseline.
+- L7: Installer and model fixture checks passed. The independent verifier could only inspect committed code; it identified a zero-CRC ZIP gap by static inspection. The parent reproduced that bug with a fixture, fixed it, and confirmed the installer and model suite passed. The independent verifier then ran successfully on the corrected committed snapshot `dac65d9` (7 tests and 29 subtests including independent scratch probes). Live CDN, real pairing and native Linux remain unverified.

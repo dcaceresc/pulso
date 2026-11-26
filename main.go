@@ -14,20 +14,23 @@ import (
 const usage = `Pulso — Spotify in the terminal
 
 Usage:
+  pulso                          Open the Soloist setup wizard
   pulso doctor [--data-dir PATH]  Report local Soloist status
   pulso --help                   Show this help
 `
 
 const downloads = "https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates"
 
-type doctorDeps struct {
+type commandDeps struct {
+	setup func(io.Writer) error
 	find  func() (string, error)
 	probe func(context.Context, string, []string, io.Writer, io.Writer) error
 }
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, doctorDeps{
-		find: findSoloist,
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, commandDeps{
+		setup: runSetup,
+		find:  findSoloist,
 		probe: func(ctx context.Context, path string, args []string, stdout, stderr io.Writer) error {
 			cmd := exec.CommandContext(ctx, path, args...)
 			cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -36,8 +39,15 @@ func main() {
 	}))
 }
 
-func run(args []string, stdout, stderr io.Writer, deps doctorDeps) int {
-	if len(args) == 0 || len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+func run(args []string, stdout, stderr io.Writer, deps commandDeps) int {
+	if len(args) == 0 {
+		if err := deps.setup(stdout); err != nil {
+			fmt.Fprintln(stderr, "Could not open the Pulso setup wizard. Run pulso doctor.")
+			return 1
+		}
+		return 0
+	}
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
@@ -74,15 +84,10 @@ func findSoloist() (string, error) {
 		return path, nil
 	}
 
-	configDir, err := os.UserConfigDir()
+	path, err := managedSoloistPath()
 	if err != nil {
 		return "", err
 	}
-	name := "soloist"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	path := filepath.Join(configDir, "pulso", "bin", name)
 	info, err := os.Stat(path)
 	switch {
 	case os.IsNotExist(err):
@@ -94,4 +99,16 @@ func findSoloist() (string, error) {
 	default:
 		return path, nil
 	}
+}
+
+func managedSoloistPath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	name := "soloist"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(configDir, "pulso", "bin", name), nil
 }

@@ -9,11 +9,44 @@ import (
 	"testing"
 )
 
+func TestLocalSetupCommand(t *testing.T) {
+	for _, tc := range []struct {
+		name, stdout, stderr string
+		err                  error
+		code                 int
+	}{
+		{name: "opens wizard", stdout: "Welcome to Pulso\n"},
+		{name: "terminal failure", err: errors.New("internal terminal details"), code: 1, stderr: "Could not open the Pulso setup wizard. Run pulso doctor.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			calls := 0
+			code := run(nil, &stdout, &stderr, commandDeps{setup: func(out io.Writer) error {
+				calls++
+				io.WriteString(out, tc.stdout)
+				return tc.err
+			}})
+			if code != tc.code || stdout.String() != tc.stdout || stderr.String() != tc.stderr || calls != 1 {
+				t.Fatalf("exit=%d stdout=%q stderr=%q launches=%d", code, &stdout, &stderr, calls)
+			}
+		})
+	}
+}
+
 func TestCommandHelp(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"--help"}, &stdout, &stderr, doctorDeps{})
-	if code != 0 || stdout.String() != usage || stderr.Len() != 0 {
-		t.Fatalf("exit=%d stdout=%q stderr=%q", code, &stdout, &stderr)
+	const want = `Pulso — Spotify in the terminal
+
+Usage:
+  pulso                          Open the Soloist setup wizard
+  pulso doctor [--data-dir PATH]  Report local Soloist status
+  pulso --help                   Show this help
+`
+	for _, flag := range []string{"--help", "-h"} {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{flag}, &stdout, &stderr, commandDeps{})
+		if code != 0 || stdout.String() != want || stderr.Len() != 0 {
+			t.Fatalf("%s: exit=%d stdout=%q stderr=%q", flag, code, &stdout, &stderr)
+		}
 	}
 }
 
@@ -34,7 +67,7 @@ func TestDoctor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			calls := 0
-			deps := doctorDeps{
+			deps := commandDeps{
 				find: func() (string, error) {
 					if tt.path == "" {
 						return "", nil
