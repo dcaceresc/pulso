@@ -22,8 +22,11 @@ type libraryFake struct {
 	playlistCalls []int
 	trackCalls    []int
 	trackURIs     []string
+	searchCalls   []int
+	searchQueries []string
 	playlists     func(context.Context, int) ([]libraryPlaylist, int, bool, error)
 	tracks        func(context.Context, string, int) ([]libraryTrack, int, bool, error)
+	search        func(context.Context, string, int) ([]libraryTrack, int, bool, error)
 }
 
 func (f *libraryFake) PlaylistPage(ctx context.Context, offset int) ([]libraryPlaylist, int, bool, error) {
@@ -47,6 +50,19 @@ func (f *libraryFake) TrackPage(ctx context.Context, uri string, offset int) ([]
 	return f.tracks(ctx, uri, offset)
 }
 
+// SearchPage records one search request per call, so a test can prove the
+// query and the offset that reached the source.
+func (f *libraryFake) SearchPage(ctx context.Context, query string, offset int) ([]libraryTrack, int, bool, error) {
+	f.mu.Lock()
+	f.searchCalls = append(f.searchCalls, offset)
+	f.searchQueries = append(f.searchQueries, query)
+	f.mu.Unlock()
+	if f.search == nil {
+		return nil, 0, false, nil
+	}
+	return f.search(ctx, query, offset)
+}
+
 func (f *libraryFake) Search(context.Context, string, int) ([]catalogItem, bool, error) {
 	return nil, false, nil
 }
@@ -63,6 +79,12 @@ func (f *libraryFake) requests() (playlists, tracks []int, uris []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]int(nil), f.playlistCalls...), append([]int(nil), f.trackCalls...), append([]string(nil), f.trackURIs...)
+}
+
+func (f *libraryFake) searchRequests() (queries []string, offsets []int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.searchQueries...), append([]int(nil), f.searchCalls...)
 }
 
 func libraryPlaylistsFixture() func(context.Context, int) ([]libraryPlaylist, int, bool, error) {
@@ -400,6 +422,43 @@ func TestLibraryAuthorizeOnDemand(t *testing.T) {
 	m = librarySettle(t, m, cmd)
 	if !strings.Contains(ansi.Strip(m.View()), "Rock Chileno") {
 		t.Fatalf("an authorized library did not load:\n%s", m.View())
+	}
+}
+
+func TestLibraryMissingClientIDNotice(t *testing.T) {
+	authorized := make(chan struct{}, 1)
+	authorize := func(context.Context, string, func(string)) (catalogAPI, error) {
+		authorized <- struct{}{}
+		return nil, errors.New("offline fixture")
+	}
+	for _, tt := range []struct {
+		language string
+		short    string
+		want     string
+	}{
+		{"en", "Restart Pulso", "LIBRARY: Restart Pulso and complete the Spotify step."},
+		{"es", "Reinicia Pulso", "BIBLIOTECA: Reinicia Pulso y completa el paso de Spotify."},
+	} {
+		t.Run(tt.language, func(t *testing.T) {
+			m, _, _ := libraryNewPlayer(t, 120, 40, preferences{Language: tt.language}, playerState{Connected: true}, nil, authorize, "fixture-client")
+			player := m.(*playerModel)
+			// No remembered Client ID means the wizard never ran on this profile.
+			player.library.clientID = ""
+			m = libraryFocusSidebar(t, m)
+			m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if cmd != nil {
+				t.Fatal("authorization started without a Client ID")
+			}
+			select {
+			case <-authorized:
+				t.Fatal("the authorize seam ran without a Client ID")
+			default:
+			}
+			// The sidebar truncates; the stacked summary carries the whole notice.
+			playerViewText(t, m, tt.short)
+			playerViewRows(t, m, 80, 24)
+			playerViewText(t, m, tt.want)
+		})
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strings"
 )
 
 var _ librarySource = (*spotifyCatalog)(nil)
@@ -68,6 +69,31 @@ func (c *spotifyCatalog) TrackPage(ctx context.Context, uri string, offset int) 
 		}
 	}
 	return tracks, page.Total, page.more(offset), nil
+}
+
+// SearchPage reads one page of track search results. An empty query is not a
+// request: it returns no rows and never reaches the network. The API caps a
+// search page at ten tracks, which is the shared page size.
+func (c *spotifyCatalog) SearchPage(ctx context.Context, query string, offset int) ([]libraryTrack, int, bool, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, 0, false, nil
+	}
+	var response struct {
+		Tracks *librarySpotifyPage[librarySpotifyTrack] `json:"tracks"`
+	}
+	params := url.Values{"q": {query}, "type": {"track"}}
+	if err := c.get(ctx, "/v1/search", params, offset, &response, false); err != nil {
+		return nil, 0, false, err
+	}
+	if response.Tracks == nil {
+		return nil, 0, false, errSpotifyCatalog
+	}
+	tracks := make([]libraryTrack, 0, len(response.Tracks.Items))
+	for _, track := range response.Tracks.Items {
+		tracks = appendLibraryTrack(tracks, track)
+	}
+	return tracks, response.Tracks.Total, response.Tracks.more(offset), nil
 }
 
 // appendLibraryTrack reuses the shared track filter and artist join, then adds

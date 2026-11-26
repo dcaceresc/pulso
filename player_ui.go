@@ -49,18 +49,19 @@ type playerModel struct {
 	width, height   int
 	preferences     preferences
 	save            func(preferences) error
-	catalog         *catalogModel
 	saved           bool
 	pending, loaded bool
 	ended, quit     bool
 	busy            bool
 
 	// Workspace focus and the Soloist queue cursor. The library keeps its own
-	// per-panel cursors for playlists and their tracks.
+	// per-panel cursors for playlists and their tracks; the search state keeps
+	// the cursor of the result table.
 	focus         playerPanel
 	tableSelected int
 	query         string
 	library       *libraryState
+	search        *searchState
 	// clock is the source of the interpolated playhead; tests replace it.
 	clock func() time.Time
 }
@@ -90,15 +91,9 @@ func newPlayerModelWithCatalog(ctx context.Context, states <-chan playerState, c
 		}
 	}
 	// The setup handoff passes the authorized catalog; when it can serve
-	// library pages the sidebar and the table read it directly.
+	// library pages the sidebar, the table and the search all read it directly.
 	m.library = newLibraryState(ctx, librarySourceOf(api), authorize, clientID)
-	if authorize != nil {
-		m.catalog = newCatalogModel(ctx, m.preferences, width, height, clientID, authorize, m.playURI)
-		m.catalog.api = api
-		m.catalog.saveClientID = func(id string) {
-			_ = saveClientID(id)
-		}
-	}
+	m.search = newSearchState(ctx, m.library.source)
 	return m
 }
 
@@ -153,17 +148,13 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		if m.catalog != nil {
-			_, cmd := m.catalog.Update(msg)
-			return m, cmd
-		}
-	case catalogAuthMsg, catalogPageMsg:
-		if m.catalog != nil {
-			_, cmd := m.catalog.Update(msg)
-			return m, cmd
-		}
 	case libraryAuthMsg, libraryPageMsg:
-		return m, m.library.update(msg)
+		cmd := m.library.update(msg)
+		// Authorization can install the library source after startup.
+		m.search.source = m.library.source
+		return m, cmd
+	case searchPageMsg:
+		return m, m.search.update(msg)
 	case playerViewState:
 		if m.quit || !m.pending {
 			break
@@ -190,10 +181,6 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.changePreferences(false)
 			return m, nil
 		}
-		if m.catalog != nil && !m.catalog.Closed() {
-			_, cmd := m.catalog.Update(msg)
-			return m, cmd
-		}
 		return m, m.handleKey(msg)
 	}
 	return m, nil
@@ -218,8 +205,13 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	if m.focus == playerFocusSearch {
 		return m.handleSearchKey(key)
 	}
-	// Esc from any panel that is not the search input quits: nothing else
-	// claims it once the catalog overlay has had its turn.
+	// Esc from any panel leaves shown search results first; the next one quits.
+	if key.Type == tea.KeyEsc && m.search.active {
+		m.search.close()
+		m.focus = playerFocusTable
+		return nil
+	}
+	// Otherwise Esc from any panel that is not the search input quits.
 	if key.Type == tea.KeyEsc || key.Type == tea.KeyCtrlC || key.String() == "q" {
 		m.quit = true
 		m.cancel()
@@ -236,22 +228,19 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 		m.focus = playerStep(m.focus, -1)
 		return nil
 	}
-	if key.String() == "/" {
+	switch key.String() {
+	case "/":
 		m.focus = playerFocusSearch
 		return nil
-	}
-	// The playing bar owns seek, shuffle and repeat; everywhere else they keep
-	// their own meaning, including the catalog overlay on `s` and `l`.
-	if m.handlePlayingKey(key) {
+	case "l":
+		// l moves to the sidebar. The catalog overlay is gone; s is free
+		// outside the playing bar.
+		m.focus = playerFocusSidebar
 		return nil
 	}
-	if m.catalog != nil {
-		switch key.String() {
-		case "s", "l":
-			m.catalog.width, m.catalog.height = m.width, m.height
-			m.catalog.preferences = m.preferences
-			return m.catalog.Open(map[string]string{"s": "search", "l": "playlists"}[key.String()])
-		}
+	// The playing bar owns seek, shuffle and repeat.
+	if m.handlePlayingKey(key) {
+		return nil
 	}
 	if handled, cmd := m.moveSelection(key); handled {
 		return cmd
@@ -334,12 +323,18 @@ func (m *playerModel) send(command playerCommand) bool {
 	return false
 }
 
-// handleSearchKey edits the query buffer. Esc and Enter leave the field
-// without quitting and without fetching anything yet.
+// handleSearchKey edits the query buffer. Enter submits a non-empty query and
+// leaves the field for the table; Esc blurs it, and closes shown results.
 func (m *playerModel) handleSearchKey(key tea.KeyMsg) tea.Cmd {
 	switch key.Type {
-	case tea.KeyEsc, tea.KeyEnter:
+	case tea.KeyEsc:
+		m.search.close()
 		m.focus = playerFocusTable
+		return nil
+	case tea.KeyEnter:
+		if cmd := m.submitSearch(); cmd != nil {
+			return cmd
+		}
 		return nil
 	case tea.KeyTab:
 		m.focus = playerFocusPlaying
@@ -354,6 +349,18 @@ func (m *playerModel) handleSearchKey(key tea.KeyMsg) tea.Cmd {
 	}
 	m.query = catalogEdit(m.query, key)
 	return nil
+}
+
+// submitSearch fetches the first page of the typed query and moves the focus
+// to the table. A blank query stays in the field and reaches no source.
+func (m *playerModel) submitSearch() tea.Cmd {
+	query := strings.TrimSpace(m.query)
+	if query == "" {
+		return nil
+	}
+	m.search.source = m.library.source
+	m.focus = playerFocusTable
+	return m.search.submit(query)
 }
 
 func (m *playerModel) moveSelection(key tea.KeyMsg) (bool, tea.Cmd) {
@@ -378,6 +385,9 @@ func (m *playerModel) moveSelection(key tea.KeyMsg) (bool, tea.Cmd) {
 	case playerFocusSidebar:
 		return true, m.library.moveSidebar(delta)
 	case playerFocusTable:
+		if m.search.active {
+			return true, m.search.move(delta)
+		}
 		if m.library.open() {
 			return true, m.library.moveTracks(delta)
 		}
@@ -396,6 +406,15 @@ func (m *playerModel) activateSelection(key tea.KeyMsg) (tea.Cmd, bool) {
 	switch {
 	case key.Type == tea.KeyEnter && m.focus == playerFocusSidebar:
 		return m.activatePlaylist(), true
+	case key.Type == tea.KeyEnter && m.focus == playerFocusTable && m.search.active:
+		// Enter on the empty error row asks for the same page again.
+		if m.search.err != nil && len(m.search.tracks) == 0 {
+			return m.search.retry(), true
+		}
+		if track, ok := m.search.selected(); ok {
+			m.playURI(track.URI)
+		}
+		return nil, true
 	case key.Type == tea.KeyEnter && m.focus == playerFocusTable && m.library.open():
 		if m.library.notice == libraryNoticeLoadFailed && !m.library.loadedTracks {
 			return m.library.fetchTracks(0), true
@@ -435,12 +454,15 @@ func (m *playerModel) activatePlaylist() tea.Cmd {
 		return nil
 	}
 	m.focus = playerFocusTable
+	// Opening a playlist replaces the result table on purpose.
+	m.search.close()
 	return library.openPlaylist()
 }
 
 func (m *playerModel) clampSelections() {
 	m.tableSelected = playerIndex(m.tableSelected, len(m.state.Queue))
 	m.library.clamp()
+	m.search.clamp()
 }
 
 func playerStep(value playerPanel, delta int) playerPanel {
@@ -465,9 +487,6 @@ func (m *playerModel) changePreferences(language bool) tea.Cmd {
 		m.preferences.Theme = next[m.preferences.Theme]
 	}
 	m.preferences = m.preferences.normalized()
-	if m.catalog != nil {
-		m.catalog.preferences = m.preferences
-	}
 	m.saved = false
 	if m.save != nil && m.save(m.preferences) == nil {
 		m.saved = true
@@ -658,9 +677,6 @@ func (m *playerModel) View() string {
 	if m.quit || m.width < 1 || m.height < 1 {
 		return ""
 	}
-	if m.catalog != nil && !m.catalog.Closed() {
-		return m.catalog.View()
-	}
 	styles := m.styles()
 	width := m.width
 	rule := styles.muted.Render(strings.Repeat("─", width))
@@ -834,10 +850,10 @@ func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
 func (m *playerModel) hintRows(width int) []string {
 	if m.focus == playerFocusSearch {
 		if width < playerHintsWidth {
-			return []string{m.text("Enter: keep | Esc: leave", "Enter: mantener | Esc: salir")}
+			return []string{m.text("Enter: search | Esc: leave", "Enter: buscar | Esc: salir")}
 		}
-		return []string{m.text("Type: edit | Backspace: delete | Enter: keep | Esc: leave",
-			"Escribe: editar | Retroceso: borrar | Enter: mantener | Esc: salir")}
+		return []string{m.text("Type: edit | Backspace: delete | Enter: search | Esc: leave",
+			"Escribe: editar | Retroceso: borrar | Enter: buscar | Esc: salir")}
 	}
 	if width < playerHintsWidth {
 		return []string{m.text("Tab | ↑↓/jk | /: search | q: quit", "Tab | ↑↓/jk | /: buscar | q: salir")}
@@ -854,8 +870,8 @@ func (m *playerModel) hintRows(width int) []string {
 	}
 	rows := []string{primary}
 	if m.height >= playerHintsHeight {
-		secondary := m.text("s: search | l: playlists | +/-: volume | F2: language | F3: theme",
-			"s: buscar | l: listas | +/-: volumen | F2: idioma | F3: tema")
+		secondary := m.text("l: library | +/-: volume | F2: language | F3: theme",
+			"l: biblioteca | +/-: volumen | F2: idioma | F3: tema")
 		if m.focus == playerFocusPlaying {
 			secondary = m.text("s: shuffle | r: repeat | +/-: volume | F2: language | F3: theme",
 				"s: aleatorio | r: repetir | +/-: volumen | F2: idioma | F3: tema")
@@ -972,6 +988,8 @@ func (m *playerModel) libraryStateRows(styles playerStyles) []playerRow {
 				{text: "  " + m.text("Spotify unavailable; playback works.", "Spotify no disponible; la reproducción funciona."), style: styles.failure},
 				muted(m.text("Enter: retry Spotify", "Enter: reintentar Spotify")),
 			}
+		case library.notice == libraryNoticeClientID:
+			return []playerRow{{text: "  " + m.text("Restart Pulso and complete the Spotify step.", "Reinicia Pulso y completa el paso de Spotify."), style: styles.failure}}
 		default:
 			return []playerRow{muted(m.text("Enter: connect Spotify", "Enter: conectar Spotify"))}
 		}
@@ -991,6 +1009,9 @@ func (m *playerModel) libraryStateRows(styles playerStyles) []playerRow {
 }
 
 func (m *playerModel) mainTitle() string {
+	if m.search.active {
+		return m.searchTitle()
+	}
 	if m.library.open() {
 		title := playerText(m.library.playlist.Name)
 		if title == "" {
@@ -1005,6 +1026,17 @@ func (m *playerModel) mainTitle() string {
 	title := m.text("Playback", "Reproducción")
 	if m.loaded && m.state.Connected {
 		title += " · " + fmt.Sprintf(m.text("%d tracks", "%d canciones"), len(m.state.Queue))
+	}
+	return title
+}
+
+// searchTitle names the submitted query and its total, so the table never
+// shows an unlabelled list of results.
+func (m *playerModel) searchTitle() string {
+	title := m.text("Search", "Búsqueda") + ": " + playerText(m.search.query)
+	total := max(m.search.total, len(m.search.tracks))
+	if total > 0 {
+		title += " · " + fmt.Sprintf(m.text("%d tracks", "%d canciones"), total)
 	}
 	return title
 }
@@ -1078,6 +1110,9 @@ func (m *playerModel) tableHeader(width int) string {
 }
 
 func (m *playerModel) tableRows(width int, styles playerStyles, room int) []playerRow {
+	if m.search.active {
+		return m.searchTableRows(width, styles, room)
+	}
 	if m.library.open() {
 		return m.libraryTableRows(width, styles, room)
 	}
@@ -1121,6 +1156,42 @@ func (m *playerModel) libraryTableRows(width int, styles playerStyles, room int)
 	}
 	if library.loadingTracks && len(rows) < room {
 		rows = append(rows, playerRow{text: m.text("Loading more…", "Cargando más…"), style: styles.muted})
+	}
+	return rows
+}
+
+// searchTableRows renders the results, including one localized row for each
+// loading, empty, error and unauthorized state.
+func (m *playerModel) searchTableRows(width int, styles playerStyles, room int) []playerRow {
+	search := m.search
+	loading := m.text("Searching…", "Buscando…")
+	failed := m.text("Could not load search results. Enter: retry", "No se pudieron cargar los resultados. Enter: reintentar")
+	empty := m.text("No results for this search", "No hay resultados para esta búsqueda")
+	switch {
+	case m.library.source == nil:
+		return []playerRow{{text: m.text("Spotify search is not connected", "La búsqueda de Spotify no está conectada"), style: styles.muted}}
+	case search.loading && len(search.tracks) == 0:
+		return []playerRow{{text: loading, style: styles.muted}}
+	case search.err != nil && len(search.tracks) == 0:
+		return []playerRow{{text: failed, style: styles.failure}}
+	case search.loaded && len(search.tracks) == 0:
+		return []playerRow{{text: empty, style: styles.muted}}
+	}
+	columns := m.tableColumns(width)
+	start := max(0, search.cursor-room+1)
+	rows := make([]playerRow, 0, room)
+	for i := start; i < len(search.tracks) && len(rows) < room; i++ {
+		track := search.tracks[i]
+		rows = append(rows, m.tableRow(columns, i, i == search.cursor,
+			playerTrack{Title: track.Name, Artist: track.Artist, DurationMS: track.DurationMS}, styles))
+	}
+	if len(rows) < room {
+		switch {
+		case search.loading:
+			rows = append(rows, playerRow{text: m.text("Loading more…", "Cargando más…"), style: styles.muted})
+		case search.err != nil:
+			rows = append(rows, playerRow{text: failed, style: styles.failure})
+		}
 	}
 	return rows
 }

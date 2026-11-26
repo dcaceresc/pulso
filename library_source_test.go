@@ -50,6 +50,69 @@ func TestLibrarySourceTrackPage(t *testing.T) {
 	}
 }
 
+func TestLibrarySourceSearchPage(t *testing.T) {
+	calls := 0
+	c := spotifyFixtureCatalog(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.Method != http.MethodGet || r.URL.Host != "api.spotify.com" || r.URL.Path != "/v1/search" {
+			t.Fatalf("unexpected request %s", r.URL.String())
+		}
+		query := r.URL.Query()
+		if query.Get("q") != "rock & roll" || query.Get("type") != "track" || query.Get("limit") != "10" || query.Get("offset") != "10" {
+			t.Fatalf("unexpected search parameters %s", r.URL.RawQuery)
+		}
+		return spotifyFixtureResponse(200, `{"tracks":{"total":42,"items":[null,`+
+			`{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"}],"duration_ms":336000,"uri":"spotify:track:one"},`+
+			`{"name":"Blocked","uri":"spotify:track:two","is_playable":false}],`+
+			`"next":"https://invalid.example/never"}}`), nil
+	})
+	tracks, total, more, err := c.SearchPage(context.Background(), "rock & roll", 10)
+	want := []libraryTrack{{Name: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000, URI: "spotify:track:one"}}
+	if err != nil || !more || total != 42 || !reflect.DeepEqual(tracks, want) || calls != 1 {
+		t.Fatalf("search page = %#v, %d, %v, %v; calls=%d", tracks, total, more, err, calls)
+	}
+}
+
+func TestLibrarySourceSearchEmptyQuery(t *testing.T) {
+	calls := 0
+	c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
+		calls++
+		return spotifyFixtureResponse(200, `{"tracks":{"items":[],"next":null}}`), nil
+	})
+	for _, query := range []string{"", "   ", "\t\n"} {
+		tracks, total, more, err := c.SearchPage(context.Background(), query, 0)
+		if err != nil || tracks != nil || more || total != 0 {
+			t.Fatalf("empty query %q = %#v, %d, %v, %v", query, tracks, total, more, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("an empty query reached the network: %d calls", calls)
+	}
+}
+
+func TestLibrarySourceSearchFailures(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		code int
+		body string
+		want error
+	}{
+		{"missing tracks", http.StatusOK, `{"albums":{}}`, errSpotifyCatalog},
+		{"server error", http.StatusInternalServerError, "arbitrary fixture body", errSpotifyCatalog},
+		{"rate limited", http.StatusTooManyRequests, "arbitrary fixture body", errSpotifyRateLimited},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
+				return spotifyFixtureResponse(tt.code, tt.body), nil
+			})
+			tracks, total, more, err := c.SearchPage(context.Background(), "rock", 0)
+			if !errors.Is(err, tt.want) || strings.Contains(err.Error(), "arbitrary fixture body") || tracks != nil || more || total != 0 {
+				t.Fatalf("failed search page = %#v, %d, %v, %v", tracks, total, more, err)
+			}
+		})
+	}
+}
+
 func TestLibrarySourceTrackPageForbidden(t *testing.T) {
 	c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
 		return spotifyFixtureResponse(403, `{"message":"private fixture body"}`), nil

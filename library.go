@@ -28,6 +28,7 @@ type libraryPlaylist struct {
 type librarySource interface {
 	PlaylistPage(ctx context.Context, offset int) ([]libraryPlaylist, int, bool, error)
 	TrackPage(ctx context.Context, uri string, offset int) ([]libraryTrack, int, bool, error)
+	SearchPage(ctx context.Context, query string, offset int) ([]libraryTrack, int, bool, error)
 }
 
 // librarySourceOf accepts the setup handoff only when the catalog can serve
@@ -53,6 +54,9 @@ const (
 	libraryNoticeLoadFailed
 	libraryNoticeUnavailable
 	libraryNoticeAuthFailed
+	// libraryNoticeClientID means the wizard never stored a Spotify Client ID,
+	// so the on-demand authorization cannot start.
+	libraryNoticeClientID
 )
 
 // libraryPageMsg carries one completed page fetch, fenced by its generation.
@@ -191,6 +195,12 @@ func (l *libraryState) fetchTracks(offset int) tea.Cmd {
 // startAuth requests authorization and publishes the URL before the result.
 func (l *libraryState) startAuth() tea.Cmd {
 	if l.authorize == nil || l.source != nil || l.ctx.Err() != nil {
+		return nil
+	}
+	// Without a remembered Client ID the browser flow cannot start; the
+	// workspace explains how to finish the Spotify step instead.
+	if l.clientID == "" {
+		l.notice, l.authURL = libraryNoticeClientID, ""
 		return nil
 	}
 	ctx, generation := l.begin()

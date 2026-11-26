@@ -177,7 +177,7 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 		{120, 40, []string{
 			"Pulso", "Search:", "LIBRARY", "No playlists yet", "#", "Title", "Artist", "Duration",
 			"Estrechez de Corazón", "Tren al Sur", "1:02", "6:21", "Volume 37%", "Device Desk",
-			"⇄ off", "↻ off", "Tab: panel", "Esc/q: quit", "s: search", "l: playlists", "F2: language",
+			"⇄ off", "↻ off", "Tab: panel", "Esc/q: quit", "l: library", "F2: language",
 		}, nil},
 		{100, 30, []string{
 			"Pulso", "Search:", "LIBRARY", "No playlists yet", "#", "Title", "Artist", "Duration",
@@ -238,13 +238,13 @@ func TestPlayerViewFocusCycleAndHints(t *testing.T) {
 		want []string
 		drop []string
 	}{
-		{tea.KeyMsg{Type: tea.KeyTab}, []string{"Search: _", "Enter: keep", "Backspace: delete"}, []string{"↑↓/jk: move"}},
-		{tea.KeyMsg{Type: tea.KeyTab}, []string{"Space: pause", "Esc/q: quit"}, []string{"Enter: keep"}},
+		{tea.KeyMsg{Type: tea.KeyTab}, []string{"Search: _", "Enter: search", "Backspace: delete"}, []string{"↑↓/jk: move"}},
+		{tea.KeyMsg{Type: tea.KeyTab}, []string{"Space: pause", "Esc/q: quit"}, []string{"Enter: search"}},
 		{tea.KeyMsg{Type: tea.KeyTab}, []string{"↑↓/jk: library", "Esc/q: quit"}, []string{"Space: pause"}},
 		{tea.KeyMsg{Type: tea.KeyTab}, []string{"↑↓/jk: move", "Esc/q: quit"}, []string{"↑↓/jk: library"}},
 		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"↑↓/jk: library"}, []string{"↑↓/jk: move"}},
 		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"Space: pause"}, []string{"↑↓/jk: library"}},
-		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"Enter: keep"}, []string{"Space: pause"}},
+		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"Enter: search"}, []string{"Space: pause"}},
 		{tea.KeyMsg{Type: tea.KeyShiftTab}, []string{"↑↓/jk: move"}, []string{"Enter: keep"}},
 	} {
 		var cmd tea.Cmd
@@ -483,18 +483,10 @@ func TestPlayerViewNonblockingAndQuit(t *testing.T) {
 	}
 }
 
-// Drain the catalog's async OAuth/data results through the parent model.
-func playerViewCatalogDrain(t *testing.T, m tea.Model, cmd tea.Cmd) {
-	t.Helper()
-	for steps := 0; cmd != nil; steps++ {
-		if steps == 5 {
-			t.Fatal("catalog commands did not settle")
-		}
-		m, cmd = m.Update(playerViewRun(t, cmd))
-	}
-}
-
-func TestPlayerViewCatalogOverlay(t *testing.T) {
+// TestPlayerViewCatalogKeysNoLongerOpenAnOverlay keeps the old catalog test's
+// intent: an authorized catalog never renders a modal any more, `l` moves the
+// focus to the sidebar, and the player keeps receiving Soloist state.
+func TestPlayerViewCatalogKeysNoLongerOpenAnOverlay(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	states, out := make(chan playerState, 1), make(chan playerCommand, 1)
@@ -507,53 +499,41 @@ func TestPlayerViewCatalogOverlay(t *testing.T) {
 		},
 	}
 	m := newPlayerModelWithPreferences(ctx, states, out, 100, 24, preferences{}, nil, "fixture-id", catalogViewReply(api))
-	playerViewText(t, m, "s: search", "l: playlists")
 	states <- playerState{Connected: true, SessionID: 42}
 	m, next := m.Update(playerViewRun(t, m.Init()))
+	if next == nil {
+		t.Fatal("the workspace stopped receiving playback state")
+	}
+	before := ansi.Strip(m.View())
+	if strings.Contains(before, "Search tracks") || strings.Contains(before, "Fixture result") {
+		t.Fatalf("a catalog overlay is still rendered:\n%s", before)
+	}
+
+	// s is free outside the playing bar: no overlay, no command, no redraw.
 	m, cmd := m.Update(playerViewKey("s"))
-	playerViewCatalogDrain(t, m, cmd)
-	m, _ = m.Update(playerViewKey("jazz"))
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	playerViewCatalogDrain(t, m, cmd)
-	playerViewText(t, m, "Fixture result")
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	select {
-	case got := <-out:
-		if want := (playerCommand{Name: "play", URI: "spotify:track:AbC123", SessionID: 42}); got != want {
-			t.Fatalf("selected command %+v, want %+v", got, want)
-		}
-	default:
-		t.Fatal("expected selection to send a command to the displayed session")
+	if cmd != nil {
+		t.Fatal("s scheduled work outside the playing bar")
 	}
-	m, _ = m.Update(tea.WindowSizeMsg{Width: 14, Height: 5})
-	rows := strings.Split(ansi.Strip(m.View()), "\n")
-	if len(rows) > 5 {
-		t.Fatalf("overlay resized to too many rows: %v", rows)
+	if after := ansi.Strip(m.View()); after != before {
+		t.Fatalf("s changed the workspace:\n%s", after)
 	}
-	for _, row := range rows {
-		if lipgloss.Width(row) > 14 {
-			t.Fatalf("overlay row was not resized: %q", row)
-		}
+
+	// l focuses the sidebar instead of opening the playlists overlay.
+	m, _ = m.Update(playerViewKey("l"))
+	playerViewText(t, m, "↑↓/jk: library")
+	if view := ansi.Strip(m.View()); strings.Contains(view, "Fixture playlist") {
+		t.Fatalf("l opened the playlist overlay:\n%s", view)
 	}
+
+	// The playing bar still follows the displayed session after those keys.
 	states <- playerState{Connected: true, SessionID: 43, Track: playerTrack{Title: "Fresh playback"}}
 	m, next = m.Update(playerViewRun(t, next))
 	if next == nil {
-		t.Fatal("overlay stopped player reception")
+		t.Fatal("focus changes stopped player reception")
 	}
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if cmd != nil {
-		t.Fatal("Esc in catalog should not quit or reschedule player reception")
-	}
-	m, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	playerViewText(t, m, "Fresh playback")
-	m, cmd = m.Update(playerViewKey("l"))
-	playerViewCatalogDrain(t, m, cmd)
-	playerViewText(t, m, "Fixture playlist")
-	states <- playerState{Notice: playerPairNotice}
-	m, _ = m.Update(playerViewRun(t, next))
-	m.Update(playerViewKey("p"))
 	if len(out) != 0 {
-		t.Fatal("a catalog selection reached an unauthenticated Soloist session")
+		t.Fatal("catalog keys sent a playback command")
 	}
 }
 
@@ -598,30 +578,33 @@ func TestPlayerViewContextCancellation(t *testing.T) {
 	playerViewText(t, m, "Disconnected")
 }
 
-func TestPlayerViewOverlayPreferencesAndClose(t *testing.T) {
+// TestPlayerViewSearchFieldPreferences keeps the old overlay test's intent:
+// F2/F3 work while the text input owns the keyboard and persist, and Ctrl+C
+// still quits instead of being swallowed.
+func TestPlayerViewSearchFieldPreferences(t *testing.T) {
 	states, out := make(chan playerState, 1), make(chan playerCommand, 1)
-	api := catalogViewFake{search: func(context.Context, string, int) ([]catalogItem, bool, error) {
-		return []catalogItem{{Name: "Track", URI: "spotify:track:1"}}, false, nil
-	}}
 	var saved []preferences
 	m := newPlayerModelWithPreferences(context.Background(), states, out, 100, 24, preferences{Language: "en", Theme: "standard"}, func(p preferences) error {
 		saved = append(saved, p)
 		return nil
-	}, "fixture-id", catalogViewReply(api))
+	}, "fixture-id", nil)
 	m.Init()
-	m, cmd := m.Update(playerViewKey("s"))
-	playerViewCatalogDrain(t, m, cmd)
+	m, _ = m.Update(playerViewKey("/"))
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF2})
-	playerViewText(t, m, "Buscar canciones")
+	playerViewText(t, m, "Buscar:", "Retroceso: borrar")
 	if len(saved) != 1 || saved[0].Language != "es" {
-		t.Fatalf("overlay shortcut did not persist: %v", saved)
+		t.Fatalf("a shortcut inside the search field did not persist: %v", saved)
 	}
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if cmd != nil {
-		t.Fatal("Ctrl+C in the overlay should close it without quitting")
+	if len(out) != 0 {
+		t.Fatal("a shortcut inside the search field sent a command")
 	}
-	m, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
-	playerViewText(t, m, "Pulso", "Reproducción")
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("Ctrl+C in the search field did not quit")
+	}
+	if _, ok := playerViewRun(t, cmd).(tea.QuitMsg); !ok {
+		t.Fatal("Ctrl+C in the search field did not quit")
+	}
 }
 
 func TestPlayerViewPlayingBarKeepsAlbum(t *testing.T) {
@@ -827,28 +810,21 @@ func TestPlayerViewPlayingBarOwnsItsKeys(t *testing.T) {
 	}
 }
 
-func TestPlayerViewPlayingBarKeepsTheCatalog(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	states, out := make(chan playerState, 1), make(chan playerCommand, 1)
-	api := catalogViewFake{search: func(context.Context, string, int) ([]catalogItem, bool, error) {
-		return []catalogItem{{Name: "Fixture result", URI: "spotify:track:AbC123"}}, false, nil
-	}}
-	m := newPlayerModelWithPreferences(ctx, states, out, 120, 40, preferences{}, nil, "fixture-id", catalogViewReply(api))
-	states <- playerState{Connected: true, SessionID: 5}
-	m, _ = m.Update(playerViewRun(t, m.Init()))
-	// Outside the playing bar s still opens the catalog overlay.
-	m, cmd := m.Update(playerViewKey("s"))
-	playerViewCatalogDrain(t, m, cmd)
-	m, _ = m.Update(playerViewKey("song"))
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	playerViewCatalogDrain(t, m, cmd)
-	playerViewText(t, m, "Search tracks", "Fixture result")
-	// Inside the playing bar s is shuffle, so the overlay stays closed.
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if cmd != nil {
-		t.Fatal("Esc in the catalog should not quit")
+// TestPlayerViewPlayingBarKeepsItsOwnKeys keeps the old catalog test's intent:
+// s belongs to the playing bar and stays free everywhere else.
+func TestPlayerViewPlayingBarKeepsItsOwnKeys(t *testing.T) {
+	m, out := playerViewModel(t, 120, 40, playerState{Connected: true, SessionID: 5})
+	before := ansi.Strip(m.View())
+	if _, cmd := m.Update(playerViewKey("s")); cmd != nil {
+		t.Fatal("s scheduled work outside the playing bar")
 	}
+	if len(out) != 0 {
+		t.Fatal("s sent a playing-bar command from the table")
+	}
+	if after := ansi.Strip(m.View()); after != before {
+		t.Fatalf("s changed the table:\n%s", after)
+	}
+	// Inside the playing bar s is shuffle.
 	for range 2 {
 		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	}
@@ -858,13 +834,12 @@ func TestPlayerViewPlayingBarKeepsTheCatalog(t *testing.T) {
 		if got != (playerCommand{Name: "set_shuffle", Shuffle: true, SessionID: 5}) {
 			t.Fatalf("the playing bar sent %+v, want set_shuffle", got)
 		}
+		if len(out) != 0 {
+			t.Fatal("one keypress sent more than one command")
+		}
 	default:
 		t.Fatal("the playing bar did not shuffle")
 	}
-	if view := ansi.Strip(m.View()); strings.Contains(view, "Search tracks") {
-		t.Fatalf("s in the playing bar reopened the catalog:\n%s", view)
-	}
-	playerViewText(t, m, "Pulso")
 }
 
 func TestPlayerViewPlayingBarModes(t *testing.T) {
@@ -894,11 +869,11 @@ func TestPlayerViewPlayingBarModes(t *testing.T) {
 func TestPlayerViewPlayingBarHints(t *testing.T) {
 	m, _ := playerViewPlayingFocus(t, preferences{}, playerState{Connected: true})
 	playerViewText(t, m, "Space: pause", "←→: seek", "s: shuffle", "r: repeat")
-	// Other panels keep their own hints.
+	// Other panels keep their own hints; s is free and l focuses the sidebar.
 	table, _ := playerViewModel(t, 120, 40, playerState{Connected: true})
-	view := playerViewText(t, table, "s: search", "l: playlists")
-	if strings.Contains(view, "s: shuffle") {
-		t.Fatalf("the table advertised the playing-bar hints:\n%s", view)
+	view := playerViewText(t, table, "l: library", "/: search")
+	if strings.Contains(view, "s: shuffle") || strings.Contains(view, "s: search") {
+		t.Fatalf("the table advertised the wrong hints:\n%s", view)
 	}
 }
 
