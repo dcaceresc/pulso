@@ -3,6 +3,7 @@
 ## Idioma
 
 - Escribe los mensajes de commit en español.
+- Redacta siempre el título y la descripción de los pull requests en español.
 - Escribe los comentarios nuevos o modificados del código en español.
 - No traduzcas identificadores, sentencias de Go, rutas ni textos de interfaz por esta regla.
 
