@@ -31,10 +31,14 @@ var (
 	// ErrPlaylistNotEditable significa que esta cuenta no puede modificar la
 	// lista elegida; volver a aprobar no lo arregla.
 	ErrPlaylistNotEditable = errors.New("Spotify playlist cannot be changed by this account")
-	errSpotifyOffset       = errors.New("Invalid Spotify catalog offset")
-	errSpotifyPlaylistURI  = errors.New("Invalid Spotify playlist URI")
-	errSpotifyTrackURI     = errors.New("Invalid Spotify track URI")
-	spotifyID              = regexp.MustCompile(`^[A-Za-z0-9]+$`)
+	// ErrPlaylistSnapshotConflict significa que la lista cambió desde que se
+	// leyó: hay que volver a leerla antes de reintentar la retirada.
+	ErrPlaylistSnapshotConflict = errors.New("Spotify playlist changed since it was read; read it again")
+	errSpotifyOffset            = errors.New("Invalid Spotify catalog offset")
+	errSpotifyPlaylistURI       = errors.New("Invalid Spotify playlist URI")
+	errSpotifyTrackURI          = errors.New("Invalid Spotify track URI")
+	errSpotifySnapshot          = errors.New("Invalid Spotify playlist snapshot")
+	spotifyID                   = regexp.MustCompile(`^[A-Za-z0-9]+$`)
 )
 
 type Item struct {
@@ -180,32 +184,44 @@ func (c *Catalog) AddToPlaylist(ctx context.Context, playlistURI, trackURI strin
 	return response.SnapshotID, nil
 }
 
+// spotifyPlaylistItem names one occurrence of a track inside a playlist.
+type spotifyPlaylistItem struct {
+	URI string `json:"uri"`
+}
+
+// RemoveFromPlaylist quita una sola aparición de una pista de la lista elegida,
+// con el snapshot de la lectura donde se eligió. Un snapshot viejo, un permiso
+// que falta y una lista ajena llegan como errores tipados distintos, nunca con
+// el texto de Spotify; sin snapshot no hay petición.
+func (c *Catalog) RemoveFromPlaylist(ctx context.Context, playlistURI, trackURI, snapshot string) error {
+	id := spotifyURIID(playlistURI, "playlist")
+	if id == "" {
+		return errSpotifyPlaylistURI
+	}
+	if spotifyURIID(trackURI, "track") == "" {
+		return errSpotifyTrackURI
+	}
+	// El snapshot nombra una versión exacta de la lista: vacío o con espacios
+	// que Spotify nunca devuelve no hay petición.
+	if trimmed := strings.TrimSpace(snapshot); trimmed == "" || trimmed != snapshot {
+		return errSpotifySnapshot
+	}
+	// La ruta documentada por Spotify para quitar elementos de una lista.
+	payload := struct {
+		Tracks     []spotifyPlaylistItem `json:"tracks"`
+		SnapshotID string                `json:"snapshot_id"`
+	}{Tracks: []spotifyPlaylistItem{{URI: trackURI}}, SnapshotID: snapshot}
+	return c.remove(ctx, "/v1/playlists/"+id+"/tracks", payload)
+}
+
 // write hace una sola petición POST autenticada al host fijado de la API. Igual
 // que en las lecturas, ni el cuerpo de la respuesta ni el token llegan al
 // llamador, un redirect no se sigue y el cliente acota el tiempo de espera.
 // Solo un 2xx documentado con cuerpo JSON cuenta como éxito.
 func (c *Catalog) write(ctx context.Context, target string, payload, dst any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return ErrSpotifyCatalog
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, spotifyAPIURL+target, bytes.NewReader(data))
-	if err != nil {
-		return ErrSpotifyCatalog
-	}
-	token, err := c.accessToken(ctx)
+	resp, err := c.writeRequest(ctx, http.MethodPost, target, payload)
 	if err != nil {
 		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.client.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return ErrSpotifyCatalog
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
@@ -222,6 +238,59 @@ func (c *Catalog) write(ctx context.Context, target string, payload, dst any) er
 		}
 	}
 	return ErrSpotifyCatalog
+}
+
+// remove hace una sola petición DELETE autenticada al host fijado de la API.
+// Como en write, ni el cuerpo de la respuesta ni el token llegan al llamador, un
+// redirect no se sigue y el cliente acota el tiempo de espera. Para esta
+// operación cualquier 2xx cuenta como éxito, y un 400 es la señal documentada de
+// que el snapshot ya no vale.
+func (c *Catalog) remove(ctx context.Context, target string, payload any) error {
+	resp, err := c.writeRequest(ctx, http.MethodDelete, target, payload)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusBadRequest:
+		return ErrPlaylistSnapshotConflict
+	case resp.StatusCode == http.StatusForbidden:
+		return spotifyWriteForbidden(resp.Body)
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return errSpotifyRateLimited
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return nil
+	}
+	return ErrSpotifyCatalog
+}
+
+// writeRequest arma y envía una sola petición autenticada con cuerpo JSON al
+// host fijado de la API. Cada camino de escritura clasifica el estado y cierra
+// el cuerpo que recibe.
+func (c *Catalog) writeRequest(ctx context.Context, method, target string, payload any) (*http.Response, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, ErrSpotifyCatalog
+	}
+	req, err := http.NewRequestWithContext(ctx, method, spotifyAPIURL+target, bytes.NewReader(data))
+	if err != nil {
+		return nil, ErrSpotifyCatalog
+	}
+	token, err := c.accessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, ErrSpotifyCatalog
+	}
+	return resp, nil
 }
 
 // spotifyWriteForbidden separa los dos 403 de la API de escritura: un permiso

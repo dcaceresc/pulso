@@ -78,6 +78,7 @@ Albums, artists, liked songs and podcasts are still out of this slice: they need
 | U4 Search | `/` focuses the top bar, results replace the table, `Enter` plays, `Esc` returns to the playlist | Search is reachable from any panel; returning restores the previous table and cursor |
 | U5 Polish | Narrow layouts, empty/error copy in both languages, palette contrast, keyboard hints that follow focus, removal of the old modal overlay | All prior tests still pass; no emoji; each state has a glyph or word, not color alone |
 | U6 Save | `a` opens a chooser over the library's playlist page, one save request, success notice only after Spotify accepts, one explicit reauthorization for a missing write scope | Chooser names the targeted playlist, `Enter` saves, `Esc` cancels; a read-only catalog hides the action; failures stay non-blocking and playback is untouched |
+| U7 Remove | `x` on a playlist's track page asks to remove the highlighted track, sending the listing's snapshot so only the chosen occurrence goes | The prompt names the track and playlist; `Enter` confirms and `Esc` cancels; failures stay non-blocking, the list reloads after success and playback is untouched |
 
 Each slice is one reviewable commit; U1–U3 are the visible change, U4 removes the overlay, U5 closes the polish and U6 adds saving without touching playback.
 
@@ -85,6 +86,7 @@ Each slice is one reviewable commit; U1–U3 are the visible change, U4 removes 
 
 - Playlist contents stay limited to owned or collaborative playlists in Spotify development mode; the fallback is part of the design, not an error.
 - Saving a track depends on the Web API write scopes: an older read-only session is recovered with one explicit reauthorization, and a playlist the account cannot edit is reported without a retry.
+- Removing a track needs the snapshot of the playlist listing that produced the row; a stale snapshot is reported instead of guessing which occurrence to drop, and duplicates are removed one at a time.
 - Search is capped at 10 results per request; the table must page instead of truncating silently.
 - Seek and mode commands are best-effort: Soloist confirms dispatch, not the resulting state; the bar must show the event, never an optimistic guess for longer than one event.
 - Text entry must swallow `q`, `s`, `r`, `+` and `-` so a search query can contain them.

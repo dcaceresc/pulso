@@ -414,3 +414,240 @@ func TestSpotifyReauthorizeWritesRequiresApprovalHandler(t *testing.T) {
 		t.Fatalf("nil catalog = %v, %v", writer, err)
 	}
 }
+
+// TestSpotifyRemoveFromPlaylistRequest fija la petición documentada de
+// retirada: DELETE, ruta de elementos de la lista, cuerpo con el snapshot y una
+// sola aparición de la pista.
+func TestSpotifyRemoveFromPlaylistRequest(t *testing.T) {
+	catalog, calls := spotifyWriteCatalog(t, func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/playlists/mine/tracks" || r.URL.RawQuery != "" {
+			t.Errorf("request = %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer fixture-access" {
+			t.Errorf("authorization = %q", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("content type = %q", got)
+		}
+		if got := r.Header.Get("Accept"); got != "application/json" {
+			t.Errorf("accept = %q", got)
+		}
+		if got := string(body); got != `{"tracks":[{"uri":"spotify:track:one"}],"snapshot_id":"snapshot-one"}` {
+			t.Errorf("body = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"snapshot_id":"snapshot-two"}`)
+	})
+	err := catalog.RemoveFromPlaylist(context.Background(), "spotify:playlist:mine", "spotify:track:one", "snapshot-one")
+	if err != nil || calls.Load() != 1 {
+		t.Fatalf("remove from playlist = %v; calls=%d", err, calls.Load())
+	}
+}
+
+func TestSpotifyRemoveFromPlaylistAcceptedStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		code       int
+	}{
+		{name: "ok con snapshot", code: http.StatusOK, body: `{"snapshot_id":"snapshot-two"}`},
+		{name: "ok sin cuerpo", code: http.StatusOK},
+		{name: "sin contenido", code: http.StatusNoContent},
+		{name: "aceptado", code: http.StatusAccepted, body: `{"snapshot_id":"snapshot-two"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog, calls := spotifyWriteCatalog(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.code)
+				_, _ = io.WriteString(w, tc.body)
+			})
+			err := catalog.RemoveFromPlaylist(context.Background(), "spotify:playlist:mine", "spotify:track:one", "snapshot-one")
+			if err != nil || calls.Load() != 1 {
+				t.Fatalf("remove from playlist = %v; calls=%d", err, calls.Load())
+			}
+		})
+	}
+}
+
+// TestSpotifyRemoveFromPlaylistSnapshotConflict separa un snapshot viejo de
+// cualquier otro fallo: la lista cambió y hay que volver a leerla.
+func TestSpotifyRemoveFromPlaylistSnapshotConflict(t *testing.T) {
+	const secret = "fixture secret body"
+	catalog, calls := spotifyWriteCatalog(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"status":400,"message":"`+secret+`"}}`)
+	})
+	err := catalog.RemoveFromPlaylist(context.Background(), "spotify:playlist:mine", "spotify:track:one", "snapshot-stale")
+	if !errors.Is(err, ErrPlaylistSnapshotConflict) || calls.Load() != 1 {
+		t.Fatalf("snapshot conflict = %v; calls=%d", err, calls.Load())
+	}
+	for _, other := range []error{ErrSpotifyCatalog, ErrSpotifyWriteScope, ErrPlaylistNotEditable, errSpotifyRateLimited} {
+		if errors.Is(err, other) {
+			t.Fatalf("conflict also matches %v", other)
+		}
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error leaked the response body: %v", err)
+	}
+}
+
+func TestSpotifyRemoveFromPlaylistForbiddenMapping(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       error
+	}{
+		{
+			name: "sin permiso de escritura",
+			body: `{"error":{"status":403,"message":"Insufficient client scope"}}`,
+			want: ErrSpotifyWriteScope,
+		},
+		{
+			name: "lista no editable",
+			body: `{"error":{"status":403,"message":"You cannot remove tracks from a playlist you don't own."}}`,
+			want: ErrPlaylistNotEditable,
+		},
+		{
+			name: "cuerpo sin clasificar",
+			body: `{"message":"fixture secret body"}`,
+			want: ErrPlaylistNotEditable,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog, calls := spotifyWriteCatalog(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, tc.body)
+			})
+			err := catalog.RemoveFromPlaylist(context.Background(), "spotify:playlist:mine", "spotify:track:one", "snapshot-one")
+			if err == nil || !errors.Is(err, tc.want) || calls.Load() != 1 {
+				t.Fatalf("forbidden removal = %v; calls=%d", err, calls.Load())
+			}
+			for _, other := range []error{ErrSpotifyWriteScope, ErrPlaylistNotEditable, ErrSpotifyCatalog, errSpotifyRateLimited, ErrPlaylistSnapshotConflict} {
+				if other != tc.want && errors.Is(err, other) {
+					t.Fatalf("error %v also matches %v", err, other)
+				}
+			}
+			if strings.Contains(err.Error(), "fixture secret body") {
+				t.Fatalf("error leaked the response body: %v", err)
+			}
+		})
+	}
+}
+
+func TestSpotifyRemoveFromPlaylistRejectedResponses(t *testing.T) {
+	const secret = "fixture secret body"
+	for _, tc := range []struct {
+		name     string
+		body     string
+		location string
+		want     error
+		code     int
+	}{
+		{name: "server error", code: http.StatusInternalServerError, body: secret, want: ErrSpotifyCatalog},
+		{name: "lista ausente", code: http.StatusNotFound, body: secret, want: ErrSpotifyCatalog},
+		{name: "rate limit", code: http.StatusTooManyRequests, body: secret, want: errSpotifyRateLimited},
+		{name: "redirect", code: http.StatusTemporaryRedirect, body: secret, want: ErrSpotifyCatalog, location: "/redirected"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog, calls := spotifyWriteCatalog(t, func(w http.ResponseWriter, r *http.Request) {
+				if tc.location != "" {
+					w.Header().Set("Location", tc.location)
+				}
+				w.WriteHeader(tc.code)
+				_, _ = io.WriteString(w, tc.body)
+			})
+			err := catalog.RemoveFromPlaylist(context.Background(), "spotify:playlist:mine", "spotify:track:one", "snapshot-one")
+			if err == nil || !errors.Is(err, tc.want) || errors.Is(err, ErrPlaylistSnapshotConflict) {
+				t.Fatalf("rejected removal = %v", err)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("error leaked the response body: %v", err)
+			}
+			// Un redirect no se sigue: la petición original es la única.
+			if calls.Load() != 1 {
+				t.Fatalf("calls = %d, want 1", calls.Load())
+			}
+		})
+	}
+}
+
+func TestSpotifyRemoveFromPlaylistTransportFailure(t *testing.T) {
+	catalog := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("fixture transport failure")
+	})
+	err := catalog.RemoveFromPlaylist(context.Background(), "spotify:playlist:mine", "spotify:track:one", "snapshot-one")
+	if !errors.Is(err, ErrSpotifyCatalog) {
+		t.Fatalf("transport failure = %v", err)
+	}
+	for _, other := range []error{ErrSpotifyWriteScope, ErrPlaylistNotEditable, ErrPlaylistSnapshotConflict, errSpotifyRateLimited} {
+		if errors.Is(err, other) {
+			t.Fatalf("transport failure was misclassified as %v", other)
+		}
+	}
+	if strings.Contains(err.Error(), "fixture transport failure") {
+		t.Fatalf("transport failure leaked its cause: %v", err)
+	}
+}
+
+// TestSpotifyRemoveFromPlaylistRejectsInvalidInput no gasta ninguna petición
+// con datos que no puede nombrar sin ambigüedad, incluido un snapshot vacío.
+func TestSpotifyRemoveFromPlaylistRejectsInvalidInput(t *testing.T) {
+	for _, tc := range []struct{ name, playlist, track, snapshot string }{
+		{name: "playlist vacía", track: "spotify:track:one", snapshot: "snapshot-one"},
+		{name: "playlist de pista", playlist: "spotify:track:one", track: "spotify:track:one", snapshot: "snapshot-one"},
+		{name: "playlist con ruta", playlist: "spotify:playlist:../items", track: "spotify:track:one", snapshot: "snapshot-one"},
+		{name: "playlist como URL", playlist: "https://open.spotify.com/playlist/mine", track: "spotify:track:one", snapshot: "snapshot-one"},
+		{name: "pista vacía", playlist: "spotify:playlist:mine", snapshot: "snapshot-one"},
+		{name: "pista de playlist", playlist: "spotify:playlist:mine", track: "spotify:playlist:mine", snapshot: "snapshot-one"},
+		{name: "pista con ruta", playlist: "spotify:playlist:mine", track: "spotify:track:one/other", snapshot: "snapshot-one"},
+		{name: "snapshot vacío", playlist: "spotify:playlist:mine", track: "spotify:track:one"},
+		{name: "snapshot en blanco", playlist: "spotify:playlist:mine", track: "spotify:track:one", snapshot: "  \t "},
+		{name: "snapshot con espacios", playlist: "spotify:playlist:mine", track: "spotify:track:one", snapshot: " snapshot-one "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog, calls := spotifyWriteCatalog(t, func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("invalid input reached the network: %s %s", r.Method, r.URL.Path)
+			})
+			err := catalog.RemoveFromPlaylist(context.Background(), tc.playlist, tc.track, tc.snapshot)
+			if err == nil || calls.Load() != 0 {
+				t.Fatalf("invalid input = %v; calls=%d", err, calls.Load())
+			}
+			// Un dato inválido no se confunde con un snapshot viejo ni con un
+			// permiso que falta.
+			for _, other := range []error{ErrSpotifyCatalog, ErrSpotifyWriteScope, ErrPlaylistNotEditable, ErrPlaylistSnapshotConflict, errSpotifyRateLimited} {
+				if errors.Is(err, other) {
+					t.Fatalf("invalid input was classified as %v", other)
+				}
+			}
+		})
+	}
+}
+
+func TestSpotifyRemoveFromPlaylistRefreshesExpiredToken(t *testing.T) {
+	catalog, calls := spotifyWriteCatalog(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/token":
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "" || r.ParseForm() != nil ||
+				r.PostForm.Encode() != "client_id=fixture-client&grant_type=refresh_token&refresh_token=fixture-refresh" {
+				t.Errorf("unexpected refresh request: %s %s", r.Method, r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"access_token":"new-access","token_type":"Bearer","expires_in":3600}`)
+		case "/v1/playlists/mine/tracks":
+			if r.Method != http.MethodDelete || r.Header.Get("Authorization") != "Bearer new-access" {
+				t.Errorf("refreshed token not used: %s %s %q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"snapshot_id":"snapshot-two"}`)
+		default:
+			t.Errorf("unexpected request path %q", r.URL.Path)
+		}
+	})
+	catalog.token.expires = time.Now().Add(-time.Minute)
+	err := catalog.RemoveFromPlaylist(context.Background(), "spotify:playlist:mine", "spotify:track:one", "snapshot-one")
+	if err != nil || calls.Load() != 2 {
+		t.Fatalf("remove from playlist = %v; calls=%d", err, calls.Load())
+	}
+}

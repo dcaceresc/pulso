@@ -27,6 +27,23 @@ type librarySpotifyPage[T any] struct {
 	Total int `json:"total"`
 }
 
+// playlistItemsSpotifyPage añade el snapshot que Spotify marca en cada página
+// de elementos de una lista.
+type playlistItemsSpotifyPage[T any] struct {
+	librarySpotifyPage[T]
+	SnapshotID string `json:"snapshot_id"`
+}
+
+// PlaylistItemsPage es una página de pistas de una lista junto con el snapshot
+// de la lectura que la produjo: la retirada de una aparición concreta nombra ese
+// snapshot para no borrar sobre una lista que cambió.
+type PlaylistItemsPage struct {
+	Tracks   []Track
+	Total    int
+	More     bool
+	Snapshot string
+}
+
 // librarySpotifyTrack adds the duration the shared search track type omits.
 type librarySpotifyTrack struct {
 	spotifyTrack
@@ -64,15 +81,23 @@ func (c *Catalog) PlaylistPage(ctx context.Context, offset int) ([]Playlist, int
 // TrackPage reads one page of a playlist's items. A restricted playlist keeps
 // the shared ErrPlaylistUnavailable signal so the caller can still play it.
 func (c *Catalog) TrackPage(ctx context.Context, uri string, offset int) ([]Track, int, bool, error) {
+	page, err := c.PlaylistItems(ctx, uri, offset)
+	return page.Tracks, page.Total, page.More, err
+}
+
+// PlaylistItems lee una página de elementos de una lista con el snapshot que la
+// API devolvió para ella. La ruta, la página y el filtro de pistas son los mismos
+// que usa TrackPage; solo añade el snapshot que una retirada posterior necesita.
+func (c *Catalog) PlaylistItems(ctx context.Context, uri string, offset int) (PlaylistItemsPage, error) {
 	id := spotifyURIID(uri, "playlist")
 	if id == "" {
-		return nil, 0, false, errors.New("Invalid Spotify playlist URI")
+		return PlaylistItemsPage{}, errors.New("Invalid Spotify playlist URI")
 	}
-	var page librarySpotifyPage[struct {
+	var page playlistItemsSpotifyPage[struct {
 		Item *librarySpotifyTrack `json:"item"`
 	}]
 	if err := c.get(ctx, "/v1/playlists/"+id+"/items", url.Values{}, offset, &page, true); err != nil {
-		return nil, 0, false, err
+		return PlaylistItemsPage{}, err
 	}
 	tracks := make([]Track, 0, len(page.Items))
 	for _, entry := range page.Items {
@@ -80,7 +105,7 @@ func (c *Catalog) TrackPage(ctx context.Context, uri string, offset int) ([]Trac
 			tracks = appendLibraryTrack(tracks, entry.Item)
 		}
 	}
-	return tracks, page.Total, page.more(offset), nil
+	return PlaylistItemsPage{Tracks: tracks, Total: page.Total, More: page.more(offset), Snapshot: page.SnapshotID}, nil
 }
 
 // SearchPage reads one page of track search results. An empty query is not a

@@ -163,3 +163,80 @@ func TestLibrarySourceRejectsInvalidPlaylist(t *testing.T) {
 		t.Fatalf("an invalid playlist URI reached the network: %d calls", calls)
 	}
 }
+
+// TestLibrarySourcePlaylistItemsSnapshot prueba la lectura que alimenta una
+// retirada: la misma ruta y la misma paginación que TrackPage, con el snapshot
+// que Spotify devuelve para esa página.
+func TestLibrarySourcePlaylistItemsSnapshot(t *testing.T) {
+	calls := 0
+	c := spotifyFixtureCatalog(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/playlists/mine/items" || r.Header.Get("Authorization") != "Bearer fixture-access" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+		if r.URL.Query().Get("limit") != "10" || r.URL.Query().Get("offset") != "10" {
+			t.Fatalf("unexpected pagination %s", r.URL.RawQuery)
+		}
+		return spotifyFixtureResponse(200, `{"total":42,"snapshot_id":"snapshot-page","items":[null,{"item":null},`+
+			`{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"}],"duration_ms":336000,"uri":"spotify:track:one"}},`+
+			`{"item":{"name":"Blocked","uri":"spotify:track:two","is_playable":false}}],"next":"https://invalid.example/never"}`), nil
+	})
+	page, err := c.PlaylistItems(context.Background(), "spotify:playlist:mine", 10)
+	want := PlaylistItemsPage{
+		Tracks:   []Track{{Name: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000, URI: "spotify:track:one"}},
+		Total:    42,
+		More:     true,
+		Snapshot: "snapshot-page",
+	}
+	if err != nil || !reflect.DeepEqual(page, want) || calls != 1 {
+		t.Fatalf("playlist items = %#v, %v; calls=%d", page, err, calls)
+	}
+}
+
+// TestLibrarySourcePlaylistItemsKeepsRestrictedSignal conserva la señal de
+// lista restringida que ya usa TrackPage, sin texto de Spotify.
+func TestLibrarySourcePlaylistItemsKeepsRestrictedSignal(t *testing.T) {
+	c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
+		return spotifyFixtureResponse(403, `{"message":"private fixture body"}`), nil
+	})
+	page, err := c.PlaylistItems(context.Background(), "spotify:playlist:shared", 0)
+	if !errors.Is(err, ErrPlaylistUnavailable) || strings.Contains(err.Error(), "private fixture body") {
+		t.Fatalf("restricted playlist items = %#v, %v", page, err)
+	}
+	if page.Tracks != nil || page.Total != 0 || page.More || page.Snapshot != "" {
+		t.Fatalf("restricted playlist items kept data: %#v", page)
+	}
+}
+
+// TestLibrarySourcePlaylistItemsRejectsInvalidPlaylist no gasta una petición
+// cuando el URI no es de una lista.
+func TestLibrarySourcePlaylistItemsRejectsInvalidPlaylist(t *testing.T) {
+	calls := 0
+	c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
+		calls++
+		return spotifyFixtureResponse(200, `{"items":[],"next":null}`), nil
+	})
+	for _, uri := range []string{"", "spotify:playlist:../items", "spotify:album:mine"} {
+		page, err := c.PlaylistItems(context.Background(), uri, 0)
+		if err == nil || page.Tracks != nil || page.Total != 0 || page.More || page.Snapshot != "" {
+			t.Fatalf("playlist items for %q = %#v, %v", uri, page, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("an invalid playlist URI reached the network: %d calls", calls)
+	}
+}
+
+// TestLibrarySourceTrackPageIgnoresTheSnapshot prueba que la lectura que ya
+// existía conserva sus datos y su paginación aunque Spotify mande el snapshot.
+func TestLibrarySourceTrackPageIgnoresTheSnapshot(t *testing.T) {
+	c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
+		return spotifyFixtureResponse(200, `{"total":7,"snapshot_id":"snapshot-page","items":[`+
+			`{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"}],"duration_ms":336000,"uri":"spotify:track:one"}}],"next":null}`), nil
+	})
+	tracks, total, more, err := c.TrackPage(context.Background(), "spotify:playlist:mine", 0)
+	want := []Track{{Name: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000, URI: "spotify:track:one"}}
+	if err != nil || more || total != 7 || !reflect.DeepEqual(tracks, want) {
+		t.Fatalf("track page = %#v, %d, %v, %v", tracks, total, more, err)
+	}
+}
