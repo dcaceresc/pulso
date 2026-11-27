@@ -167,7 +167,7 @@ func TestLocalSetupPairingAuthHandoff(t *testing.T) {
 				model, cmd = model.Update(setupPairMessage(t, ctx, cmd))
 				if scenario == "watch sees false then true" {
 					view := model.View()
-					expectSetupText(t, view, "Waiting for pairing", "Device: Sala 音", "Enter: recheck | Esc: quit")
+					expectSetupText(t, view, "Waiting for pairing", "Device: Sala 音", "Enter: recheck | b: back to the key | Esc: quit")
 					if strings.ContainsAny(view, "\x1b\u202e") || *players != 0 {
 						t.Fatal("unsafe advertised name or premature player handoff")
 					}
@@ -236,13 +236,13 @@ func TestLocalSetupPairingReinspectsAfterDisconnect(t *testing.T) {
 			started := time.Now()
 			close(drop)
 			model, cmd = model.Update(setupPairMessage(t, ctx, cmd))
-			expectSetupText(t, model.View(), "Reconnecting to Soloist", "Enter: recheck | Esc: quit")
+			expectSetupText(t, model.View(), "Reconnecting to Soloist", "Enter: recheck | b: back to the key | Esc: quit")
 			model, cmd = model.Update(setupPairMessage(t, ctx, cmd))
 			if elapsed := time.Since(started); elapsed < 250*time.Millisecond || oldCount.Load() != 2 || *players != 0 {
 				t.Fatalf("retry: elapsed=%v old connections=%d player calls=%d", elapsed, oldCount.Load(), *players)
 			}
 			if stopped {
-				expectSetupView(t, model, "Soloist stopped. Start it again, then press Enter to recheck.", "Enter: recheck | Esc: quit")
+				expectSetupView(t, model, "Soloist stopped. Start it again, then press Enter to recheck.", "Enter: recheck | b: back to the key | Esc: quit")
 				if cmd != nil {
 					t.Fatal("stopped daemon kept retrying")
 				}

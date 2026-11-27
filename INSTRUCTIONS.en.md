@@ -52,6 +52,64 @@ Spotify authorizes the pairing from its own app; it does not happen inside Pulso
 
 If the device does not appear, check for guest Wi-Fi, client isolation or a VPN blocking local discovery.
 
+If pairing does not advance because the key was mistyped, press `b`: the wizard returns to the key step with an empty field. Submitting the new key makes Pulso stop the Soloist instance it had started with the previous key and start it again; `Enter` only rechecks the status.
+
+### Pairing diagnostics
+
+In the pairing step the wizard diagnoses why the phone may not see the computer and summarises the result with an indicator at the start of the line: `● OK` in green when there is nothing to review, `● Review` in amber when there is a risk but pairing can still work (a container bridge competing for the announcement, for example), and `● Blocked` in red when a rule is missing and the phone will not be able to connect. The word always accompanies the colour, so it still reads on a terminal without colour.
+
+The `d: diagnostics` shortcut appears only when there is something to review: it opens the detail with the findings and, when there is something to apply, the exact commands. `Enter` returns to the pairing step. When the detail can propose no command, it says so and offers no `a`.
+
+The diagnosis checks three things:
+
+- The address your machine uses to reach the local network.
+- The interfaces that compete for the single address Soloist announces: container bridges (Docker's, for example), VPNs and tunnels.
+- The firewall state and the rules that are missing.
+
+A bridge or a VPN breaks pairing because Soloist announces one address at startup and offers no option to pin the interface: it can advertise the bridge address instead of your LAN address, and the phone searches the wrong network. The concrete recovery is to start Pulso with that bridge absent, pair, and bring the bridge back afterwards. The advertisement stays valid until Soloist restarts.
+
+Soloist's control port is chosen at startup and changes, so a rule for one port goes stale on the next start. What is recommended is a LAN-scoped allow (for example `sudo ufw allow from 192.168.1.0/24`), which keeps working after the port changes; it is deliberately broader than a single port. On Windows the wizard adds the port it read at that moment, so the manual LAN rule below is the one that avoids repeating the work.
+
+The wizard never changes the firewall by itself: it only adds rules after a two-step confirmation, with `a: apply rules` and a second `a`. Any other key cancels the apply step, and `Esc` still quits Pulso. It never removes or replaces existing rules, and it needs no administrator rights just to inspect: when it cannot read the rules, it says so on screen instead of assuming they are fine.
+
+### Manual firewall rules
+
+They match what the wizard proposes, with one exception: on Windows the wizard adds the port it read at that start, while the rule below uses a source-network allow so you do not repeat the step. Replace `192.168.1.0/24` with your own LAN prefix. Where the wizard cannot propose a command yet (firewalld and nftables), these are the manual equivalents.
+
+**ufw (Debian, Ubuntu):** the discovery rule is already present in the default `before.rules` (`5353/udp` to `224.0.0.251`), so what is usually missing is traffic from the LAN:
+
+```sh
+sudo ufw allow from 192.168.1.0/24
+```
+
+**firewalld (Fedora, RHEL):**
+
+```sh
+sudo firewall-cmd --permanent --add-service=mdns
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" accept'
+sudo firewall-cmd --reload
+```
+
+If your firewalld version has no `mdns` service, replace the first line with `sudo firewall-cmd --permanent --add-port=5353/udp`.
+
+**nftables:**
+
+```sh
+sudo nft add rule inet filter input udp dport 5353 accept
+sudo nft add rule inet filter input ip saddr 192.168.1.0/24 accept
+```
+
+Both nftables rules are lost on reboot: write them in `/etc/nftables.conf` and reload with `sudo nft -f /etc/nftables.conf`. The table and chain names depend on your configuration; use the ones from your input chain.
+
+**Windows Defender Firewall,** in a Windows console with administrator rights:
+
+```
+netsh advfirewall firewall add rule name="Pulso (Soloist)" dir=in action=allow protocol=UDP localport=5353
+netsh advfirewall firewall add rule name="Pulso (Soloist) LAN" dir=in action=allow protocol=TCP remoteip=192.168.1.0/24
+```
+
+The first rule opens discovery and matches the one the wizard adds. The second allows TCP traffic from your LAN, which is the part that changes port on every start.
+
 ## Connecting Spotify for search and playlists
 
 Search and playlist listing use the **Spotify Web API**, a different authorization from Soloist:
@@ -115,6 +173,25 @@ Everything lives under your user configuration directory (`%APPDATA%\pulso` on W
 | `bin/soloist.exe` or `bin/soloist` | Soloist copy downloaded by Pulso |
 
 Files are created with private permissions. Pulso never writes tokens to logs or output. Audio and pairing belong to Soloist, which keeps them in its own directory: `%LOCALAPPDATA%\soloist\data` on Windows, or `$XDG_DATA_HOME/soloist` (`~/.local/share/soloist` by default) on Linux.
+
+## Uninstalling
+
+`pulso uninstall` deletes what Pulso and Soloist keep in your user account. It first prints the absolute path of every target and then waits for a typed confirmation: you must type exactly `uninstall`. A bare Enter or any other word answers "Cancelled; nothing was deleted." and exits 1 without deleting anything.
+
+When Soloist is running the command never deletes on its own: it says so and asks `Close it and continue? [y/N]`. Only `y` or `Y` checks that the pid in the marker really is Soloist and, when it is, asks the daemon to stop and waits for it to exit; if it is still alive after the wait, the command aborts without deleting anything. When it cannot confirm that process is Soloist it sends no signal at all and aborts. It never sends `SIGKILL`; on Windows it uses the platform's process termination.
+
+It removes the Soloist binary Pulso downloaded (`bin/soloist` or `bin/soloist.exe`), the Client ID, the Spotify session, the preferences and Soloist's data and cache directories, which hold the pairing and its cache.
+
+Each target is reported as `Removed`, `Absent` or `Failed` with the error. A target that is already gone is not a problem: running the command twice finishes well. If one deletion fails, it is reported and the command continues with the rest, but the exit code is 1; it is 0 only when every target was removed or absent.
+
+The pairing with Spotify and the Web API authorization cannot be recovered: after uninstalling you have to repeat both, with the Soloist key and with the Client ID. The command does not delete the Pulso binary either: it prints its path so you can delete it yourself, because `go install` owns it.
+
+```sh
+bin="$(go env GOBIN)"; [ -n "$bin" ] || bin="$(go env GOPATH)/bin"
+rm "$bin/pulso"
+```
+
+On Windows the binary is `pulso.exe` in the same folder. If a path does not belong to Pulso or Soloist, is your home directory, the system root or the directory you are working in, the command refuses to delete and exits without touching anything.
 
 ## Diagnostics and troubleshooting
 

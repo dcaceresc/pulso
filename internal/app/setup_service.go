@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/dcaceresc/pulso/internal/config"
+	"github.com/dcaceresc/pulso/internal/firewall"
+	"github.com/dcaceresc/pulso/internal/netcheck"
 	"github.com/dcaceresc/pulso/internal/soloist"
 	"github.com/dcaceresc/pulso/internal/spotify"
 	"github.com/dcaceresc/pulso/internal/ui"
@@ -39,6 +42,10 @@ type localSetup struct {
 	command        func(string, ...string) *exec.Cmd
 	startupTimeout time.Duration
 	startMu        sync.Mutex
+	// child es el daemon que arrancó esta sesión. Volver por una clave nueva lo
+	// reemplaza, porque Soloist conserva la clave con la que se inició.
+	child     *exec.Cmd
+	childDone chan struct{}
 }
 
 func runSetup(stdout io.Writer) error {
@@ -67,7 +74,9 @@ func runSetup(stdout io.Writer) error {
 		ClientID: firstNonEmpty(os.Getenv("PULSO_SPOTIFY_CLIENT_ID"), spotify.LoadClientID()),
 		// A saved session means the Spotify step never appears; any failure
 		// falls through to the interactive flow.
-		Restore: restoreSpotifyCatalog,
+		Restore:  restoreSpotifyCatalog,
+		Diagnose: diagnosePairing,
+		Apply:    applyPairingRules,
 		PlayerWithPreferences: func(width, height int, p config.Preferences, api ui.CatalogAPI) tea.Model {
 			states, commands := soloist.NewStream(ctx, local.dataDir)
 			return ui.NewPlayerModelWithCatalog(ctx, states, commands, width, height, p, config.Save, api,
@@ -101,6 +110,52 @@ func restoreSpotifyCatalog(ctx context.Context) (ui.CatalogAPI, bool) {
 		return nil, false
 	}
 	return catalog, true
+}
+
+// pairingPrefix acota la LAN a /24: las reglas se proponen por red, no por una
+// dirección suelta, y sin dirección conocida no hay prefijo que proponer.
+func pairingPrefix(report netcheck.Report) netip.Prefix {
+	if !report.LAN.IsValid() {
+		return netip.Prefix{}
+	}
+	return netip.PrefixFrom(report.LAN, 24).Masked()
+}
+
+// pairingDiagnosis combina la red y el cortafuegos en el diagnóstico que el
+// asistente muestra durante el emparejamiento.
+func pairingDiagnosis(ctx context.Context, network func() (netcheck.Report, error), inspect func(context.Context, firewall.Options) firewall.Plan) (ui.PairingDiagnosis, error) {
+	report, err := network()
+	if err != nil {
+		return ui.PairingDiagnosis{Network: report}, err
+	}
+	return ui.PairingDiagnosis{
+		Network: report,
+		Firewall: inspect(ctx, firewall.Options{
+			Prefix: pairingPrefix(report),
+		}),
+	}, nil
+}
+
+// diagnosePairing es el gancho Diagnose de producción.
+func diagnosePairing(ctx context.Context) (ui.PairingDiagnosis, error) {
+	return pairingDiagnosis(ctx, netcheck.Inspect, firewall.Inspect)
+}
+
+// applyPairingRules adapta un argv al ejecutor del terminal. execCommand es un
+// punto de inyección para las pruebas.
+func applyPairingRules(argv []string) tea.Cmd {
+	return pairingRulesCmd(argv, exec.Command)
+}
+
+// pairingRulesCmd ejecuta el comando en la terminal real para que sudo pueda
+// pedir la contraseña, y devuelve el resultado como mensaje del asistente.
+func pairingRulesCmd(argv []string, command func(string, ...string) *exec.Cmd) tea.Cmd {
+	if len(argv) == 0 {
+		return nil
+	}
+	return tea.ExecProcess(command(argv[0], argv[1:]...), func(err error) tea.Msg {
+		return ui.SetupApplyResult{Argv: argv, Err: err}
+	})
 }
 
 func installManagedSoloist(ctx context.Context) error {
@@ -189,9 +244,15 @@ func (s *localSetup) start(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	// Inspect again after key entry: Soloist might have started in the meantime.
-	if status, err := soloist.Inspect(ctx, dir); err != nil || status != soloist.StatusNeedsKey {
-		return err
+	// Una clave nueva necesita un proceso nuevo: Soloist conserva la clave con la
+	// que se inició. La instancia detenida deja marcadores obsoletos, así que la
+	// reinspección no puede vetar el reemplazo que acaba de hacer necesario.
+	restarting := s.stopChildLocked()
+	if !restarting {
+		// Inspect again after key entry: Soloist might have started in the meantime.
+		if status, err := soloist.Inspect(ctx, dir); err != nil || status != soloist.StatusNeedsKey {
+			return err
+		}
 	}
 	path, err := s.find()
 	if err != nil || path == "" {
@@ -205,13 +266,29 @@ func (s *localSetup) start(ctx context.Context, key string) error {
 	if err := cmd.Start(); err != nil {
 		return errSoloistStart
 	}
-	return waitForSoloist(ctx, cmd, dir, s.startupTimeout)
+	done := make(chan struct{})
+	if err := waitForSoloist(ctx, cmd, dir, s.startupTimeout, done); err != nil {
+		return err
+	}
+	s.child, s.childDone = cmd, done
+	return nil
 }
 
-func waitForSoloist(ctx context.Context, cmd *exec.Cmd, dir string, timeout time.Duration) error {
+// stopChildLocked termina el daemon que arrancó esta sesión y espera a que se
+// recoja. Indica si había alguno que detener.
+func (s *localSetup) stopChildLocked() bool {
+	if s.child == nil {
+		return false
+	}
+	_ = s.child.Process.Kill()
+	<-s.childDone
+	s.child, s.childDone = nil, nil
+	return true
+}
+
+func waitForSoloist(ctx context.Context, cmd *exec.Cmd, dir string, timeout time.Duration, done chan struct{}) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	done := make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
 		close(done)

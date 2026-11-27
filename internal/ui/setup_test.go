@@ -203,6 +203,78 @@ func TestSetupExistingBinary(t *testing.T) {
 	}
 }
 
+func TestSetupBackToKeyFromPairing(t *testing.T) {
+	for _, stopped := range []bool{false, true} {
+		name := "waiting for pairing"
+		if stopped {
+			name = "daemon stopped"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			checks, starts, gotKey := 0, 0, ""
+			model := NewSetupModel(ctx, SetupService{
+				Inspect: func(context.Context) (SetupState, error) {
+					checks++
+					switch checks {
+					case 1:
+						return SetupAwaitPairing, nil
+					case 2:
+						if stopped {
+							return SetupNeedsKey, nil
+						}
+						return SetupReady, nil
+					default:
+						return SetupReady, nil
+					}
+				},
+				Watch: func(watchCtx context.Context, _ func(string) bool) error {
+					<-watchCtx.Done()
+					return watchCtx.Err()
+				},
+				Start: func(_ context.Context, key string) error {
+					starts++
+					gotKey = key
+					return nil
+				},
+				Player: func(int, int) tea.Model { return setupTestPlayer{} },
+			})
+			model, _ = runSetupCmd(t, model, model.Init())
+			if stopped {
+				model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				model, _ = runSetupCmd(t, model, cmd)
+				expectSetupText(t, model.View(), "Soloist stopped. Start it again", "Enter: recheck | b: back to the key | Esc: quit")
+			} else {
+				expectSetupText(t, model.View(), "Waiting for pairing", "Enter: recheck | b: back to the key | Esc: quit")
+			}
+			model, cmd := model.Update(setupRunes("b"))
+			if cmd != nil {
+				t.Fatal("going back should not run a command")
+			}
+			expectSetupText(t, model.View(), "Waiting for key", "Enter: start | Esc: quit")
+			if strings.Contains(model.View(), "b: back to the key") {
+				t.Fatal("the key step must not offer the back option")
+			}
+			// El paso recuperado empieza vacío, así que Enter no puede reenviar la
+			// clave que Soloist ya rechazó.
+			model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if cmd != nil || starts != 0 {
+				t.Fatal("an empty key must not be submitted")
+			}
+			model, _ = model.Update(setupRunes("second-key"))
+			model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			model, cmd = runSetupCmd(t, model, cmd)
+			model, _ = runSetupCmd(t, model, cmd)
+			if starts != 1 || gotKey != "second-key" {
+				t.Fatalf("starts=%d key=%q; want one start with the new key", starts, gotKey)
+			}
+			if model.View() != "Now Playing" {
+				t.Fatalf("view after the new key = %q", model.View())
+			}
+		})
+	}
+}
+
 func TestSetupMaskingRetryAndPairing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -276,7 +348,7 @@ func TestSetupMaskingRetryAndPairing(t *testing.T) {
 	if cmd != nil || checks != 2 {
 		t.Fatal("successful start should recheck once, without polling")
 	}
-	expectSetupView(t, model, "1. Leave Pulso open. On your phone, open Spotify with the same account.\n2. Connect both devices to the same local network.\n3. Play a song and tap Connect to a device.\n4. Select Pulso or your existing Soloist device name.\n5. Pulso opens Now Playing when Spotify connects.", "Enter: recheck | Esc: quit")
+	expectSetupView(t, model, "1. Leave Pulso open. On your phone, open Spotify with the same account.\n2. Connect both devices to the same local network.\n3. Play a song and tap Connect to a device.\n4. Select Pulso or your existing Soloist device name.\n5. Pulso opens Now Playing when Spotify connects.", "Enter: recheck | b: back to the key | Esc: quit")
 	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model, cmd = runSetupCmd(t, model, cmd)
 	if cmd != nil || checks != 3 || starts != 2 {
@@ -311,7 +383,7 @@ func TestSetupManualPairingCheckAfterDaemonStops(t *testing.T) {
 	if cmd != nil || checks != 2 || starts != 0 || players != 0 {
 		t.Fatal("a stopped daemon should not be restarted or open the player")
 	}
-	expectSetupView(t, model, "Soloist stopped. Start it again, then press Enter to recheck.", "Enter: recheck | Esc: quit")
+	expectSetupView(t, model, "Soloist stopped. Start it again, then press Enter to recheck.", "Enter: recheck | b: back to the key | Esc: quit")
 	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model, _ = runSetupCmd(t, model, cmd)
 	if model.View() != "Now Playing" || checks != 3 || starts != 0 || players != 1 {
@@ -491,7 +563,7 @@ func TestSetupBilingualKeyFlowAndHandoff(t *testing.T) {
 	if cmd != nil || handoffs != 0 || checks != 2 || starts != 2 {
 		t.Fatal("successful start failed to enter pairing without opening the player")
 	}
-	expectSetupText(t, model.View(), "Selecciona Pulso o el nombre de tu dispositivo Soloist.", "En reproducción", "Esperando el emparejamiento", "Enter: volver a comprobar | Esc: salir")
+	expectSetupText(t, model.View(), "Selecciona Pulso o el nombre de tu dispositivo Soloist.", "En reproducción", "Esperando el emparejamiento", "Enter: volver a comprobar | b: volver a la clave | Esc: salir")
 	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model, cmd = runSetupCmd(t, model, cmd)
 	if cmd == nil || cmd() != "player initialized" || model.View() != "Now Playing" || handoffs != 1 || checks != 3 || starts != 2 {
