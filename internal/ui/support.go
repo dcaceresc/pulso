@@ -3,9 +3,12 @@ package ui
 import (
 	"context"
 	"net/url"
+	"reflect"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/dcaceresc/pulso/internal/spotify"
 )
 
 // CatalogAPI is the read-only Spotify catalog the setup handoff gives the
@@ -15,6 +18,22 @@ type CatalogAPI interface {
 	Search(context.Context, string, int) ([]catalogItem, bool, error)
 	Playlists(context.Context, int) ([]catalogItem, bool, error)
 	PlaylistTracks(context.Context, string, int) ([]catalogItem, bool, error)
+}
+
+// playlistWriterOf accepts the catalog only when it can change playlists: a
+// read-only catalog, or a typed nil, hides the save action entirely.
+func playlistWriterOf(api CatalogAPI) spotify.PlaylistWriter {
+	if api == nil {
+		return nil
+	}
+	writer, ok := api.(spotify.PlaylistWriter)
+	if !ok {
+		return nil
+	}
+	if value := reflect.ValueOf(writer); value.Kind() == reflect.Pointer && value.IsNil() {
+		return nil
+	}
+	return writer
 }
 
 // catalogBrowserURL accepts only a plain https authorization URL whose query

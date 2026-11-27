@@ -42,6 +42,7 @@ Turn the current playback screen plus modal overlays into one keyboard-first wor
 | `+` `-` | Volume |
 | `s` | Toggle shuffle for current playback |
 | `S` | Start and shuffle the selected or open playlist by URI, including restricted playlists; not available in search results |
+| `a` | Save the playing track to a chosen playlist: `↑` `↓` / `j` `k` choose, `Enter` saves, `Esc` cancels; only with a writable catalog and a track URI from Soloist |
 | `r` | Cycle repeat: off → context → track |
 | `F2` / `F3` | Language / theme |
 | `Esc` | Leave the focused input or panel, then quit |
@@ -59,10 +60,13 @@ Turn the current playback screen plus modal overlays into one keyboard-first wor
 | Confirmed playlist context | Soloist `playback_state.context` and `context_changed` | show only a validated playlist entity, independent of the library selection |
 | Seek | `seek` command, `position_sync` | transport exists, UI key is new |
 | Skipping to a track in a playlist | `play` with URI starts the context | exists |
+| Saving the playing track | `POST /v1/playlists/{id}/tracks` with Soloist's `item.uri` | new; needs `playlist-modify-private` and `playlist-modify-public`, recovered with one explicit reauthorization when an older session approved read-only |
 
 Playlist shuffle sends `play` with the playlist URI, waits for acceptance and confirmation of that playlist on the current Soloist session, then sends `set_shuffle`. An intervening observed change away from the confirmed context cancels the pending action. The commands are not atomic: an unobserved context switch between confirmation and command execution can still affect different playback. The first track is not guaranteed to be random. Spotify manages Autoplay; Pulso does not modify or simulate it.
 
-Albums, artists, liked songs and podcasts are out of this slice: they need new scopes and re-authorization.
+Save to playlist reads Soloist's `item.uri` and keeps it only when it is a track URI, so a missing or non-track item leaves the action unavailable instead of saving the wrong thing. The chooser reuses the playlist page the library already loads, including its paging; `Enter` sends one request and the success notice appears only after Spotify accepts it. A `403` for a missing scope offers one explicit reauthorization with the wizard's browser-and-link presentation and retries the save once; any other failure is one non-blocking notice. Playback is never touched and Spotify response bodies are never rendered.
+
+Albums, artists, liked songs and podcasts are still out of this slice: they need new scopes and re-authorization.
 
 ## Slices
 
@@ -73,12 +77,14 @@ Albums, artists, liked songs and podcasts are out of this slice: they need new s
 | U3 Playing bar | Title, artist, progress interpolated from `position_sync`, shuffle/repeat/volume/device, seek and mode keys wired to Soloist | Bar reflects Soloist state pushed from another device within one event; seek lands within a second; shuffle/repeat round-trip |
 | U4 Search | `/` focuses the top bar, results replace the table, `Enter` plays, `Esc` returns to the playlist | Search is reachable from any panel; returning restores the previous table and cursor |
 | U5 Polish | Narrow layouts, empty/error copy in both languages, palette contrast, keyboard hints that follow focus, removal of the old modal overlay | All prior tests still pass; no emoji; each state has a glyph or word, not color alone |
+| U6 Save | `a` opens a chooser over the library's playlist page, one save request, success notice only after Spotify accepts, one explicit reauthorization for a missing write scope | Chooser names the targeted playlist, `Enter` saves, `Esc` cancels; a read-only catalog hides the action; failures stay non-blocking and playback is untouched |
 
-Each slice is one reviewable commit; U1–U3 are the visible change, U4 removes the overlay, U5 closes the feature.
+Each slice is one reviewable commit; U1–U3 are the visible change, U4 removes the overlay, U5 closes the polish and U6 adds saving without touching playback.
 
 ## Constraints and risks
 
 - Playlist contents stay limited to owned or collaborative playlists in Spotify development mode; the fallback is part of the design, not an error.
+- Saving a track depends on the Web API write scopes: an older read-only session is recovered with one explicit reauthorization, and a playlist the account cannot edit is reported without a retry.
 - Search is capped at 10 results per request; the table must page instead of truncating silently.
 - Seek and mode commands are best-effort: Soloist confirms dispatch, not the resulting state; the bar must show the event, never an optimistic guess for longer than one event.
 - Text entry must swallow `q`, `s`, `r`, `+` and `-` so a search query can contain them.

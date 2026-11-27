@@ -2,9 +2,11 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -42,6 +44,70 @@ const (
 type playerViewState struct {
 	state playerState
 	ok    bool
+}
+
+// savePhase is the step of the save flow the chooser is showing. The panel owns
+// the keyboard while it is not idle.
+type savePhase uint8
+
+const (
+	saveIdle savePhase = iota
+	saveChoosing
+	// saveScopeOffered waits for the explicit approval an older read-only session
+	// needs before it can change a playlist.
+	saveScopeOffered
+	saveAuthorization
+	saveSaving
+)
+
+// saveNotice is the outcome of the last attempt: one quiet row that never
+// carries a message Spotify sent.
+type saveNotice uint8
+
+const (
+	saveNoticeNone saveNotice = iota
+	saveNoticeSaved
+	saveNoticeFailed
+	saveNoticeNotEditable
+	saveNoticeDeclined
+)
+
+// savePanel is the save-to-playlist action: the writer the catalog handed over,
+// the chooser cursor, the playlist already chosen and the last notice.
+type savePanel struct {
+	writer spotify.PlaylistWriter
+	phase  savePhase
+	cursor int
+	target libraryPlaylist
+
+	authURL string
+	// generation fences the answers of one attempt, so a late reply never
+	// overwrites a newer one.
+	generation uint64
+	// retried records that the single retry after an approval was already used.
+	retried bool
+	work    context.Context
+	cancel  context.CancelFunc
+	events  <-chan saveAuthMsg
+
+	notice     saveNotice
+	noticeName string
+}
+
+// saveResultMsg carries the answer to one save request, fenced by generation.
+type saveResultMsg struct {
+	generation uint64
+	name       string
+	err        error
+}
+
+// saveAuthMsg reports the approval link and its eventual result, like the
+// wizard's own login-link presentation.
+type saveAuthMsg struct {
+	generation uint64
+	url        string
+	writer     spotify.PlaylistWriter
+	done       bool
 }
 
 // profileSource is the catalog read the top bar needs: the name of the account
@@ -113,6 +179,12 @@ type playerModel struct {
 	help bool
 	// clock is the source of the interpolated playhead; tests replace it.
 	clock func() time.Time
+	// save guarda la pista en reproducción en una lista elegida. Solo tiene
+	// sentido con un catálogo que puede escribir; el resto del tiempo la acción
+	// no se anuncia ni responde.
+	saveTo savePanel
+	// openBrowser presenta el enlace de aprobación; las pruebas lo reemplazan.
+	openBrowser func(string) error
 }
 
 func NewPlayerModel(ctx context.Context, states <-chan soloist.State, commands chan<- soloist.Command, width, height int) tea.Model {
@@ -145,6 +217,8 @@ func NewPlayerModelWithCatalog(ctx context.Context, states <-chan soloist.State,
 	m.library = newLibraryState(ctx, librarySourceOf(api), authorize, clientID)
 	m.search = newSearchState(ctx, m.library.source)
 	m.profile = profileSourceOf(api)
+	m.saveTo.writer = playlistWriterOf(api)
+	m.openBrowser = spotify.OpenBrowser
 	return m
 }
 
@@ -247,10 +321,16 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.library.update(msg)
 		// Authorization can install the library source after startup.
 		m.search.source = m.library.source
+		// Una página nueva puede alargar la lista que muestra el selector.
+		m.saveTo.cursor = playerIndex(m.saveTo.cursor, len(m.library.playlists))
 		if accepted {
+			// El catálogo aprobado también trae la mitad de escritura, si la tiene.
+			m.saveTo.writer = playlistWriterOf(auth.api)
 			return m, playerCommands(cmd, m.installProfile(auth.api))
 		}
 		return m, cmd
+	case saveResultMsg, saveAuthMsg:
+		return m, m.updateSave(msg)
 	case playerProfileMsg:
 		if m.quit || msg.generation != m.profileGeneration || m.ctx.Err() != nil {
 			break
@@ -276,6 +356,10 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.state = msg.state
+		// Sin una pista en reproducción el selector se queda sin qué guardar.
+		if m.saveTo.phase != saveIdle && !soloist.IsTrackURI(m.state.Track.URI) {
+			m.closeSave()
+		}
 		m.reconcileModes()
 		m.clampSelections()
 		// A playing session needs a second of wall time to advance its playhead.
@@ -331,6 +415,10 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 		m.help = true
 		return nil
 	}
+	// El selector de lista reclama sus teclas mientras está abierto.
+	if cmd, handled := m.saveKey(key); handled {
+		return cmd
+	}
 	// Esc from any panel leaves shown search results first; the next one quits.
 	if key.Type == tea.KeyEsc && m.search.active {
 		m.search.close()
@@ -361,6 +449,8 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	case "l":
 		m.focus = playerFocusSidebar
 		return nil
+	case "a":
+		return m.openSave()
 	}
 	// Shuffle, repeat and the bar's own seek keys come next; s and r reach
 	// Soloist from every panel, while the arrows stay with the playing bar.
@@ -623,6 +713,336 @@ func (m *playerModel) activatePlaylist() tea.Cmd {
 	// Opening a playlist replaces the result table on purpose.
 	m.search.close()
 	return library.openPlaylist()
+}
+
+// saveAvailable reports whether the playing item can be saved right now: a
+// catalog that can write, a playlist listing and the track URI Soloist reported.
+func (m *playerModel) saveAvailable() bool {
+	return m.saveTo.writer != nil && m.library != nil && m.library.source != nil &&
+		m.state.Connected && soloist.IsTrackURI(m.state.Track.URI)
+}
+
+// saveKey owns the panel's keys while it is open. Ctrl+C still falls through so
+// the workspace can always quit.
+func (m *playerModel) saveKey(key tea.KeyMsg) (tea.Cmd, bool) {
+	if m.saveTo.phase == saveIdle || key.Type == tea.KeyCtrlC {
+		return nil, false
+	}
+	switch key.Type {
+	case tea.KeyEsc:
+		m.closeSave()
+		return nil, true
+	case tea.KeyEnter:
+		return m.confirmSave(), true
+	}
+	delta := 0
+	switch key.Type {
+	case tea.KeyUp:
+		delta = -1
+	case tea.KeyDown:
+		delta = 1
+	case tea.KeyRunes:
+		switch string(key.Runes) {
+		case "k":
+			delta = -1
+		case "j":
+			delta = 1
+		}
+	}
+	if delta != 0 && m.saveTo.phase == saveChoosing {
+		return m.moveSave(delta), true
+	}
+	return nil, true
+}
+
+// openSave shows the chooser for the playing track over the playlist page the
+// library already loaded.
+func (m *playerModel) openSave() tea.Cmd {
+	if !m.saveAvailable() {
+		return nil
+	}
+	m.saveTo.phase = saveChoosing
+	m.saveTo.cursor = playerIndex(m.library.sidebarSelected, len(m.library.playlists))
+	m.saveTo.target = libraryPlaylist{}
+	m.saveTo.authURL = ""
+	m.saveTo.notice, m.saveTo.noticeName = saveNoticeNone, ""
+	m.saveTo.retried = false
+	if len(m.library.playlists) == 0 && m.library.notice == libraryNoticeLoadFailed {
+		return m.library.fetchPlaylists(0)
+	}
+	return nil
+}
+
+// moveSave moves the chooser cursor with the library's habits and pages in more
+// playlists when the cursor passes the loaded rows.
+func (m *playerModel) moveSave(delta int) tea.Cmd {
+	library := m.library
+	if len(library.playlists) == 0 {
+		return nil
+	}
+	last := len(library.playlists) - 1
+	if library.playlistMore {
+		last++
+	}
+	m.saveTo.cursor = min(max(0, m.saveTo.cursor+delta), last)
+	// Se pagina solo cuando la biblioteca no tiene una petición en curso: pedir
+	// otra página cancelaría la carga de canciones que ya está esperando.
+	if m.saveTo.cursor > len(library.playlists)-1 && library.playlistMore && !library.loadingPlaylists && !library.loadingTracks {
+		return library.fetchPlaylists(library.playlistOffset)
+	}
+	return nil
+}
+
+// saveTargetPlaylist is the playlist under the chooser cursor.
+func (m *playerModel) saveTargetPlaylist() (libraryPlaylist, bool) {
+	if m.library == nil || len(m.library.playlists) == 0 {
+		return libraryPlaylist{}, false
+	}
+	return m.library.playlists[playerIndex(m.saveTo.cursor, len(m.library.playlists))], true
+}
+
+// saveTargetName is the playlist the title and the notices name.
+func (m *playerModel) saveTargetName() string {
+	playlist := m.saveTo.target
+	if m.saveTo.phase == saveChoosing {
+		if current, ok := m.saveTargetPlaylist(); ok {
+			playlist = current
+		}
+	}
+	if name := playerText(playlist.Name); name != "" {
+		return name
+	}
+	if playlist.URI != "" {
+		return m.text("Untitled playlist", "Lista sin título")
+	}
+	return ""
+}
+
+// confirmSave chooses the playlist or starts the offered approval.
+func (m *playerModel) confirmSave() tea.Cmd {
+	switch m.saveTo.phase {
+	case saveChoosing:
+		playlist, ok := m.saveTargetPlaylist()
+		if !ok {
+			return nil
+		}
+		m.saveTo.target = playlist
+		return m.requestSave(m.saveTo.writer, playlist)
+	case saveScopeOffered:
+		return m.reauthorizeWrites()
+	}
+	return nil
+}
+
+// requestSave asks Spotify to append the playing track to the chosen playlist.
+// Nothing reads as saved until the answer arrives.
+func (m *playerModel) requestSave(writer spotify.PlaylistWriter, playlist libraryPlaylist) tea.Cmd {
+	trackURI := m.state.Track.URI
+	if writer == nil || m.ctx.Err() != nil || !soloist.IsTrackURI(trackURI) {
+		return nil
+	}
+	m.saveTo.generation++
+	m.saveTo.phase = saveSaving
+	name := playerText(playlist.Name)
+	if name == "" {
+		name = m.text("Untitled playlist", "Lista sin título")
+	}
+	ctx, generation, uri := m.ctx, m.saveTo.generation, playlist.URI
+	return func() tea.Msg {
+		if ctx.Err() != nil {
+			return nil
+		}
+		_, err := writer.AddToPlaylist(ctx, uri, trackURI)
+		return saveResultMsg{generation: generation, name: name, err: err}
+	}
+}
+
+// reauthorizeWrites repeats the approval with the write scopes the saved session
+// lacks, using the wizard's browser-and-link presentation.
+func (m *playerModel) reauthorizeWrites() tea.Cmd {
+	writer := m.saveTo.writer
+	if writer == nil || m.ctx.Err() != nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.saveTo.generation++
+	generation := m.saveTo.generation
+	events := make(chan saveAuthMsg, 2)
+	m.saveTo.work, m.saveTo.cancel, m.saveTo.events = ctx, cancel, events
+	m.saveTo.phase, m.saveTo.authURL = saveAuthorization, ""
+	open := m.openBrowser
+	return func() tea.Msg {
+		if ctx.Err() != nil {
+			return nil
+		}
+		go func() {
+			var published sync.Once
+			updated, err := writer.ReauthorizeWrites(ctx, func(raw string) {
+				link := catalogBrowserURL(raw)
+				if link == "" || ctx.Err() != nil {
+					return
+				}
+				if open != nil {
+					_ = open(link)
+				}
+				published.Do(func() { events <- saveAuthMsg{generation: generation, url: link} })
+			})
+			if err != nil {
+				updated = nil
+			}
+			events <- saveAuthMsg{generation: generation, writer: updated, done: true}
+		}()
+		return saveAwaitAuth(ctx, events)()
+	}
+}
+
+// saveAwaitAuth reads the next approval event without blocking the program.
+func saveAwaitAuth(ctx context.Context, events <-chan saveAuthMsg) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+			return nil
+		case msg := <-events:
+			return msg
+		}
+	}
+}
+
+// closeSave dismisses the panel. A save already in flight still reports its
+// notice; a pending approval is abandoned.
+func (m *playerModel) closeSave() {
+	if m.saveTo.phase == saveAuthorization {
+		if m.saveTo.cancel != nil {
+			m.saveTo.cancel()
+		}
+		// Descarta la respuesta de una aprobación abandonada.
+		m.saveTo.generation++
+	}
+	m.saveTo.work, m.saveTo.cancel, m.saveTo.events = nil, nil, nil
+	m.saveTo.phase, m.saveTo.authURL = saveIdle, ""
+}
+
+// updateSave applies one fenced answer of the save flow. A failure never shows
+// what Spotify answered and never touches playback.
+func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
+	if m.quit || m.ctx.Err() != nil {
+		return nil
+	}
+	switch msg := msg.(type) {
+	case saveResultMsg:
+		if msg.generation != m.saveTo.generation {
+			return nil
+		}
+		m.saveTo.authURL = ""
+		switch {
+		case msg.err == nil:
+			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeSaved, msg.name
+		case errors.Is(msg.err, spotify.ErrPlaylistNotEditable):
+			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeNotEditable, msg.name
+		case errors.Is(msg.err, spotify.ErrSpotifyWriteScope) && !m.saveTo.retried && m.saveTo.target.URI != "":
+			// Falta el permiso de escritura: se ofrece aprobarlo otra vez.
+			m.saveTo.phase = saveScopeOffered
+		default:
+			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeFailed, msg.name
+		}
+		return nil
+	case saveAuthMsg:
+		if msg.generation != m.saveTo.generation {
+			return nil
+		}
+		if !msg.done {
+			m.saveTo.authURL = msg.url
+			return saveAwaitAuth(m.saveTo.work, m.saveTo.events)
+		}
+		if m.saveTo.cancel != nil {
+			m.saveTo.cancel()
+		}
+		m.saveTo.work, m.saveTo.cancel, m.saveTo.events, m.saveTo.authURL = nil, nil, nil, ""
+		if msg.writer == nil {
+			m.saveTo.phase, m.saveTo.notice = saveIdle, saveNoticeDeclined
+			m.saveTo.noticeName = m.saveTargetName()
+			return nil
+		}
+		// El catálogo aprobado reemplaza al anterior y el guardado se reintenta
+		// una sola vez.
+		m.saveTo.writer, m.saveTo.retried = msg.writer, true
+		return m.requestSave(msg.writer, m.saveTo.target)
+	}
+	return nil
+}
+
+// saveTitle names the action and the playlist that would receive the track, so
+// the target is visible before confirming.
+func (m *playerModel) saveTitle() string {
+	title := m.text("Save to playlist", "Guardar en lista")
+	if name := m.saveTargetName(); name != "" {
+		title += " · " + name
+	}
+	return title
+}
+
+// saveRows renders the panel: the chooser, the offer to approve the missing
+// permission, or the wait for Spotify.
+func (m *playerModel) saveRows(styles playerStyles, room int) []playerRow {
+	muted := func(text string) playerRow { return playerRow{text: text, style: styles.muted} }
+	switch m.saveTo.phase {
+	case saveSaving:
+		return []playerRow{muted(playerMarked(playerMarkNotice, m.text("Saving…", "Guardando…")))}
+	case saveAuthorization:
+		rows := []playerRow{muted(playerMarked(playerMarkNotice, m.text("Waiting for Spotify…", "Esperando a Spotify…")))}
+		if m.saveTo.authURL != "" {
+			rows = append(rows, playerRow{text: "  " + m.saveTo.authURL, style: styles.muted})
+		}
+		return rows
+	case saveScopeOffered:
+		return []playerRow{{text: playerMarked(playerMarkFailure, m.text(
+			"Spotify needs your approval to change playlists. Enter: authorize again.",
+			"Spotify necesita tu aprobación para cambiar listas. Enter: autorizar otra vez.")), style: styles.failure}}
+	}
+	library := m.library
+	switch {
+	case library.notice == libraryNoticeLoadFailed && len(library.playlists) == 0:
+		return []playerRow{{text: m.markError(), style: styles.failure}}
+	case !library.loadedPlaylists && len(library.playlists) == 0:
+		return []playerRow{muted(m.markLoading())}
+	case len(library.playlists) == 0:
+		return []playerRow{muted(m.markEmpty())}
+	}
+	start := max(0, m.saveTo.cursor-room+1)
+	rows := make([]playerRow, 0, room)
+	for i := start; i < len(library.playlists) && len(rows) < room; i++ {
+		playlist := library.playlists[i]
+		marker, style := "  ", lipgloss.NewStyle()
+		if i == m.saveTo.cursor {
+			marker, style = "> ", styles.accent
+		}
+		name := playerText(playlist.Name)
+		if name == "" {
+			name = m.text("Untitled playlist", "Lista sin título")
+		}
+		rows = append(rows, playerRow{text: marker + name, style: style})
+	}
+	if library.loadingPlaylists && len(rows) < room {
+		rows = append(rows, playerRow{text: m.markLoading(), style: styles.muted})
+	}
+	return rows
+}
+
+// saveNoticeText is the last outcome, named for the playlist it touched.
+func (m *playerModel) saveNoticeText() string {
+	switch m.saveTo.notice {
+	case saveNoticeSaved:
+		return fmt.Sprintf(m.text("Saved to %s.", "Guardada en %s."), m.saveTo.noticeName)
+	case saveNoticeFailed:
+		return fmt.Sprintf(m.text("Could not save to %s.", "No se pudo guardar en %s."), m.saveTo.noticeName)
+	case saveNoticeNotEditable:
+		return fmt.Sprintf(m.text("Could not save to %s: this account cannot change that playlist.",
+			"No se pudo guardar en %s: esta cuenta no puede cambiar esa lista."), m.saveTo.noticeName)
+	case saveNoticeDeclined:
+		return m.text("Spotify authorization did not complete; nothing was saved.",
+			"La autorización de Spotify no se completó; no se guardó nada.")
+	}
+	return ""
 }
 
 func (m *playerModel) clampSelections() {
@@ -1095,6 +1515,9 @@ func (m *playerModel) repeatMode() string {
 
 func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
 	notice := playerText(m.state.Notice)
+	if text := m.saveNoticeText(); text != "" {
+		notice = text
+	}
 	switch m.state.PlaylistShuffle {
 	case soloist.PlaylistShuffleWaiting:
 		notice = m.text("Waiting for playlist confirmation…", "Esperando confirmación de la lista…")
@@ -1189,6 +1612,21 @@ func (m *playerModel) hintPairs() []playerHint {
 			{"F3", m.text("theme", "tema")},
 		}
 	}
+	// El selector de lista sustituye al pie mientras está abierto.
+	if m.saveTo.phase != saveIdle {
+		hints := make([]playerHint, 0, 4)
+		switch m.saveTo.phase {
+		case saveChoosing:
+			hints = append(hints,
+				playerHint{"↑↓/jk", m.text("playlist", "lista")},
+				playerHint{"Enter", m.text("save", "guardar")})
+		case saveScopeOffered:
+			hints = append(hints, playerHint{"Enter", m.text("authorize", "autorizar")})
+		}
+		return append(hints,
+			playerHint{"Esc", m.text("cancel", "cancelar")},
+			playerHint{"F1", m.text("help", "ayuda")})
+	}
 	hints := []playerHint{{"Tab", m.text("focus", "panel")}}
 	switch m.focus {
 	case playerFocusSidebar:
@@ -1220,6 +1658,9 @@ func (m *playerModel) hintPairs() []playerHint {
 			playerHint{"+/-", m.text("volume", "volumen")},
 			playerHint{"/", m.text("search", "buscar")},
 			playerHint{"l", m.text("library", "biblioteca")})
+	}
+	if m.saveAvailable() {
+		hints = append(hints, playerHint{"a", m.text("save", "guardar")})
 	}
 	if m.playlistShuffleURI() != "" {
 		hints = append(hints, playerHint{"S", m.text("shuffle-list", "mezclar-lista")})
@@ -1364,6 +1805,9 @@ func (m *playerModel) libraryStateRows(styles playerStyles) []playerRow {
 }
 
 func (m *playerModel) mainTitle() string {
+	if m.saveTo.phase != saveIdle {
+		return m.saveTitle()
+	}
 	if m.search.active {
 		return m.searchTitle()
 	}
@@ -1466,6 +1910,9 @@ func (m *playerModel) tableHeader(width int) string {
 }
 
 func (m *playerModel) tableRows(width int, styles playerStyles, room int) []playerRow {
+	if m.saveTo.phase != saveIdle {
+		return m.saveRows(styles, room)
+	}
 	if m.search.active {
 		return m.searchTableRows(width, styles, room)
 	}

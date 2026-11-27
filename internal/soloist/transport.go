@@ -32,7 +32,11 @@ const (
 
 type Track struct {
 	Title, Artist, Album string
-	DurationMS           int64
+	// URI es la URI de Spotify de la pista que documenta Soloist, normalizada.
+	// Queda vacía cuando no hay ninguna o cuando el elemento en reproducción no
+	// es una pista, para que guardar nunca apunte a otra cosa.
+	URI        string
+	DurationMS int64
 }
 
 type PlaylistShuffleStatus uint8
@@ -220,6 +224,7 @@ func (entity playerEntity) name() string {
 }
 
 type playerWireTrack struct {
+	URI         string `json:"uri"`
 	Decorations struct {
 		Identity struct {
 			Name string `json:"name"`
@@ -249,8 +254,18 @@ func (item *playerWireTrack) track() Track {
 	}
 	return Track{
 		Title: playerMetadataText(d.Identity.Name), Artist: strings.Join(artists, ", "),
-		Album: d.Parent.Entity.name(), DurationMS: max(0, d.Playback.DurationMS),
+		Album: d.Parent.Entity.name(), URI: playerTrackURI(item.URI), DurationMS: max(0, d.Playback.DurationMS),
 	}
+}
+
+// playerTrackURI acepta solo la URI de una pista: guardar en una lista no debe
+// confundir un episodio, un álbum o una lista con la pista en reproducción.
+func playerTrackURI(raw string) string {
+	uri, ok := playerSpotifyURI(raw)
+	if !ok || !strings.HasPrefix(uri, "spotify:track:") {
+		return ""
+	}
+	return uri
 }
 
 func playerMetadataText(text string) string {
@@ -707,6 +722,12 @@ func playerSpotifyURI(raw string) (string, bool) {
 func IsPlaylistURI(uri string) bool {
 	_, ok := playerSpotifyURI(uri)
 	return ok && strings.HasPrefix(uri, "spotify:playlist:")
+}
+
+// IsTrackURI reports whether uri identifies one Spotify track.
+func IsTrackURI(uri string) bool {
+	_, ok := playerSpotifyURI(uri)
+	return ok && strings.HasPrefix(uri, "spotify:track:")
 }
 
 func playerPlayableKind(kind string) bool {

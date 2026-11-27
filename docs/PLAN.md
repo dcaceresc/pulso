@@ -50,7 +50,7 @@ Keep playback independent of Web API authentication and quotas: controls, the qu
 - [ ] After initial pairing, the user can open Pulso, search for a track, play it, queue another, and switch to a playlist without keeping the official app open.
 - [ ] Known links and local playback controls still work if Spotify Web API access is unavailable.
 
-Out of scope for the MVP: lyrics, Spotify playlist editing, and validating additional platforms or architectures.
+Out of scope for the MVP: lyrics and validating additional platforms or architectures. Adding a track to an existing playlist is the only playlist edit; creating, reordering or removing items stays out of scope.
 
 [downloads]: https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates
 [WebSocket API]: https://developer.spotify.com/documentation/soloist/reference/websocket-api

@@ -37,6 +37,7 @@ func (m *playerModel) helpSections() []helpSection {
 			{"n/p", m.text("next or previous track", "pista siguiente o anterior")},
 			{"s", m.text("shuffle on or off", "aleatorio activado o apagado")},
 			{"r", m.text("repeat off, all, one", "repetir apagado, todo, una")},
+			{"a", m.text("save the playing track to a playlist", "guardar la pista en una lista")},
 			{"+/-", m.text("volume", "volumen")},
 		}},
 		{m.text("Library", "Biblioteca"), []helpEntry{

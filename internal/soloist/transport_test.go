@@ -18,7 +18,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-const playerTestItem = `{"decorations":{"identity":{"name":"Song"},"parent":{"entity":{"name":"Album"}},"creators":[{"entity":{"name":"First"}},{"entity":{"name":"Second"}}],"playback":{"duration_ms":190000}}}`
+const playerTestItem = `{"uri":"spotify:track:Song","decorations":{"identity":{"name":"Song"},"parent":{"entity":{"name":"Album"}},"creators":[{"entity":{"name":"First"}},{"entity":{"name":"Second"}}],"playback":{"duration_ms":190000}}}`
 
 func playerTestSend(t *testing.T, ctx context.Context, conn *websocket.Conn, msg string) bool {
 	t.Helper()
@@ -112,7 +112,7 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 		match func(State) bool
 	}{
 		{`{"type":"playback_state","item":` + playerTestItem + `,"status":"playing","position":{"position_ms":4200},"volume":55}`, func(s State) bool {
-			return s.Connected && s.Device == "Living Room" && s.Status == "playing" && s.PositionMS == 4200 && s.Volume == 55 && s.Track == (Track{Title: "Song", Artist: "First, Second", Album: "Album", DurationMS: 190000})
+			return s.Connected && s.Device == "Living Room" && s.Status == "playing" && s.PositionMS == 4200 && s.Volume == 55 && s.Track == (Track{Title: "Song", Artist: "First, Second", Album: "Album", URI: "spotify:track:Song", DurationMS: 190000})
 		}},
 		{`{"type":"queue_changed","upcoming":[{"item":` + playerTestItem + `}]}`, func(s State) bool { return len(s.Queue) == 1 && s.Queue[0] == s.Track }},
 		{`{"type":"track_changed","item":{"decorations":{"identity":{"name":"Next\u001b"}}}}`, func(s State) bool { return s.Track.Title == "Next" && s.PositionMS == 0 && s.Status == "playing" }},
@@ -239,13 +239,13 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 
 func TestPlaylistShuffleSwitchover(t *testing.T) {
 	const (
-		playlist = "spotify:playlist:Target"
-		play = `{"type":"command","command":"play","uri":"spotify:playlist:Target"}`
-		match = `{"type":"context_changed","context":{"uri":"spotify:playlist:Target","entity_type":"playlist"}}`
-		other = `{"type":"context_changed","context":{"uri":"spotify:playlist:Other","entity_type":"playlist"}}`
-		ack = `{"type":"command_result","command":"play"}`
-		shuffle = `{"type":"command","command":"set_shuffle","enabled":true}`
-		probe = `{"type":"command","command":"set_volume","volume":12}`
+		playlist     = "spotify:playlist:Target"
+		play         = `{"type":"command","command":"play","uri":"spotify:playlist:Target"}`
+		match        = `{"type":"context_changed","context":{"uri":"spotify:playlist:Target","entity_type":"playlist"}}`
+		other        = `{"type":"context_changed","context":{"uri":"spotify:playlist:Other","entity_type":"playlist"}}`
+		ack          = `{"type":"command_result","command":"play"}`
+		shuffle      = `{"type":"command","command":"set_shuffle","enabled":true}`
+		probe        = `{"type":"command","command":"set_volume","volume":12}`
 		stateRequest = `{"type":"command","command":"get_state"}`
 	)
 	for _, tc := range []struct {
@@ -273,7 +273,6 @@ func TestPlaylistShuffleSwitchover(t *testing.T) {
 			barrier:  PlaylistShuffleWaiting,
 			command:  Command{Name: "play", URI: "spotify:track:Single"},
 		},
-
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -585,6 +584,54 @@ func TestPlayerTransportRejectsUnsafeFrames(t *testing.T) {
 				return !s.Connected && s.Volume == 0 && s.Notice != ""
 			})
 		})
+	}
+}
+
+// TestPlayerTrackURI keeps saving honest: only the track URI Soloist documents
+// reaches the state, and a missing or non-track item leaves it empty instead of
+// leaving Pulso with something wrong to save.
+func TestPlayerTrackURI(t *testing.T) {
+	for _, tt := range []struct {
+		name, item, want string
+	}{
+		{"pista", `{"uri":"spotify:track:AbC123"}`, "spotify:track:AbC123"},
+		{"uri ausente", `{}`, ""},
+		{"uri vacía", `{"uri":"  "}`, ""},
+		{"episodio", `{"uri":"spotify:episode:AbC123"}`, ""},
+		{"lista", `{"uri":"spotify:playlist:AbC123"}`, ""},
+		{"álbum", `{"uri":"spotify:album:AbC123"}`, ""},
+		{"url web", `{"uri":"https://open.spotify.com/track/AbC123"}`, ""},
+		{"sufijo de más", `{"uri":"spotify:track:AbC123:extra"}`, ""},
+		{"id inválido", `{"uri":"spotify:track:../x"}`, ""},
+		{"id vacío", `{"uri":"spotify:track:"}`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var event playerEvent
+			if err := json.Unmarshal([]byte(`{"type":"track_changed","item":`+tt.item+`}`), &event); err != nil {
+				t.Fatal(err)
+			}
+			state := State{Connected: true}
+			if !state.apply(event) {
+				t.Fatal("the event was not applied")
+			}
+			if state.Track.URI != tt.want {
+				t.Fatalf("track uri = %q, want %q", state.Track.URI, tt.want)
+			}
+		})
+	}
+	// La cola lleva la misma URI, y los campos que ya existían no cambian.
+	var event playerEvent
+	if err := json.Unmarshal([]byte(`{"type":"queue_changed","upcoming":[{"item":`+playerTestItem+`}]}`), &event); err != nil {
+		t.Fatal(err)
+	}
+	state := State{Connected: true}
+	state.apply(event)
+	want := Track{Title: "Song", Artist: "First, Second", Album: "Album", URI: "spotify:track:Song", DurationMS: 190000}
+	if len(state.Queue) != 1 || state.Queue[0] != want {
+		t.Fatalf("queue = %+v, want one %+v", state.Queue, want)
+	}
+	if !IsTrackURI(state.Queue[0].URI) || IsTrackURI("spotify:episode:Song") {
+		t.Fatalf("IsTrackURI classified %q wrongly", state.Queue[0].URI)
 	}
 }
 
