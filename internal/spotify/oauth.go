@@ -23,6 +23,9 @@ const (
 	spotifyCallbackPath         = "/callback"
 	spotifyCallbackDefaultAddr  = "127.0.0.1:8888"
 	spotifyAuthorizationTimeout = 3 * time.Minute
+	// Guardar una pista en una lista privada o pública exige las dos variantes
+	// de escritura; la lectura se conserva tal cual.
+	spotifyScopes = "playlist-read-private playlist-read-collaborative playlist-modify-private playlist-modify-public"
 )
 
 var (
@@ -30,6 +33,11 @@ var (
 	errSpotifyToken       = errors.New("Spotify token request failed")
 	// A definitive rejection means the saved approval is gone for good.
 	errSpotifyTokenRejected = errors.New("Spotify rejected the authorization; approve access again")
+	// ErrSpotifyApprovalDeclined significa que la persona no aprobó el acceso o
+	// que Spotify rechazó la aprobación: sin permiso nuevo hay que seguir sin él.
+	ErrSpotifyApprovalDeclined = errors.New("Spotify authorization did not complete")
+	// errSpotifyReauthorization cubre el uso inválido del camino de recuperación.
+	errSpotifyReauthorization = errors.New("Spotify reauthorization needs a client ID and an authorization link handler")
 	// ErrClientIDRejected means Spotify refused the Client ID or redirect URI.
 	ErrClientIDRejected = errors.New("Spotify rejected the Client ID or redirect URI")
 	// Spotify only accepts loopback redirects with an explicit port, so the
@@ -80,6 +88,41 @@ func authorizeSpotifyAt(ctx context.Context, sessionPath, clientID string, showU
 	} else if ok {
 		return catalog, nil
 	}
+	return approveSpotify(ctx, sessionPath, clientID, client, showURL)
+}
+
+// ReauthorizeWrites repite la aprobación con los permisos de escritura que una
+// sesión anterior no tiene. Ignora la sesión guardada a propósito, usa el mismo
+// callback que muestra el enlace de inicio de sesión y guarda la aprobación
+// nueva con el formato de sesión existente. Si la persona no aprueba o Spotify
+// rechaza el intercambio, el resultado es ErrSpotifyApprovalDeclined.
+func (c *Catalog) ReauthorizeWrites(ctx context.Context, showURL func(string)) (PlaylistWriter, error) {
+	if c == nil || showURL == nil || strings.TrimSpace(c.clientID) == "" {
+		return nil, errSpotifyReauthorization
+	}
+	ctx, cancel := context.WithTimeout(ctx, spotifyAuthorizationTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	client := c.client
+	if client == nil {
+		client = newSpotifyHTTPClient(nil)
+	}
+	catalog, err := approveSpotify(ctx, c.sessionPath, c.clientID, client, showURL)
+	if err != nil {
+		if errors.Is(err, errSpotifyTokenRejected) {
+			return nil, ErrSpotifyApprovalDeclined
+		}
+		return nil, err
+	}
+	return catalog, nil
+}
+
+// approveSpotify recorre la mitad interactiva del flujo: el enlace PKCE, el
+// callback local y el intercambio del código. Nunca restaura una sesión
+// guardada, así que una aprobación anterior a un permiso nuevo no la satisface.
+func approveSpotify(ctx context.Context, sessionPath, clientID string, client *http.Client, showURL func(string)) (*Catalog, error) {
 	// Independent 256-bit random values produce a 43-character verifier and state.
 	var random [64]byte
 	if _, err := rand.Read(random[:]); err != nil {
@@ -99,7 +142,7 @@ func authorizeSpotifyAt(ctx context.Context, sessionPath, clientID string, showU
 		"client_id":             {clientID},
 		"response_type":         {"code"},
 		"redirect_uri":          {redirect},
-		"scope":                 {"playlist-read-private playlist-read-collaborative"},
+		"scope":                 {spotifyScopes},
 		"state":                 {state},
 		"code_challenge_method": {"S256"},
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
@@ -230,7 +273,7 @@ func waitSpotifyCallback(ctx context.Context, listener net.Listener, host, state
 			}
 			if q.Has("error") || len(q["code"]) != 1 || q.Get("code") == "" {
 				http.Error(w, "Spotify authorization did not complete", http.StatusBadRequest)
-				results <- callback{err: errors.New("Spotify authorization did not complete")}
+				results <- callback{err: ErrSpotifyApprovalDeclined}
 				return
 			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -352,7 +395,7 @@ func NewCatalog(client *http.Client, clientID, access, refresh string, expires t
 }
 
 func newSpotifyCatalog(client *http.Client, clientID string, token spotifyToken, sessionPath string) *Catalog {
-	catalog := &Catalog{client: client, clientID: clientID, token: token}
+	catalog := &Catalog{client: client, clientID: clientID, sessionPath: sessionPath, token: token}
 	if sessionPath != "" {
 		catalog.persist = func(refreshed spotifyToken) {
 			_ = saveSpotifySessionAt(sessionPath, spotifySession{access: refreshed.access, refresh: refreshed.refresh, expires: refreshed.expires})

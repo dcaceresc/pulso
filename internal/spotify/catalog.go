@@ -1,8 +1,11 @@
 package spotify
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -22,7 +25,15 @@ const (
 var (
 	ErrPlaylistUnavailable = errors.New("Spotify playlist contents are unavailable")
 	ErrSpotifyCatalog      = errors.New("Spotify catalog request failed")
+	// ErrSpotifyWriteScope significa que la aprobación guardada no incluye el
+	// permiso de escritura: se recupera aprobando otra vez, sin cambiar de sesión.
+	ErrSpotifyWriteScope = errors.New("Spotify authorization cannot change playlists; authorize again")
+	// ErrPlaylistNotEditable significa que esta cuenta no puede modificar la
+	// lista elegida; volver a aprobar no lo arregla.
+	ErrPlaylistNotEditable = errors.New("Spotify playlist cannot be changed by this account")
 	errSpotifyOffset       = errors.New("Invalid Spotify catalog offset")
+	errSpotifyPlaylistURI  = errors.New("Invalid Spotify playlist URI")
+	errSpotifyTrackURI     = errors.New("Invalid Spotify track URI")
 	spotifyID              = regexp.MustCompile(`^[A-Za-z0-9]+$`)
 )
 
@@ -33,6 +44,9 @@ type Item struct {
 type Catalog struct {
 	client   *http.Client
 	clientID string
+	// sessionPath permite que una aprobación nueva reemplace la guardada sin
+	// cambiar el formato del archivo de sesión.
+	sessionPath string
 
 	mu    sync.Mutex
 	token spotifyToken
@@ -100,7 +114,7 @@ func (c *Catalog) Playlists(ctx context.Context, offset int) ([]Item, bool, erro
 func (c *Catalog) PlaylistTracks(ctx context.Context, uri string, offset int) ([]Item, bool, error) {
 	id := spotifyURIID(uri, "playlist")
 	if id == "" {
-		return nil, false, errors.New("Invalid Spotify playlist URI")
+		return nil, false, errSpotifyPlaylistURI
 	}
 	var page spotifyPage[struct {
 		Item *spotifyTrack `json:"item"`
@@ -129,6 +143,102 @@ func (c *Catalog) Profile(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(response.DisplayName), nil
+}
+
+// PlaylistWriter es la mitad de escritura que el reproductor necesita: guardar
+// la pista que suena y, cuando Spotify avisa de que falta el permiso, pedirlo
+// otra vez con el mismo enlace de autorización que ya se muestra. *Catalog la
+// implementa.
+type PlaylistWriter interface {
+	AddToPlaylist(ctx context.Context, playlistURI, trackURI string) (string, error)
+	ReauthorizeWrites(ctx context.Context, showURL func(string)) (PlaylistWriter, error)
+}
+
+var _ PlaylistWriter = (*Catalog)(nil)
+
+// AddToPlaylist añade una pista a la lista elegida y devuelve el snapshot que
+// Spotify confirma, vacío si la respuesta no lo trae. Un rechazo por permisos o
+// por una lista ajena llega como error tipado, nunca con el texto de Spotify.
+func (c *Catalog) AddToPlaylist(ctx context.Context, playlistURI, trackURI string) (string, error) {
+	id := spotifyURIID(playlistURI, "playlist")
+	if id == "" {
+		return "", errSpotifyPlaylistURI
+	}
+	if spotifyURIID(trackURI, "track") == "" {
+		return "", errSpotifyTrackURI
+	}
+	// La ruta documentada por Spotify para añadir elementos a una lista.
+	var response struct {
+		SnapshotID string `json:"snapshot_id"`
+	}
+	payload := struct {
+		URIs []string `json:"uris"`
+	}{URIs: []string{trackURI}}
+	if err := c.write(ctx, "/v1/playlists/"+id+"/tracks", payload, &response); err != nil {
+		return "", err
+	}
+	return response.SnapshotID, nil
+}
+
+// write hace una sola petición POST autenticada al host fijado de la API. Igual
+// que en las lecturas, ni el cuerpo de la respuesta ni el token llegan al
+// llamador, un redirect no se sigue y el cliente acota el tiempo de espera.
+// Solo un 2xx documentado con cuerpo JSON cuenta como éxito.
+func (c *Catalog) write(ctx context.Context, target string, payload, dst any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return ErrSpotifyCatalog
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, spotifyAPIURL+target, bytes.NewReader(data))
+	if err != nil {
+		return ErrSpotifyCatalog
+	}
+	token, err := c.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return ErrSpotifyCatalog
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusForbidden:
+		return spotifyWriteForbidden(resp.Body)
+	case http.StatusTooManyRequests:
+		return errSpotifyRateLimited
+	case http.StatusOK, http.StatusCreated:
+		if readSpotifyJSON(resp.Body, 1<<20, dst) {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	return ErrSpotifyCatalog
+}
+
+// spotifyWriteForbidden separa los dos 403 de la API de escritura: un permiso
+// que falta, recuperable aprobando otra vez, y una lista que esta cuenta no
+// puede editar. Solo el mensaje clasifica la respuesta; su texto nunca sale de
+// aquí, y un cuerpo sin clasificar se trata como lista no editable para no
+// mandar a nadie al navegador sin motivo.
+func spotifyWriteForbidden(body io.Reader) error {
+	var response struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if readSpotifyJSON(body, 1<<20, &response) && strings.Contains(strings.ToLower(response.Error.Message), "scope") {
+		return ErrSpotifyWriteScope
+	}
+	return ErrPlaylistNotEditable
 }
 
 func spotifyURIID(uri, kind string) string {

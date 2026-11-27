@@ -56,7 +56,7 @@ func TestSpotifyCatalogOAuth(t *testing.T) {
 				state := q.Get("state")
 				challenge, redirect = q.Get("code_challenge"), q.Get("redirect_uri")
 				cb, err := url.Parse(redirect)
-				if err != nil || cb.Scheme != "http" || cb.Hostname() != "127.0.0.1" || cb.Port() == "" || cb.Path != "/callback" || q.Get("scope") != "playlist-read-private playlist-read-collaborative" || q.Get("response_type") != "code" || q.Get("code_challenge_method") != "S256" || q.Get("client_id") != "fixture-client" || len(state) < 43 || len(challenge) != 43 || q.Has("code_verifier") {
+				if err != nil || cb.Scheme != "http" || cb.Hostname() != "127.0.0.1" || cb.Port() == "" || cb.Path != "/callback" || q.Get("scope") != "playlist-read-private playlist-read-collaborative playlist-modify-private playlist-modify-public" || q.Get("response_type") != "code" || q.Get("code_challenge_method") != "S256" || q.Get("client_id") != "fixture-client" || len(state) < 43 || len(challenge) != 43 || q.Has("code_verifier") {
 					t.Fatal("invalid authorization parameters")
 				}
 				if tc.stateMismatch {
