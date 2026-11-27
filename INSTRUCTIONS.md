@@ -56,7 +56,9 @@ Si el emparejamiento no avanza porque la clave quedó mal escrita, pulsa `b`: vu
 
 ### Diagnóstico del emparejamiento
 
-En el paso de emparejamiento el asistente diagnostica por qué el teléfono puede no ver el equipo. Pulsa `d: diagnóstico` para abrir el detalle y `Enter` para volver al paso de emparejamiento. Cuando el diagnóstico puede proponer comandos, el detalle muestra los exactos.
+En el paso de emparejamiento el asistente diagnostica por qué el teléfono puede no ver el equipo y resume el resultado con un indicador al principio de la línea: `● OK` en verde cuando no hay nada que revisar, `● Revisar` en ámbar cuando hay un riesgo pero el emparejamiento puede funcionar (por ejemplo, un puente de contenedores compitiendo por el anuncio), y `● Bloqueado` en rojo cuando falta una regla y el teléfono no podrá conectar. La palabra acompaña siempre al color, así que se entiende también en una terminal sin color.
+
+El atajo `d: diagnóstico` aparece solo cuando hay algo que revisar: abre el detalle con los hallazgos y, si hay algo que aplicar, los comandos exactos. `Enter` vuelve al paso de emparejamiento. Si el detalle no puede proponer ningún comando, lo dice y no ofrece `a`.
 
 El diagnóstico revisa tres cosas:
 
@@ -171,6 +173,25 @@ Todo vive en la carpeta de configuración de tu usuario (`%APPDATA%\pulso` en Wi
 | `bin/soloist.exe` o `bin/soloist` | Copia de Soloist descargada por Pulso |
 
 Los archivos se crean con permisos privados. Pulso nunca escribe tokens en registros ni en la salida. El audio y el emparejamiento los guarda Soloist en su propio directorio: `%LOCALAPPDATA%\soloist\data` en Windows, o `$XDG_DATA_HOME/soloist` (con `~/.local/share/soloist` por defecto) en Linux.
+
+## Desinstalar
+
+`pulso uninstall` borra lo que Pulso y Soloist guardan en tu usuario. Primero imprime la ruta absoluta de cada objetivo y después espera una confirmación escrita: hay que escribir exactamente `uninstall`. Un Enter vacío o cualquier otra palabra responde «Cancelled; nothing was deleted.» y sale con código 1 sin borrar nada.
+
+Si Soloist está corriendo, el comando no borra nada por su cuenta: lo informa y pregunta `Close it and continue? [y/N]`. Solo con `y` o `Y` comprueba que el proceso del marcador sea realmente Soloist y, si lo es, le pide que termine y espera a que salga; si sigue vivo al agotarse la espera, aborta sin borrar nada. Si no puede confirmar que ese proceso es Soloist, no le envía ninguna señal y aborta. Nunca envía `SIGKILL`; en Windows usa la terminación del sistema.
+
+Se borra el binario de Soloist que descargó Pulso (`bin/soloist` o `bin/soloist.exe`), el Client ID, la sesión de Spotify, las preferencias y los directorios de datos y de caché de Soloist, donde viven el emparejamiento y su caché.
+
+Cada objetivo se informa como `Removed`, `Absent` o `Failed` con el error. Un objetivo que ya no existe no es un problema: ejecutar el comando dos veces termina bien. Si un borrado falla, se informa y se sigue con los demás, pero el código de salida es 1; solo es 0 cuando todo se borró o ya no estaba.
+
+El emparejamiento de Spotify y la autorización de la Web API no se pueden recuperar: después de desinstalar hay que repetir los dos pasos, con la clave de Soloist y con el Client ID. La desinstalación tampoco borra el binario de Pulso: indica su ruta para que lo borres tú, porque `go install` es su dueño.
+
+```sh
+bin="$(go env GOBIN)"; [ -n "$bin" ] || bin="$(go env GOPATH)/bin"
+rm "$bin/pulso"
+```
+
+En Windows el binario está en la misma carpeta como `pulso.exe`. Si una ruta no pertenece a Pulso o Soloist, es tu carpeta personal, la raíz del sistema o el directorio donde estás trabajando, el comando se niega a borrar y termina sin tocar nada.
 
 ## Diagnóstico y solución de problemas
 
