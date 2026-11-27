@@ -341,6 +341,13 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 	// Los resultados de play no tienen identificador. No se atribuye una
 	// aceptación a la solicitud más reciente si quedan respuestas anteriores.
 	var playsAwaitingResult uint64
+	var playResultsAmbiguous bool
+	markPlayResultsAmbiguous := func() {
+		// Un ACK tardío no puede rehabilitar este socket para aleatorio de lista.
+		playResultsAmbiguous = true
+		playsAwaitingResult = 0
+		stopAckTimer()
+	}
 	finishShuffle := func(status PlaylistShuffleStatus) {
 		if timeout != nil {
 			timeout.Stop()
@@ -374,6 +381,9 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 				if !IsPlaylistURI(command.URI) {
 					continue
 				}
+				if playResultsAmbiguous {
+					return authenticated, State{PlaylistShuffle: PlaylistShuffleUnconfirmed}
+				}
 				command.Name = "play"
 			}
 			packets, allowed := playerCommandPacket(command)
@@ -398,7 +408,7 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 					return
 				}
 			}
-			if command.Name == "play" {
+			if command.Name == "play" && !playResultsAmbiguous {
 				playsAwaitingResult++
 			}
 			if playlistShuffle && ackTimeout == nil {
@@ -417,13 +427,16 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 				publish(state)
 			}
 			switch event.Type {
-			case "auth_state":
-				if event.LoggedIn == nil {
+			case "auth_state", "logout":
+				if event.Type == "auth_state" && event.LoggedIn == nil {
 					return
 				}
-				if !*event.LoggedIn {
+				if event.Type == "logout" || !*event.LoggedIn {
 					if playsAwaitingResult != 0 {
-						return authenticated, State{Notice: playerPairNotice}
+						if target != "" {
+							return authenticated, State{Notice: playerPairNotice}
+						}
+						markPlayResultsAmbiguous()
 					}
 					finishShuffle(PlaylistShuffleIdle)
 					state = State{Notice: playerPairNotice}
@@ -443,19 +456,16 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 					state.Connected, state.Notice = true, ""
 					authenticated = true
 				}
-				if event.DeviceName != nil {
+				if event.Type == "auth_state" && event.DeviceName != nil {
 					state.Device = playerMetadataText(*event.DeviceName)
 				}
-			case "logout":
-				if playsAwaitingResult != 0 {
-					return authenticated, State{Notice: playerPairNotice}
-				}
-				finishShuffle(PlaylistShuffleIdle)
-				state = State{Notice: playerPairNotice}
 			case "error":
 				// El error no identifica la orden; no se puede descartar solo un ACK.
 				if playsAwaitingResult != 0 {
-					return authenticated, State{Notice: playerErrorNotice}
+					if target != "" {
+						return authenticated, State{Notice: playerErrorNotice}
+					}
+					markPlayResultsAmbiguous()
 				}
 				if target != "" {
 					finishShuffle(PlaylistShuffleUnconfirmed)

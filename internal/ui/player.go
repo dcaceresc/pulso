@@ -1099,7 +1099,11 @@ func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
 	case soloist.PlaylistShuffleWaiting:
 		notice = m.text("Waiting for playlist confirmation…", "Esperando confirmación de la lista…")
 	case soloist.PlaylistShuffleUnconfirmed:
-		notice = m.text("Playlist shuffle not applied.", "No se aplicó el aleatorio de la lista.")
+		if m.state.Connected {
+			notice = m.text("Playlist shuffle not applied.", "No se aplicó el aleatorio de la lista.")
+		} else {
+			notice = m.text("Playlist shuffle not applied. Retry after reconnecting.", "No se aplicó el aleatorio de la lista. Reinténtalo al reconectar.")
+		}
 	}
 	if m.busy {
 		notice = m.text("Controls busy; try again.", "Controles ocupados; inténtalo de nuevo.")

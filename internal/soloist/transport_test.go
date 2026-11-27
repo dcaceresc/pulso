@@ -346,6 +346,7 @@ func TestPlaylistShuffleReconnectsAfterUnansweredPlay(t *testing.T) {
 		stateRequest = `{"type":"command","command":"get_state"}`
 		queueRequest = `{"type":"command","command":"get_queue","limit":10}`
 		oldPlay      = `{"type":"command","command":"play","uri":"spotify:playlist:Old"}`
+		legacyPlay   = `{"type":"command","command":"play","uri":"spotify:track:Legacy"}`
 		newPlay      = `{"type":"command","command":"play","uri":"spotify:playlist:Fresh"}`
 		playlist     = `{"uri":"spotify:playlist:Fresh","entity_type":"playlist"}`
 	)
@@ -353,15 +354,20 @@ func TestPlaylistShuffleReconnectsAfterUnansweredPlay(t *testing.T) {
 		name, command, event, notice string
 		unconfirmed                  bool
 	}{
-		{name: "untagged error", command: "play", event: `{"type":"error","message":"rejected"}`, notice: playerErrorNotice},
+		{name: "legacy error", command: "play", event: `{"type":"error","message":"rejected"}`, notice: playerErrorNotice},
+		{name: "legacy logout", command: "play", event: `{"type":"logout"}`, notice: playerPairNotice},
+		{name: "legacy authentication lost", command: "play", event: `{"type":"auth_state","logged_in":false}`, notice: playerPairNotice},
+		{name: "targeted error", command: PlayPlaylistShuffle, event: `{"type":"error","message":"rejected"}`, notice: playerErrorNotice},
 		{name: "targeted timeout", command: PlayPlaylistShuffle, notice: playerRetryNotice, unconfirmed: true},
-		{name: "logout", command: PlayPlaylistShuffle, event: `{"type":"logout"}`, notice: playerPairNotice},
-		{name: "authentication lost", command: PlayPlaylistShuffle, event: `{"type":"auth_state","logged_in":false}`, notice: playerPairNotice},
+		{name: "targeted logout", command: PlayPlaylistShuffle, event: `{"type":"logout"}`, notice: playerPairNotice},
+		{name: "targeted authentication lost", command: PlayPlaylistShuffle, event: `{"type":"auth_state","logged_in":false}`, notice: playerPairNotice},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			var accepted atomic.Int32
 			freshAuth := make(chan struct{})
+			legacyReauth := make(chan struct{})
+			legacy := tc.command == "play"
 			server := playerTestServer(t, func(ctx context.Context, conn *websocket.Conn) {
 				socket := accepted.Add(1)
 				if socket == 2 {
@@ -376,8 +382,30 @@ func TestPlaylistShuffleReconnectsAfterUnansweredPlay(t *testing.T) {
 					return
 				}
 				if socket == 1 {
-					if !playerTestRead(t, ctx, conn, oldPlay) || tc.event != "" && !playerTestSend(t, ctx, conn, tc.event) {
+					wantPlay := oldPlay
+					if legacy {
+						wantPlay = legacyPlay
+					}
+					if !playerTestRead(t, ctx, conn, wantPlay) || tc.event != "" && !playerTestSend(t, ctx, conn, tc.event) {
 						return
+					}
+					if legacy {
+						if tc.notice == playerPairNotice {
+							select {
+							case <-legacyReauth:
+							case <-ctx.Done():
+								return
+							}
+							if !playerTestSend(t, ctx, conn, `{"type":"auth_state","logged_in":true}`) ||
+								!playerTestRead(t, ctx, conn, stateRequest) || !playerTestRead(t, ctx, conn, queueRequest) {
+								return
+							}
+						}
+						if !playerTestRead(t, ctx, conn, `{"type":"command","command":"set_volume","volume":21}`) ||
+							!playerTestSend(t, ctx, conn, `{"type":"command_result","command":"play"}`) ||
+							!playerTestSend(t, ctx, conn, `{"type":"volume_changed","volume":21}`) {
+							return
+						}
 					}
 					if _, data, err := conn.Read(ctx); err == nil || ctx.Err() != nil {
 						t.Errorf("ambiguous socket was not retired; frame %q, error %v", data, err)
@@ -399,10 +427,32 @@ func TestPlaylistShuffleReconnectsAfterUnansweredPlay(t *testing.T) {
 			defer cancel()
 			states, commands := NewStream(ctx, func() (string, error) { return dir, nil })
 			old := playerTestState(t, states, func(s State) bool { return s.Connected })
-			playerTestCommand(t, commands, Command{Name: tc.command, URI: "spotify:playlist:Old", SessionID: old.SessionID})
-			playerTestState(t, states, func(s State) bool {
-				return !s.Connected && s.Notice == tc.notice && (s.PlaylistShuffle == PlaylistShuffleUnconfirmed) == tc.unconfirmed
-			})
+			uri := "spotify:playlist:Old"
+			if legacy {
+				uri = "spotify:track:Legacy"
+			}
+			playerTestCommand(t, commands, Command{Name: tc.command, URI: uri, SessionID: old.SessionID})
+			if legacy {
+				if tc.notice == playerErrorNotice {
+					playerTestState(t, states, func(s State) bool {
+						return s.Connected && s.SessionID == old.SessionID && s.Notice == playerErrorNotice
+					})
+				} else {
+					playerTestState(t, states, func(s State) bool { return !s.Connected && s.Notice == playerPairNotice })
+					close(legacyReauth)
+					old = playerTestState(t, states, func(s State) bool { return s.Connected && s.SessionID != old.SessionID })
+				}
+				playerTestCommand(t, commands, Command{Name: "set_volume", Volume: 21, SessionID: old.SessionID})
+				playerTestState(t, states, func(s State) bool { return s.Connected && s.SessionID == old.SessionID && s.Volume == 21 })
+				playerTestCommand(t, commands, Command{Name: PlayPlaylistShuffle, URI: "spotify:playlist:Old", SessionID: old.SessionID})
+				playerTestState(t, states, func(s State) bool {
+					return !s.Connected && s.Notice == playerRetryNotice && s.PlaylistShuffle == PlaylistShuffleUnconfirmed
+				})
+			} else {
+				playerTestState(t, states, func(s State) bool {
+					return !s.Connected && s.Notice == tc.notice && (s.PlaylistShuffle == PlaylistShuffleUnconfirmed) == tc.unconfirmed
+				})
+			}
 			close(freshAuth)
 			fresh := playerTestState(t, states, func(s State) bool { return s.Connected && s.SessionID != old.SessionID })
 			playerTestCommand(t, commands, Command{Name: PlayPlaylistShuffle, URI: "spotify:playlist:Old", SessionID: old.SessionID})
