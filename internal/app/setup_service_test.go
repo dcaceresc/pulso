@@ -229,6 +229,54 @@ func TestLocalSetupStart(t *testing.T) {
 	}
 }
 
+func TestLocalSetupRestartAfterGoingBackToKey(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "resolved executable")
+	local := setupFixtureLocal(dir, binary)
+	if got, err := local.inspect(context.Background()); got != ui.SetupNeedsKey || err != nil {
+		t.Fatalf("initial inspection = %v, %v", got, err)
+	}
+	server := setupFixtureWS(t, `{"type":"auth_state","logged_in":false}`)
+	endpoint := server.Listener.Addr().String()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var launches []*exec.Cmd
+	var keys []string
+	local.command = func(path string, args ...string) *exec.Cmd {
+		if path != binary || len(args) != 8 || args[2] != "--api-key" {
+			t.Fatalf("unexpected launch: %q %q", path, args)
+		}
+		keys = append(keys, args[3])
+		child := exec.Command(self, "-test.run=^TestLocalSetupChild$", "--", "ready", dir, endpoint)
+		launches = append(launches, child)
+		t.Cleanup(func() {
+			if child.Process != nil {
+				_ = child.Process.Kill()
+			}
+		})
+		return child
+	}
+	if err := local.start(context.Background(), "first-key"); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	// Volver por una clave nueva debe reemplazar la instancia que aún corre con la
+	// anterior, incluidos los marcadores obsoletos que deja atrás.
+	if err := local.start(context.Background(), "second-key"); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if !reflect.DeepEqual(keys, []string{"first-key", "second-key"}) || len(launches) != 2 {
+		t.Fatalf("keys = %v, launches = %d; want both keys launched once", keys, len(launches))
+	}
+	if launches[0].ProcessState == nil || launches[0].ProcessState.Success() {
+		t.Fatal("the previous daemon was left running or unreaped")
+	}
+	if got, err := local.inspect(context.Background()); got != ui.SetupAwaitPairing || err != nil {
+		t.Fatalf("after restart: %v, %v", got, err)
+	}
+}
+
 func TestLocalSetupChild(t *testing.T) {
 	if len(os.Args) != 6 || os.Args[2] != "--" {
 		return
