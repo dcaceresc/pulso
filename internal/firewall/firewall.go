@@ -18,11 +18,13 @@ import (
 type Kind uint8
 
 const (
-	Inactive       Kind = iota // no se encontró un cortafuegos activo
-	Active                     // hay un cortafuegos activo
-	MDNSMissing                // el descubrimiento (UDP 5353) no está permitido
-	ServiceMissing             // el tráfico de la LAN hacia este equipo no está permitido
-	Unverifiable               // hay un cortafuegos activo pero sus reglas no se pueden leer
+	Inactive          Kind = iota // no se encontró un cortafuegos activo
+	Active                        // hay un cortafuegos activo
+	MDNSMissing                   // el descubrimiento (UDP 5353) no está permitido
+	ServiceMissing                // el tráfico de la LAN hacia este equipo no está permitido
+	Unverifiable                  // no se pudo consultar el estado o la política del cortafuegos
+	MDNSUnverified                // la política no confirma si se bloquea el descubrimiento
+	ServiceUnverified             // la política no confirma si se bloquea el puerto de Connect
 )
 
 // Backend identifica la implementación del cortafuegos.
@@ -65,10 +67,11 @@ type Runner func(ctx context.Context, name string, args ...string) ([]byte, erro
 
 // Options ajusta el diagnóstico.
 type Options struct {
-	Root   string       // raíz del sistema de archivos para las reglas; "" significa "/"
-	Runner Runner       // "" significa el ejecutor real de exec.CommandContext
-	Prefix netip.Prefix // prefijo de la LAN; si no es válido se enmascara la dirección a /24
-	Port   int          // puerto TCP de Soloist Connect cuando se conoce; 0 si no
+	Root      string       // raíz del sistema de archivos para las reglas; "" significa "/"
+	Runner    Runner       // "" significa el ejecutor real de exec.CommandContext
+	Prefix    netip.Prefix // prefijo de la LAN; si no es válido se enmascara la dirección a /24
+	Port      int          // puerto TCP de Soloist Connect cuando se conoce; 0 si no
+	LocalAddr netip.Addr   // dirección LAN exacta para identificar el perfil de Windows
 }
 
 // Inspect describe el cortafuegos del equipo y propone los comandos que faltan.

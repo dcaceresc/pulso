@@ -46,9 +46,28 @@ func setupDiagnosisKey(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
+func TestPairingDiagnosisDoesNotAssignVPNPolicyToLAN(t *testing.T) {
+	vpn := netcheck.Interface{Name: "tun0", Address: netip.MustParseAddr("10.7.0.2"), Virtual: true}
+	wifi := netcheck.Interface{Name: "Wi-Fi", Address: netip.MustParseAddr("192.168.1.11")}
+	for _, candidates := range [][]netcheck.Interface{{vpn}, {vpn, wifi}} {
+		_, err := pairingDiagnosis(t.Context(), func() (netcheck.Report, error) {
+			return netcheck.Report{LAN: vpn.Address, Candidates: candidates}, nil
+		}, func(_ context.Context, opts firewall.Options) firewall.Plan {
+			if opts.LocalAddr.IsValid() {
+				t.Fatalf("profile lookup addressed to a VPN: %v", opts.LocalAddr)
+			}
+			return firewall.Plan{}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestPairingDiagnosisUsesLANPrefix(t *testing.T) {
 	var got firewall.Options
-	report := netcheck.Report{LAN: netip.MustParseAddr("192.168.1.120")}
+	addr := netip.MustParseAddr("192.168.1.120")
+	report := netcheck.Report{LAN: addr, Candidates: []netcheck.Interface{{Name: "Ethernet", Address: addr}}}
 	plan := firewall.Plan{Backend: firewall.BackendUFW}
 	diagnosis, err := pairingDiagnosis(context.Background(),
 		func() (netcheck.Report, error) { return report, nil },
@@ -61,6 +80,9 @@ func TestPairingDiagnosisUsesLANPrefix(t *testing.T) {
 	}
 	if want := netip.MustParsePrefix("192.168.1.0/24"); got.Prefix != want {
 		t.Fatalf("prefix = %v, want %v", got.Prefix, want)
+	}
+	if got.LocalAddr != report.LAN || got.Port != 0 {
+		t.Fatalf("local address = %v, port = %d; want %v and unknown Connect port", got.LocalAddr, got.Port, report.LAN)
 	}
 	if diagnosis.Network.LAN != report.LAN || diagnosis.Firewall.Backend != firewall.BackendUFW {
 		t.Fatalf("diagnosis = %+v", diagnosis)
