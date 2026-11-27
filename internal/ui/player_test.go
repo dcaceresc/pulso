@@ -1539,7 +1539,7 @@ func TestPlayerViewFooterPairFormat(t *testing.T) {
 	for _, size := range []struct {
 		width, height int
 		footer        string
-	}{{120, 40, "full"}, {100, 30, "full"}, {80, 24, "full"}, {40, 12, "partial"}} {
+	}{{120, 40, "full"}, {100, 30, "full"}, {80, 24, "full"}, {40, 12, "absent"}} {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
 			m, _ := playerViewModel(t, size.width, size.height, playerState{Connected: true, Status: "paused"})
 			player := m.(*playerModel)
@@ -1602,11 +1602,11 @@ func TestPlayerViewFooterPairFormat(t *testing.T) {
 				}
 			}
 
-			// El pie cede sus filas al contenido: a 40x12 queda una sola fila con
-			// las primeras parejas y la caja conserva sus dos bordes.
+			// El pie cede sus filas al contenido: a 40x12 no queda ninguna fila de
+			// pie y la caja conserva sus dos bordes.
 			view := strings.Join(playerViewRows(t, m, size.width, size.height), "\n")
-			if size.footer == "partial" {
-				for _, want := range []string{"├─", "Tab focus"} {
+			if size.footer == "absent" {
+				for _, want := range []string{"├─"} {
 					if !strings.Contains(view, want) {
 						t.Fatalf("missing %q in the %dx%d frame:\n%s", want, size.width, size.height, view)
 					}
@@ -1615,9 +1615,9 @@ func TestPlayerViewFooterPairFormat(t *testing.T) {
 				if !strings.Contains(view, bottom) {
 					t.Fatalf("the %dx%d box lost its bottom border:\n%s", size.width, size.height, view)
 				}
-				for _, gone := range []string{"F2 language", "F3 theme"} {
+				for _, gone := range []string{"Tab focus", "F1 help", "q quit"} {
 					if strings.Contains(view, gone) {
-						t.Fatalf("the %dx%d frame kept the unaffordable pair %q:\n%s", size.width, size.height, gone, view)
+						t.Fatalf("the %dx%d frame kept the footer pair %q:\n%s", size.width, size.height, gone, view)
 					}
 				}
 				return

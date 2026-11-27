@@ -2034,9 +2034,10 @@ func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
 // any notice row and one content row come first. One footer row is always kept
 // so the keys stay discoverable.
 func (m *playerModel) hintBudget(width, noticeRows int) int {
-	// El cuerpo conserva sus filas: cuando la ventana no da para todo, el pie
-	// cede antes que la tabla y puede quedarse sin ninguna fila.
-	fixed := 2 + playerBoxHeight(width, m.height) + noticeRows + playerMinBodyRoom
+	// El pie solo aparece cuando el cuerpo ya tiene sus filas mínimas: en las
+	// ventanas bajas cede entero antes que la tabla, así el marco de 40×12 no
+	// cambia respecto de la línea base.
+	fixed := 2 + playerBoxHeight(width, m.height) + noticeRows + 1 + playerMinBodyRoom
 	return max(0, m.height-fixed)
 }
 
