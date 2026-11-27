@@ -54,6 +54,60 @@ If the device does not appear, check for guest Wi-Fi, client isolation or a VPN 
 
 If pairing does not advance because the key was mistyped, press `b`: the wizard returns to the key step with an empty field. Submitting the new key makes Pulso stop the Soloist instance it had started with the previous key and start it again; `Enter` only rechecks the status.
 
+### Pairing diagnostics
+
+In the pairing step the wizard diagnoses why the phone may not see the computer. Press `d: diagnostics` to open the detail and `Enter` to return to the pairing step. When the diagnosis can propose commands, the detail shows the exact ones.
+
+The diagnosis checks three things:
+
+- The address your machine uses to reach the local network.
+- The interfaces that compete for the single address Soloist announces: container bridges (Docker's, for example), VPNs and tunnels.
+- The firewall state and the rules that are missing.
+
+A bridge or a VPN breaks pairing because Soloist announces one address at startup and offers no option to pin the interface: it can advertise the bridge address instead of your LAN address, and the phone searches the wrong network. The concrete recovery is to start Pulso with that bridge absent, pair, and bring the bridge back afterwards. The advertisement stays valid until Soloist restarts.
+
+Soloist's control port is chosen at startup and changes, so a rule for one port goes stale on the next start. What is recommended is a LAN-scoped allow (for example `sudo ufw allow from 192.168.1.0/24`), which keeps working after the port changes; it is deliberately broader than a single port. On Windows the wizard adds the port it read at that moment, so the manual LAN rule below is the one that avoids repeating the work.
+
+The wizard never changes the firewall by itself: it only adds rules after a two-step confirmation, with `a: apply rules` and a second `a`. Any other key cancels the apply step, and `Esc` still quits Pulso. It never removes or replaces existing rules, and it needs no administrator rights just to inspect: when it cannot read the rules, it says so on screen instead of assuming they are fine.
+
+### Manual firewall rules
+
+They match what the wizard proposes, with one exception: on Windows the wizard adds the port it read at that start, while the rule below uses a source-network allow so you do not repeat the step. Replace `192.168.1.0/24` with your own LAN prefix. Where the wizard cannot propose a command yet (firewalld and nftables), these are the manual equivalents.
+
+**ufw (Debian, Ubuntu):** the discovery rule is already present in the default `before.rules` (`5353/udp` to `224.0.0.251`), so what is usually missing is traffic from the LAN:
+
+```sh
+sudo ufw allow from 192.168.1.0/24
+```
+
+**firewalld (Fedora, RHEL):**
+
+```sh
+sudo firewall-cmd --permanent --add-service=mdns
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" accept'
+sudo firewall-cmd --reload
+```
+
+If your firewalld version has no `mdns` service, replace the first line with `sudo firewall-cmd --permanent --add-port=5353/udp`.
+
+**nftables:**
+
+```sh
+sudo nft add rule inet filter input udp dport 5353 accept
+sudo nft add rule inet filter input ip saddr 192.168.1.0/24 accept
+```
+
+Both nftables rules are lost on reboot: write them in `/etc/nftables.conf` and reload with `sudo nft -f /etc/nftables.conf`. The table and chain names depend on your configuration; use the ones from your input chain.
+
+**Windows Defender Firewall,** in a Windows console with administrator rights:
+
+```
+netsh advfirewall firewall add rule name="Pulso (Soloist)" dir=in action=allow protocol=UDP localport=5353
+netsh advfirewall firewall add rule name="Pulso (Soloist) LAN" dir=in action=allow protocol=TCP remoteip=192.168.1.0/24
+```
+
+The first rule opens discovery and matches the one the wizard adds. The second allows TCP traffic from your LAN, which is the part that changes port on every start.
+
 ## Connecting Spotify for search and playlists
 
 Search and playlist listing use the **Spotify Web API**, a different authorization from Soloist:

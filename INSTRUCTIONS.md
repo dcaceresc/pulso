@@ -54,6 +54,60 @@ Si el dispositivo no aparece, revisa que no haya una red de invitados, aislamien
 
 Si el emparejamiento no avanza porque la clave quedó mal escrita, pulsa `b`: vuelves al paso de la clave con el campo vacío. Al enviar la nueva, Pulso detiene el Soloist que había arrancado con la clave anterior y lo inicia otra vez; `Enter` solo vuelve a comprobar el estado.
 
+### Diagnóstico del emparejamiento
+
+En el paso de emparejamiento el asistente diagnostica por qué el teléfono puede no ver el equipo. Pulsa `d: diagnóstico` para abrir el detalle y `Enter` para volver al paso de emparejamiento. Cuando el diagnóstico puede proponer comandos, el detalle muestra los exactos.
+
+El diagnóstico revisa tres cosas:
+
+- La dirección que usa tu equipo para llegar a la red local.
+- Las interfaces que compiten por la única dirección que Soloist anuncia: puentes de contenedores (los de Docker, por ejemplo), VPN y túneles.
+- El estado del cortafuegos y las reglas que faltan.
+
+Un puente o una VPN rompen el emparejamiento porque Soloist anuncia una sola dirección al arrancar y no ofrece ninguna opción para fijar la interfaz: puede anunciar la dirección del puente en lugar de la de tu red local, y el teléfono busca en la red equivocada. La recuperación concreta es arrancar Pulso con ese puente ausente, emparejar y volver a levantar el puente después. El anuncio sigue siendo válido hasta que Soloist se reinicie.
+
+El puerto de control de Soloist se elige al arrancar y cambia, así que una regla para un puerto concreto queda obsoleta en el siguiente arranque. Lo que se recomienda es un permiso acotado a la red local (por ejemplo `sudo ufw allow from 192.168.1.0/24`), que sigue sirviendo después de que cambie el puerto; es un permiso deliberadamente más amplio que un solo puerto. En Windows el asistente añade el puerto que leyó en ese momento, así que la regla manual de la red local de más abajo es la que evita repetir el trámite.
+
+El asistente nunca cambia el cortafuegos por sí solo: solo añade reglas después de una confirmación en dos pasos, con `a: aplicar reglas` y una segunda `a`. Cualquier otra tecla cancela la aplicación, y `Esc` sigue cerrando Pulso. Tampoco elimina ni reemplaza reglas existentes, y no necesita permisos de administrador solo para inspeccionar: si no puede leer las reglas, lo dice en pantalla en lugar de suponer que están bien.
+
+### Reglas manuales de cortafuegos
+
+Coinciden con lo que propone el asistente, con una excepción: en Windows el asistente añade el puerto que leyó en ese arranque, y aquí se propone un permiso por red de origen para no repetir el trámite. Sustituye `192.168.1.0/24` por el prefijo de tu red local. Donde el asistente todavía no puede proponer un comando (firewalld y nftables), estos son los equivalentes manuales.
+
+**ufw (Debian, Ubuntu):** la regla de descubrimiento ya viene en `before.rules` por defecto (`5353/udp` hacia `224.0.0.251`), así que lo que suele faltar es el tráfico desde la red local:
+
+```sh
+sudo ufw allow from 192.168.1.0/24
+```
+
+**firewalld (Fedora, RHEL):**
+
+```sh
+sudo firewall-cmd --permanent --add-service=mdns
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" accept'
+sudo firewall-cmd --reload
+```
+
+Si tu versión de firewalld no trae el servicio `mdns`, sustituye la primera línea por `sudo firewall-cmd --permanent --add-port=5353/udp`.
+
+**nftables:**
+
+```sh
+sudo nft add rule inet filter input udp dport 5353 accept
+sudo nft add rule inet filter input ip saddr 192.168.1.0/24 accept
+```
+
+Estas dos reglas se pierden al reiniciar: escríbelas en `/etc/nftables.conf` y recarga con `sudo nft -f /etc/nftables.conf`. El nombre de la tabla y de la cadena depende de tu configuración; usa los de tu cadena de entrada.
+
+**Windows Defender Firewall,** en una consola de Windows con permisos de administrador:
+
+```
+netsh advfirewall firewall add rule name="Pulso (Soloist)" dir=in action=allow protocol=UDP localport=5353
+netsh advfirewall firewall add rule name="Pulso (Soloist) LAN" dir=in action=allow protocol=TCP remoteip=192.168.1.0/24
+```
+
+La primera regla abre el descubrimiento y coincide con la que añade el asistente. La segunda permite el tráfico TCP de tu red local, que es lo que cambia de puerto en cada arranque.
+
 ## Conectar Spotify para buscar y ver listas
 
 Buscar y listar playlists usa la **Spotify Web API**, una autorización distinta del emparejamiento de Soloist:

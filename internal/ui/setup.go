@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"strings"
 	"sync"
@@ -13,6 +14,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/dcaceresc/pulso/internal/config"
+	"github.com/dcaceresc/pulso/internal/firewall"
+	"github.com/dcaceresc/pulso/internal/netcheck"
 	"github.com/dcaceresc/pulso/internal/soloist"
 	"github.com/dcaceresc/pulso/internal/spotify"
 )
@@ -53,6 +56,20 @@ type setupSpotifyRestored struct {
 	ok  bool
 }
 
+// PairingDiagnosis reúne lo que el asistente sabe del equipo durante el
+// emparejamiento: la red local y las reglas que faltan en el cortafuegos.
+type PairingDiagnosis struct {
+	Network  netcheck.Report
+	Firewall firewall.Plan
+}
+
+// SetupApplyResult informa el resultado de un comando de reglas ejecutado en la
+// terminal real. Es el mensaje que debe devolver el gancho Apply.
+type SetupApplyResult struct {
+	Argv []string
+	Err  error
+}
+
 type SetupService struct {
 	Inspect               func(context.Context) (SetupState, error)
 	Watch                 func(context.Context, func(string) bool) error
@@ -63,6 +80,15 @@ type SetupService struct {
 	Authorize             func(context.Context, string, func(string)) (CatalogAPI, error)
 	Restore               func(context.Context) (CatalogAPI, bool)
 	ClientID              string
+	// Diagnose y Apply son opcionales: sin Diagnose el paso de emparejamiento
+	// se muestra exactamente como antes y no aparece ninguna tecla nueva.
+	Diagnose func(context.Context) (PairingDiagnosis, error)
+	Apply    func(argv []string) tea.Cmd
+}
+type setupDiagnosisMsg struct {
+	attempt   uint64
+	diagnosis PairingDiagnosis
+	err       error
 }
 
 type setupPhase uint8
@@ -79,6 +105,7 @@ const (
 	setupPairing
 	setupPairingChecking
 	setupPairingStopped
+	setupPairingDetail
 	setupRestoringSpotify
 	setupDone
 	setupSpotify
@@ -115,30 +142,41 @@ func setupInstallResult(err error) setupInstalled {
 type setupStarted bool
 
 type setupModel struct {
-	ctx            context.Context
-	service        SetupService
-	phase          setupPhase
-	progress       SetupState // Last confirmed inspection, retained while rechecking.
-	installIssue   setupInstalled
-	key            []rune
-	pairing        *setupPairingSession
-	pairingDone    <-chan struct{}
-	pairingState   setupPairingStatus
-	deviceName     string
-	preferences    preferences
-	spotify        setupSpotifyState
-	spotifyURL     string
-	spotifyAPI     CatalogAPI
-	spotifyDone    bool
-	spotifyEvents  chan setupSpotifyMsg
-	spotifyAttempt uint64
-	cancelAuth     context.CancelFunc
-	clientID       []rune
-	clientIssue    bool
-	save           func(preferences) error
-	saveFailed     bool
-	width          int
-	height         int
+	ctx          context.Context
+	service      SetupService
+	phase        setupPhase
+	progress     SetupState // Last confirmed inspection, retained while rechecking.
+	installIssue setupInstalled
+	key          []rune
+	pairing      *setupPairingSession
+	pairingDone  <-chan struct{}
+	pairingState setupPairingStatus
+	deviceName   string
+	// Diagnóstico del emparejamiento. El detail manda sobre la línea resumen;
+	// applyQueue y applyFailed sobreviven a la reinspección posterior.
+	diagnosis        PairingDiagnosis
+	diagnosisErr     error
+	diagnosisAttempt uint64
+	diagnosed        bool
+	pairingReturn    setupPhase
+	confirm          bool
+	applying         bool
+	applyQueue       [][]string
+	applyFailed      [][]string
+	preferences      preferences
+	spotify          setupSpotifyState
+	spotifyURL       string
+	spotifyAPI       CatalogAPI
+	spotifyDone      bool
+	spotifyEvents    chan setupSpotifyMsg
+	spotifyAttempt   uint64
+	cancelAuth       context.CancelFunc
+	clientID         []rune
+	clientIssue      bool
+	save             func(preferences) error
+	saveFailed       bool
+	width            int
+	height           int
 }
 
 func NewSetupModel(ctx context.Context, service SetupService) tea.Model {
@@ -168,14 +206,30 @@ func (m *setupModel) beginPairing(recovering bool) tea.Cmd {
 	if recovering {
 		m.pairingState = setupPairingReconnecting
 	}
-	if m.service.Watch == nil {
+	var commands []tea.Cmd
+	if m.service.Watch != nil {
+		ctx, cancel := context.WithCancel(m.ctx)
+		session := &setupPairingSession{cancel, make(chan setupPairingUpdate), make(chan struct{})}
+		go session.run(ctx, m.pairingDone, m.service, recovering)
+		m.pairing, m.pairingDone = session, session.done
+		commands = append(commands, nextSetupPairingUpdate(session))
+	}
+	commands = append(commands, m.beginPairingDiagnosis())
+	return tea.Batch(commands...)
+}
+
+// beginPairingDiagnosis lanza la red y el cortafuegos fuera del bucle de la
+// interfaz. Sin gancho devuelve nil y la pantalla no cambia.
+func (m *setupModel) beginPairingDiagnosis() tea.Cmd {
+	if m.service.Diagnose == nil {
 		return nil
 	}
-	ctx, cancel := context.WithCancel(m.ctx)
-	session := &setupPairingSession{cancel, make(chan setupPairingUpdate), make(chan struct{})}
-	go session.run(ctx, m.pairingDone, m.service, recovering)
-	m.pairing, m.pairingDone = session, session.done
-	return nextSetupPairingUpdate(session)
+	m.diagnosisAttempt++
+	attempt, diagnose, ctx := m.diagnosisAttempt, m.service.Diagnose, m.ctx
+	return func() tea.Msg {
+		diagnosis, err := diagnose(ctx)
+		return setupDiagnosisMsg{attempt: attempt, diagnosis: diagnosis, err: err}
+	}
 }
 
 func nextSetupPairingUpdate(session *setupPairingSession) tea.Cmd {
@@ -202,6 +256,50 @@ func (m *setupModel) backToKey() {
 	m.clearKey()
 	m.pairingState, m.deviceName = setupPairingWaiting, ""
 	m.progress, m.phase = SetupNeedsKey, setupEnterKey
+}
+
+// openDiagnosis abre el detalle del diagnóstico sin ejecutar nada. Enter
+// vuelve al paso desde el que se abrió.
+func (m *setupModel) openDiagnosis() {
+	m.pairingReturn = m.phase
+	m.phase = setupPairingDetail
+	m.confirm = false
+}
+
+// beginApply encola los comandos del plan actual. Solo la segunda pulsación de
+// `a` llega aquí: la primera únicamente pide confirmación.
+func (m *setupModel) beginApply() tea.Cmd {
+	m.applyQueue = m.applyQueue[:0]
+	for _, command := range m.diagnosis.Firewall.Commands {
+		m.applyQueue = append(m.applyQueue, append([]string(nil), command.Argv...))
+	}
+	m.applyFailed = nil
+	if len(m.applyQueue) == 0 {
+		return nil
+	}
+	m.applying = true
+	return m.nextApply()
+}
+
+// nextApply ejecuta el siguiente comando de la cola y vuelve a diagnosticar al
+// terminarla, para mostrar lo que sigue faltando.
+func (m *setupModel) nextApply() tea.Cmd {
+	if len(m.applyQueue) == 0 {
+		m.applying = false
+		return m.beginPairingDiagnosis()
+	}
+	argv := m.applyQueue[0]
+	m.applyQueue = m.applyQueue[1:]
+	apply := m.service.Apply
+	if apply == nil {
+		m.applyFailed = append(m.applyFailed, argv)
+		return m.nextApply()
+	}
+	if cmd := apply(argv); cmd != nil {
+		return cmd
+	}
+	m.applyFailed = append(m.applyFailed, argv)
+	return m.nextApply()
 }
 
 func (m *setupModel) openPlayer() (tea.Model, tea.Cmd) {
@@ -338,6 +436,7 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch {
 			case setupDaemonStopped(msg.state, msg.err):
 				m.phase = setupPairingStopped
+				return m, m.beginPairingDiagnosis()
 			case msg.err == nil && msg.state == SetupReady:
 				return m.afterSoloist()
 			default:
@@ -360,17 +459,31 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case setupPairingUpdate:
-		if m.phase == setupPairing && m.pairing == msg.session {
+		// El detalle y la aplicación de reglas no cancelan el vigilante: el
+		// emparejamiento sigue funcionando igual que antes.
+		if (m.phase == setupPairing || m.phase == setupPairingDetail) && m.pairing == msg.session {
 			switch msg.status {
 			case setupPairingReady:
 				return m.afterSoloist()
 			case setupPairingDaemonStopped:
 				m.cancelPairing()
 				m.phase = setupPairingStopped
+				return m, m.beginPairingDiagnosis()
 			default:
 				m.pairingState, m.deviceName = msg.status, msg.device
 				return m, nextSetupPairingUpdate(msg.session)
 			}
+		}
+	case setupDiagnosisMsg:
+		if msg.attempt == m.diagnosisAttempt {
+			m.diagnosis, m.diagnosisErr, m.diagnosed = msg.diagnosis, msg.err, true
+		}
+	case SetupApplyResult:
+		if m.phase == setupPairingDetail && m.applying {
+			if msg.Err != nil {
+				m.applyFailed = append(m.applyFailed, append([]string(nil), msg.Argv...))
+			}
+			return m, m.nextApply()
 		}
 	case setupInstalled:
 		if m.phase == setupInstalling {
@@ -504,6 +617,37 @@ func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.backToKey()
 			return nil
 		}
+		if msg.Type == tea.KeyRunes && !msg.Paste && len(msg.Runes) == 1 &&
+			(msg.Runes[0] == 'd' || msg.Runes[0] == 'D') && m.service.Diagnose != nil {
+			m.openDiagnosis()
+			return nil
+		}
+	case setupPairingDetail:
+		if m.applying {
+			// Mientras un comando ocupa la terminal, las teclas no encolan otro.
+			return nil
+		}
+		if msg.Type == tea.KeyEnter {
+			m.confirm = false
+			m.phase = m.pairingReturn
+			if m.phase != setupPairing && m.phase != setupPairingStopped {
+				m.phase = setupPairing
+			}
+			return m.beginPairingDiagnosis()
+		}
+		apply := msg.Type == tea.KeyRunes && !msg.Paste && len(msg.Runes) == 1 &&
+			(msg.Runes[0] == 'a' || msg.Runes[0] == 'A')
+		if !apply || m.service.Apply == nil {
+			// Cualquier otra tecla cancela la confirmación y no aplica nada.
+			m.confirm = false
+			return nil
+		}
+		if !m.confirm {
+			m.confirm = true
+			return nil
+		}
+		m.confirm = false
+		return m.beginApply()
 	case setupConfirmInstall, setupInstallFailed:
 		if m.phase == setupInstallFailed && msg.Type == tea.KeyEnter {
 			return m.recheck()
@@ -543,6 +687,8 @@ func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 type setupScreen struct {
 	action, link, status, reason, device string
+	summary                              string
+	detail                               []string
 	hints                                []string
 	keyPrompt, clientPrompt              bool
 }
@@ -621,11 +767,32 @@ func (m *setupModel) screen() setupScreen {
 			screen.reason = m.text("Run pulso doctor if it does not reconnect.", "Ejecuta pulso doctor si no se reconecta.")
 		}
 		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar"), m.text("b: back to the key", "b: volver a la clave")}
+		if m.service.Diagnose != nil {
+			screen.hints = append(screen.hints, m.text("d: diagnostics", "d: diagnóstico"))
+			screen.summary = m.diagnosisSummary()
+		}
 	case setupPairingStopped:
 		screen.action = m.text("Soloist stopped. Start it again, then press Enter to recheck.",
 			"Soloist se detuvo. Inícialo de nuevo y pulsa Enter para volver a comprobar.")
 		screen.status = m.text("Soloist stopped", "Soloist detenido")
 		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar"), m.text("b: back to the key", "b: volver a la clave")}
+		if m.service.Diagnose != nil {
+			screen.hints = append(screen.hints, m.text("d: diagnostics", "d: diagnóstico"))
+			screen.summary = m.diagnosisSummary()
+		}
+	case setupPairingDetail:
+		screen.status = m.text("Pairing diagnosis", "Diagnóstico del emparejamiento")
+		screen.detail = m.diagnosisLines()
+		if m.applying {
+			screen.status = m.text("Applying firewall rules...", "Aplicando las reglas del cortafuegos...")
+		} else if m.confirm {
+			screen.hints = []string{m.text("a: confirm · any other key cancels", "a: confirmar · cualquier otra tecla cancela")}
+		} else {
+			screen.hints = []string{m.text("Enter: back", "Enter: volver")}
+			if m.service.Apply != nil {
+				screen.hints = append([]string{m.text("a: apply rules", "a: aplicar reglas")}, screen.hints...)
+			}
+		}
 	case setupDone:
 		screen.action, screen.status = m.text("Soloist is ready.", "Soloist está listo."), m.text("Setup complete", "Configuración completa")
 	case setupSpotify:
@@ -673,6 +840,108 @@ var (
 
 func (m *setupModel) text(english, spanish string) string {
 	return m.preferences.Text(english, spanish)
+}
+
+// diagnosisSummary resume el diagnóstico en una sola línea compacta. Los datos
+// deciden el texto; los paquetes no traen prosa propia.
+func (m *setupModel) diagnosisSummary() string {
+	if !m.diagnosed {
+		return ""
+	}
+	if m.diagnosisErr != nil {
+		return m.text("Network diagnosis unavailable", "Diagnóstico de red no disponible")
+	}
+	parts := []string{m.text("Net unknown", "Red desconocida")}
+	if lan := m.diagnosis.Network.LAN; lan.IsValid() {
+		parts = []string{m.text("Net ", "Red ") + lan.String()}
+	}
+	switch n := len(m.diagnosis.Network.Virtual); n {
+	case 0:
+	case 1:
+		parts = append(parts, "1 "+m.text("virtual interface", "interfaz virtual"))
+	default:
+		parts = append(parts, fmt.Sprintf("%d %s", n, m.text("virtual interfaces", "interfaces virtuales")))
+	}
+	return strings.Join(append(parts, m.firewallSummary()), " · ")
+}
+
+// firewallSummary elige el hallazgo del cortafuegos que más explica que el
+// teléfono no vea el equipo. El detalle muestra todos los hallazgos.
+func (m *setupModel) firewallSummary() string {
+	blocked := make(map[firewall.Kind]bool, len(m.diagnosis.Firewall.Findings))
+	for _, finding := range m.diagnosis.Firewall.Findings {
+		blocked[finding.Kind] = true
+	}
+	switch {
+	case blocked[firewall.ServiceMissing]:
+		return m.text("LAN blocked", "LAN bloqueada")
+	case blocked[firewall.MDNSMissing]:
+		return m.text("discovery blocked", "descubrimiento bloqueado")
+	case blocked[firewall.Unverifiable]:
+		return m.text("firewall unreadable", "cortafuegos ilegible")
+	case m.diagnosis.Firewall.Backend == firewall.BackendNone:
+		return m.text("no firewall", "sin cortafuegos")
+	default:
+		return m.text("LAN allowed", "LAN permitida")
+	}
+}
+
+// diagnosisLines enumera cada hallazgo y cada comando propuesto, uno por línea.
+func (m *setupModel) diagnosisLines() []string {
+	var lines []string
+	for _, argv := range m.applyFailed {
+		lines = append(lines, m.text("Could not apply: ", "No se pudo aplicar: ")+strings.Join(argv, " "))
+	}
+	if m.diagnosisErr != nil {
+		lines = append(lines, m.text("The diagnosis failed. Check the connection and try again.",
+			"El diagnóstico falló. Revisa la conexión e inténtalo de nuevo."))
+	}
+	network := m.diagnosis.Network
+	if network.LAN.IsValid() {
+		lines = append(lines, m.text("Network: ", "Red: ")+network.LAN.String())
+	} else {
+		lines = append(lines, m.text("Network: unknown", "Red: desconocida"))
+	}
+	for _, iface := range network.Virtual {
+		lines = append(lines, m.text("Virtual interface: ", "Interfaz virtual: ")+iface.Name+" "+iface.Address.String())
+	}
+	for _, finding := range m.diagnosis.Firewall.Findings {
+		lines = append(lines, m.findingLine(finding))
+	}
+	for _, command := range m.diagnosis.Firewall.Commands {
+		lines = append(lines, "$ "+strings.Join(command.Argv, " "))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, m.text("No problems found.", "No se encontraron problemas."))
+	}
+	return lines
+}
+
+func (m *setupModel) findingLine(f firewall.Finding) string {
+	switch f.Kind {
+	case firewall.MDNSMissing:
+		return m.text("Discovery (UDP 5353) is blocked.", "El descubrimiento (UDP 5353) está bloqueado.")
+	case firewall.ServiceMissing:
+		if f.Port != 0 {
+			return fmt.Sprintf(m.text("The LAN cannot reach TCP port %d.", "La LAN no puede alcanzar el puerto TCP %d."), f.Port)
+		}
+		return m.text("The LAN cannot reach this device.", "La LAN no puede alcanzar este dispositivo.")
+	case firewall.Unverifiable:
+		return m.text("Firewall rules cannot be read.", "No se pueden leer las reglas del cortafuegos.")
+	case firewall.Inactive:
+		return m.text("No firewall is active.", "No hay un cortafuegos activo.")
+	default:
+		return m.text("The firewall is active.", "El cortafuegos está activo.")
+	}
+}
+
+// setupDetailRows dibuja el detalle una línea por hallazgo, recortada al ancho.
+func setupDetailRows(label string, lines []string, width int) []string {
+	rows := []string{setupLabel.Render(label[:min(width, len(label))])}
+	for _, line := range lines {
+		rows = append(rows, playerFit(line, width))
+	}
+	return rows
 }
 
 func (m *setupModel) checklist() []string {
@@ -760,6 +1029,9 @@ func (m *setupModel) View() string {
 	if screen.device != "" {
 		footer = append([]string{playerFit(screen.device, width)}, footer...)
 	}
+	if screen.summary != "" {
+		footer = append(footer, playerFit(screen.summary, width))
+	}
 	themeLabel := map[string]string{"standard": "Standard", "dark": "Dark", "light": "Light"}[m.preferences.Theme]
 	hints := append([]string{}, screen.hints...)
 	if width >= 60 {
@@ -777,6 +1049,9 @@ func (m *setupModel) View() string {
 		const sidebarWidth = 25
 		actionWidth := width - sidebarWidth - 3
 		actionRows := setupActionRows(m.text("ACTION", "ACCIÓN"), screen.action, actionWidth)
+		if len(screen.detail) > 0 {
+			actionRows = setupDetailRows(m.text("DIAGNOSTICS", "DIAGNÓSTICO"), screen.detail, actionWidth)
+		}
 		checklist := append([]string{setupLabel.Render(m.text("PROGRESS", "PROGRESO"))}, steps...)
 		for i := 0; i < max(len(actionRows), len(checklist)); i++ {
 			left, right := "", ""
@@ -793,7 +1068,11 @@ func (m *setupModel) View() string {
 		if m.height >= 18 {
 			body = append(body, "")
 		}
-		body = append(body, setupActionRows(m.text("ACTION", "ACCIÓN"), screen.action, width)...)
+		if len(screen.detail) > 0 {
+			body = append(body, setupDetailRows(m.text("DIAGNOSTICS", "DIAGNÓSTICO"), screen.detail, width)...)
+		} else {
+			body = append(body, setupActionRows(m.text("ACTION", "ACCIÓN"), screen.action, width)...)
+		}
 	}
 
 	var essential []string
