@@ -553,9 +553,13 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.Type {
 	case tea.KeyF2:
+		// Cambiar idioma o tema es "cualquier otra tecla": la confirmación
+		// pendiente deja de valer, igual que en el resto del detalle.
+		m.confirm = false
 		m.changePreferences(true)
 		return nil
 	case tea.KeyF3:
+		m.confirm = false
 		m.changePreferences(false)
 		return nil
 	}
