@@ -12,6 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/dcaceresc/pulso/internal/spotify"
 )
 
 func playerViewKey(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
@@ -1159,6 +1161,9 @@ func TestPlayerViewPanelStateRows(t *testing.T) {
 				failing := func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
 					return nil, 0, false, errSpotifyCatalog
 				}
+				failingItems := func(context.Context, string, int) (spotify.PlaylistItemsPage, error) {
+					return spotify.PlaylistItemsPage{}, errSpotifyCatalog
+				}
 				m, _, _ := libraryNewPlayer(t, 120, 40, p, playerState{Connected: true}, &libraryFake{
 					playlists: func(context.Context, int) ([]libraryPlaylist, int, bool, error) {
 						return nil, 0, false, errSpotifyCatalog
@@ -1168,7 +1173,7 @@ func TestPlayerViewPanelStateRows(t *testing.T) {
 					t.Fatalf("sidebar failure row = %q", got)
 				}
 				tracks, _, _ := libraryNewPlayer(t, 120, 40, p, playerState{Connected: true}, &libraryFake{
-					playlists: libraryPlaylistsFixture(), tracks: failing,
+					playlists: libraryPlaylistsFixture(), items: failingItems,
 				}, nil, "")
 				tracks, cmd := libraryOpenFirst(t, tracks)
 				tracks = librarySettle(t, tracks, cmd)
@@ -1200,8 +1205,8 @@ func TestPlayerViewPanelStateRows(t *testing.T) {
 			})
 
 			t.Run("restricted", func(t *testing.T) {
-				source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
-					return nil, 0, false, errPlaylistUnavailable
+				source := &libraryFake{playlists: libraryPlaylistsFixture(), items: func(context.Context, string, int) (spotify.PlaylistItemsPage, error) {
+					return spotify.PlaylistItemsPage{}, errPlaylistUnavailable
 				}}
 				m, _, _ := libraryNewPlayer(t, 120, 40, p, playerState{Connected: true}, source, nil, "")
 				m, cmd := libraryOpenFirst(t, m)
@@ -1217,7 +1222,7 @@ func TestPlayerViewPanelStateRows(t *testing.T) {
 // TestPlayerViewPolishBounds renders the whole workspace at every target size
 // with a loaded library, and checks single-width glyphs and no emoji.
 func TestPlayerViewPolishBounds(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42)}
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42)}
 	m, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{
 		Connected: true, Status: "playing", Volume: 37, PositionMS: 62000, OptionsKnown: true, Shuffle: true, Repeat: "context",
 		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros", DurationMS: 381000},

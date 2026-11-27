@@ -46,18 +46,30 @@ type playerViewState struct {
 	ok    bool
 }
 
-// savePhase is the step of the save flow the chooser is showing. The panel owns
-// the keyboard while it is not idle.
+// savePhase is the step of the playlist edit flow the panel is showing. The
+// panel owns the keyboard while it is not idle.
 type savePhase uint8
 
 const (
 	saveIdle savePhase = iota
 	saveChoosing
+	// saveConfirming waits for the explicit confirmation a removal needs.
+	saveConfirming
 	// saveScopeOffered waits for the explicit approval an older read-only session
 	// needs before it can change a playlist.
 	saveScopeOffered
 	saveAuthorization
 	saveSaving
+)
+
+// saveAction is the edit the panel does on the chosen playlist: add the playing
+// track or remove one occurrence of a browsed row. The confirmation, the retry
+// and the notice wording follow it.
+type saveAction uint8
+
+const (
+	saveActionAdd saveAction = iota
+	saveActionRemove
 )
 
 // saveNotice is the outcome of the last attempt: one quiet row that never
@@ -72,11 +84,13 @@ const (
 	saveNoticeDeclined
 )
 
-// savePanel is the save-to-playlist action: the writer the catalog handed over,
-// the chooser cursor, the playlist already chosen and the last notice.
+// savePanel is the playlist edit panel: the writer the catalog handed over, the
+// edit it is doing, the chooser cursor, the playlist already chosen and the last
+// notice.
 type savePanel struct {
 	writer spotify.PlaylistWriter
 	phase  savePhase
+	action saveAction
 	cursor int
 	target libraryPlaylist
 
@@ -88,12 +102,20 @@ type savePanel struct {
 	retried bool
 	// trackURI es la pista confirmada con Enter: el reintento la conserva.
 	trackURI string
-	work     context.Context
-	cancel   context.CancelFunc
-	events   <-chan saveAuthMsg
+	// removeTrackURI, removeTrackName y removeSnapshot son la fila confirmada
+	// para quitar: la pista, su nombre visible y el snapshot de la lectura donde
+	// se eligió. Sin snapshot no hay retirada.
+	removeTrackURI, removeTrackName, removeSnapshot string
+	// reloading marca que un snapshot viejo obligó a releer la lista: mientras
+	// tanto la retirada espera el snapshot nuevo en vez de adivinar.
+	reloading bool
+	work      context.Context
+	cancel    context.CancelFunc
+	events    <-chan saveAuthMsg
 
-	notice     saveNotice
-	noticeName string
+	notice      saveNotice
+	noticeName  string
+	noticeTrack string
 }
 
 // saveResultMsg carries the answer to one save request, fenced by generation.
@@ -325,6 +347,8 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.search.source = m.library.source
 		// Una página nueva puede alargar la lista que muestra el selector.
 		m.saveTo.cursor = playerIndex(m.saveTo.cursor, len(m.library.playlists))
+		// Una lista releída tras un snapshot viejo vuelve a armar la confirmación.
+		m.reloadRemoval(msg)
 		if accepted {
 			// El catálogo aprobado también trae la mitad de escritura, si la tiene.
 			m.saveTo.writer = playlistWriterOf(auth.api)
@@ -362,8 +386,9 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.saveTo.notice = saveNoticeNone
 		}
 		m.state = msg.state
-		// Sin una pista en reproducción el selector se queda sin qué guardar.
-		if m.saveTo.phase != saveIdle && !soloist.IsTrackURI(m.state.Track.URI) {
+		// Sin una pista en reproducción el selector de guardado se queda sin qué
+		// guardar; quitar una fila de la lista abierta no depende de la reproducción.
+		if m.saveTo.phase != saveIdle && m.saveTo.action == saveActionAdd && !soloist.IsTrackURI(m.state.Track.URI) {
 			m.closeSave()
 		}
 		m.reconcileModes()
@@ -457,6 +482,8 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 		return nil
 	case "a":
 		return m.openSave()
+	case "x":
+		return m.openRemove()
 	}
 	// Shuffle, repeat and the bar's own seek keys come next; s and r reach
 	// Soloist from every panel, while the arrows stay with the playing bar.
@@ -768,15 +795,72 @@ func (m *playerModel) openSave() tea.Cmd {
 		return nil
 	}
 	m.saveTo.phase = saveChoosing
+	m.saveTo.action = saveActionAdd
 	m.saveTo.cursor = playerIndex(m.library.sidebarSelected, len(m.library.playlists))
 	m.saveTo.target = libraryPlaylist{}
 	m.saveTo.authURL = ""
-	m.saveTo.notice, m.saveTo.noticeName = saveNoticeNone, ""
+	m.saveTo.removeTrackURI, m.saveTo.removeTrackName, m.saveTo.removeSnapshot = "", "", ""
+	m.saveTo.reloading = false
+	m.saveTo.notice, m.saveTo.noticeName, m.saveTo.noticeTrack = saveNoticeNone, "", ""
 	m.saveTo.retried = false
 	if len(m.library.playlists) == 0 && m.library.notice == libraryNoticeLoadFailed {
 		return m.library.fetchPlaylists(0)
 	}
 	return nil
+}
+
+// openRemove asks to remove the highlighted row of the playlist being browsed.
+// Sin snapshot y sin URI de pista la acción no existe.
+func (m *playerModel) openRemove() tea.Cmd {
+	track, ok := m.removeRow()
+	if !ok {
+		return nil
+	}
+	m.saveTo.phase = saveConfirming
+	m.saveTo.action = saveActionRemove
+	m.saveTo.target = m.library.playlist
+	m.saveTo.removeTrackURI, m.saveTo.removeTrackName = track.URI, playerText(track.Name)
+	m.saveTo.removeSnapshot, m.saveTo.reloading = track.Snapshot, false
+	m.saveTo.authURL = ""
+	m.saveTo.notice, m.saveTo.noticeName = saveNoticeNone, ""
+	m.saveTo.noticeTrack = m.saveTo.removeTrackName
+	m.saveTo.retried = false
+	return nil
+}
+
+// removeRow is the highlighted track of the browsed playlist with the snapshot
+// of the listing it came from. Search results never carry one, so they can only
+// be played.
+func (m *playerModel) removeRow() (libraryTrack, bool) {
+	if m.library == nil || !m.library.open() || m.search.active || m.saveTo.writer == nil {
+		return libraryTrack{}, false
+	}
+	track, ok := m.library.selectedTrack()
+	if !ok || !soloist.IsTrackURI(track.URI) || track.Snapshot == "" {
+		return libraryTrack{}, false
+	}
+	return track, true
+}
+
+// removeAvailable reports whether the highlighted row can be removed right now,
+// so the footer only advertises a key that works.
+func (m *playerModel) removeAvailable() bool {
+	_, ok := m.removeRow()
+	return ok
+}
+
+// removePrompt names the track and the playlist, so the confirmation states
+// exactly what would be removed.
+func (m *playerModel) removePrompt() string {
+	return fmt.Sprintf(m.text("Remove %s from %s?", "¿Quitar %s de %s?"), m.removeTrackLabel(), m.saveTargetName())
+}
+
+// removeTrackLabel is the visible name of the track being removed.
+func (m *playerModel) removeTrackLabel() string {
+	if name := m.saveTo.removeTrackName; name != "" {
+		return name
+	}
+	return m.text("this track", "esta pista")
 }
 
 // moveSave moves the chooser cursor with the library's habits and pages in more
@@ -824,7 +908,8 @@ func (m *playerModel) saveTargetName() string {
 	return ""
 }
 
-// confirmSave chooses the playlist or starts the offered approval.
+// confirmSave chooses the playlist, confirms a removal or starts the offered
+// approval.
 func (m *playerModel) confirmSave() tea.Cmd {
 	switch m.saveTo.phase {
 	case saveChoosing:
@@ -835,6 +920,8 @@ func (m *playerModel) confirmSave() tea.Cmd {
 		m.saveTo.target = playlist
 		m.saveTo.trackURI = m.state.Track.URI
 		return m.requestSave(m.saveTo.writer, playlist)
+	case saveConfirming:
+		return m.requestRemove(m.saveTo.writer)
 	case saveScopeOffered:
 		return m.reauthorizeWrites()
 	}
@@ -862,6 +949,69 @@ func (m *playerModel) requestSave(writer spotify.PlaylistWriter, playlist librar
 		_, err := writer.AddToPlaylist(ctx, uri, trackURI)
 		return saveResultMsg{generation: generation, name: name, err: err}
 	}
+}
+
+// requestRemove asks Spotify to remove the confirmed occurrence from the
+// browsed playlist. Sin snapshot y sin URI de pista no hay petición: la retirada
+// nombra la lectura exacta donde se eligió la fila.
+func (m *playerModel) requestRemove(writer spotify.PlaylistWriter) tea.Cmd {
+	trackURI, snapshot, playlist := m.saveTo.removeTrackURI, m.saveTo.removeSnapshot, m.saveTo.target
+	if writer == nil || m.ctx.Err() != nil || playlist.URI == "" ||
+		!soloist.IsTrackURI(trackURI) || snapshot == "" {
+		return nil
+	}
+	name := m.saveTargetName()
+	m.saveTo.generation++
+	m.saveTo.phase = saveSaving
+	m.saveTo.reloading = false
+	ctx, generation := m.ctx, m.saveTo.generation
+	return func() tea.Msg {
+		if ctx.Err() != nil {
+			return nil
+		}
+		err := writer.RemoveFromPlaylist(ctx, playlist.URI, trackURI, snapshot)
+		return saveResultMsg{generation: generation, name: name, err: err}
+	}
+}
+
+// afterRemove reloads the browsed playlist so the removed row disappears.
+func (m *playerModel) afterRemove() tea.Cmd {
+	if m.library == nil || !m.library.open() {
+		return nil
+	}
+	return m.library.fetchTracks(0)
+}
+
+// reloadRemoval re-arms the confirmation with the snapshot of the page that just
+// replaced the browsed listing: un snapshot viejo se responde releyendo la lista
+// y preguntando otra vez, nunca adivinando qué aparición quitar.
+func (m *playerModel) reloadRemoval(msg tea.Msg) {
+	if m.saveTo.phase != saveConfirming || m.saveTo.action != saveActionRemove || !m.saveTo.reloading {
+		return
+	}
+	page, ok := msg.(libraryPageMsg)
+	if !ok || page.playlistPage || page.offset != 0 || m.library.loadingTracks {
+		return
+	}
+	m.saveTo.reloading = false
+	snapshot, name := "", ""
+	for _, track := range page.tracks {
+		if track.URI == m.saveTo.removeTrackURI && track.Snapshot != "" {
+			snapshot, name = track.Snapshot, playerText(track.Name)
+			break
+		}
+	}
+	if page.err != nil || snapshot == "" {
+		// La lista releída no ofrece esa fila: se informa y no se quita nada.
+		m.saveTo.phase, m.saveTo.notice = saveIdle, saveNoticeFailed
+		m.saveTo.noticeName, m.saveTo.noticeTrack = m.saveTargetName(), m.removeTrackLabel()
+		return
+	}
+	m.saveTo.removeSnapshot = snapshot
+	if name != "" {
+		m.saveTo.removeTrackName = name
+	}
+	m.saveTo.noticeTrack = m.removeTrackLabel()
 }
 
 // reauthorizeWrites repeats the approval with the write scopes the saved session
@@ -926,6 +1076,7 @@ func (m *playerModel) closeSave() {
 		m.saveTo.generation++
 	}
 	m.saveTo.work, m.saveTo.cancel, m.saveTo.events = nil, nil, nil
+	m.saveTo.reloading = false
 	m.saveTo.phase, m.saveTo.authURL = saveIdle, ""
 }
 
@@ -941,9 +1092,19 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		m.saveTo.authURL = ""
+		removing := m.saveTo.action == saveActionRemove
 		switch {
 		case msg.err == nil:
 			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeSaved, msg.name
+			if removing {
+				// La fila ya no existe: se relee la lista abierta para que desaparezca.
+				return m.afterRemove()
+			}
+		case errors.Is(msg.err, spotify.ErrPlaylistSnapshotConflict) && removing:
+			// La lista cambió desde que se leyó: se relee y se pregunta otra vez.
+			m.saveTo.phase, m.saveTo.reloading = saveConfirming, true
+			m.saveTo.removeSnapshot = ""
+			return m.library.fetchTracks(0)
 		case errors.Is(msg.err, spotify.ErrPlaylistNotEditable):
 			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeNotEditable, msg.name
 		case errors.Is(msg.err, spotify.ErrSpotifyWriteScope) && !m.saveTo.retried && m.saveTo.target.URI != "":
@@ -967,7 +1128,7 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 		m.saveTo.work, m.saveTo.cancel, m.saveTo.events, m.saveTo.authURL = nil, nil, nil, ""
 		if msg.writer == nil {
 			m.saveTo.phase, m.saveTo.notice = saveIdle, saveNoticeDeclined
-			m.saveTo.noticeName = m.saveTargetName()
+			m.saveTo.noticeName, m.saveTo.noticeTrack = m.saveTargetName(), m.removeTrackLabel()
 			return nil
 		}
 		return m.installApproved(msg.writer)
@@ -976,7 +1137,8 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 }
 
 // installApproved adopta el catálogo aprobado: la lista y la cuenta lo usan, el
-// reemplazado deja de guardar la sesión y el guardado confirmado se reintenta.
+// reemplazado deja de guardar la sesión y la edición confirmada se reintenta,
+// una sola vez y con la misma fila.
 func (m *playerModel) installApproved(writer spotify.PlaylistWriter) tea.Cmd {
 	for _, replaced := range []any{m.saveTo.writer, m.library.source} {
 		if releaser, ok := replaced.(interface{ ReleaseSession() }); ok {
@@ -984,7 +1146,15 @@ func (m *playerModel) installApproved(writer spotify.PlaylistWriter) tea.Cmd {
 		}
 	}
 	m.saveTo.writer, m.saveTo.retried = writer, true
+	removing := m.saveTo.action == saveActionRemove
 	retry := m.requestSave(writer, m.saveTo.target)
+	if removing {
+		retry = m.requestRemove(writer)
+	}
+	if retry == nil {
+		m.saveTo.phase, m.saveTo.notice = saveIdle, saveNoticeFailed
+		m.saveTo.noticeName = m.saveTargetName()
+	}
 	api, ok := writer.(CatalogAPI)
 	if !ok {
 		return retry
@@ -995,18 +1165,21 @@ func (m *playerModel) installApproved(writer spotify.PlaylistWriter) tea.Cmd {
 	return playerCommands(m.installProfile(api), retry)
 }
 
-// saveTitle names the action and the playlist that would receive the track, so
-// the target is visible before confirming.
+// saveTitle names the edit and the playlist it would change, so the target is
+// visible before confirming.
 func (m *playerModel) saveTitle() string {
 	title := m.text("Save to playlist", "Guardar en lista")
+	if m.saveTo.action == saveActionRemove {
+		title = m.text("Remove from playlist", "Quitar de la lista")
+	}
 	if name := m.saveTargetName(); name != "" {
 		title += " · " + name
 	}
 	return title
 }
 
-// saveRows renders the panel: the chooser, the offer to approve the missing
-// permission, or the wait for Spotify.
+// saveRows renders the panel: the chooser, the removal confirmation, the offer to
+// approve the missing permission, or the wait for Spotify.
 func (m *playerModel) saveRows(styles playerStyles, room int) []playerRow {
 	muted := func(text string) playerRow { return playerRow{text: text, style: styles.muted} }
 	switch m.saveTo.phase {
@@ -1016,6 +1189,12 @@ func (m *playerModel) saveRows(styles playerStyles, room int) []playerRow {
 		rows := []playerRow{muted(playerMarked(playerMarkNotice, m.text("Waiting for Spotify…", "Esperando a Spotify…")))}
 		if m.saveTo.authURL != "" {
 			rows = append(rows, playerRow{text: "  " + m.saveTo.authURL, style: styles.muted})
+		}
+		return rows
+	case saveConfirming:
+		rows := []playerRow{{text: m.removePrompt()}}
+		if m.saveTo.reloading {
+			rows = append(rows, muted(playerMarked(playerMarkNotice, m.text("Reading the playlist again…", "Leyendo la lista otra vez…"))))
 		}
 		return rows
 	case saveScopeOffered:
@@ -1052,17 +1231,34 @@ func (m *playerModel) saveRows(styles playerStyles, room int) []playerRow {
 	return rows
 }
 
-// saveNoticeText is the last outcome, named for the playlist it touched.
+// saveNoticeText is the last outcome, named for the track and the playlist it
+// touched.
 func (m *playerModel) saveNoticeText() string {
+	removed := m.saveTo.action == saveActionRemove
+	name, track := m.saveTo.noticeName, m.removeTrackLabel()
 	switch m.saveTo.notice {
 	case saveNoticeSaved:
-		return fmt.Sprintf(m.text("Saved to %s.", "Guardada en %s."), m.saveTo.noticeName)
+		if removed {
+			return fmt.Sprintf(m.text("Removed %s from %s.", "Se quitó %s de %s."), track, name)
+		}
+		return fmt.Sprintf(m.text("Saved to %s.", "Guardada en %s."), name)
 	case saveNoticeFailed:
-		return fmt.Sprintf(m.text("Could not save to %s.", "No se pudo guardar en %s."), m.saveTo.noticeName)
+		if removed {
+			return fmt.Sprintf(m.text("Could not remove %s from %s.", "No se pudo quitar %s de %s."), track, name)
+		}
+		return fmt.Sprintf(m.text("Could not save to %s.", "No se pudo guardar en %s."), name)
 	case saveNoticeNotEditable:
+		if removed {
+			return fmt.Sprintf(m.text("Could not remove %s from %s: this account cannot change that playlist.",
+				"No se pudo quitar %s de %s: esta cuenta no puede cambiar esa lista."), track, name)
+		}
 		return fmt.Sprintf(m.text("Could not save to %s: this account cannot change that playlist.",
-			"No se pudo guardar en %s: esta cuenta no puede cambiar esa lista."), m.saveTo.noticeName)
+			"No se pudo guardar en %s: esta cuenta no puede cambiar esa lista."), name)
 	case saveNoticeDeclined:
+		if removed {
+			return m.text("Spotify authorization did not complete; nothing was removed.",
+				"La autorización de Spotify no se completó; no se quitó nada.")
+		}
 		return m.text("Spotify authorization did not complete; nothing was saved.",
 			"La autorización de Spotify no se completó; no se guardó nada.")
 	}
@@ -1644,6 +1840,8 @@ func (m *playerModel) hintPairs() []playerHint {
 			hints = append(hints,
 				playerHint{"↑↓/jk", m.text("playlist", "lista")},
 				playerHint{"Enter", m.text("save", "guardar")})
+		case saveConfirming:
+			hints = append(hints, playerHint{"Enter", m.text("remove", "quitar")})
 		case saveScopeOffered:
 			hints = append(hints, playerHint{"Enter", m.text("authorize", "autorizar")})
 		}
@@ -1685,6 +1883,9 @@ func (m *playerModel) hintPairs() []playerHint {
 	}
 	if m.saveAvailable() {
 		hints = append(hints, playerHint{"a", m.text("save", "guardar")})
+	}
+	if m.removeAvailable() {
+		hints = append(hints, playerHint{"x", m.text("remove", "quitar")})
 	}
 	if m.playlistShuffleURI() != "" {
 		hints = append(hints, playerHint{"S", m.text("shuffle-list", "mezclar-lista")})

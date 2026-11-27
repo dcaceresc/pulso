@@ -150,11 +150,13 @@ func (c *Catalog) Profile(ctx context.Context) (string, error) {
 }
 
 // PlaylistWriter es la mitad de escritura que el reproductor necesita: guardar
-// la pista que suena y, cuando Spotify avisa de que falta el permiso, pedirlo
-// otra vez con el mismo enlace de autorización que ya se muestra. *Catalog la
-// implementa.
+// la pista que suena, quitar una aparición concreta de una lista y, cuando
+// Spotify avisa de que falta el permiso, pedirlo otra vez con el mismo enlace de
+// autorización que ya se muestra. *Catalog la implementa, así que quitar está
+// disponible donde está guardar.
 type PlaylistWriter interface {
 	AddToPlaylist(ctx context.Context, playlistURI, trackURI string) (string, error)
+	RemoveFromPlaylist(ctx context.Context, playlistURI, trackURI, snapshot string) error
 	ReauthorizeWrites(ctx context.Context, showURL func(string)) (PlaylistWriter, error)
 }
 

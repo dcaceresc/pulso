@@ -22,24 +22,31 @@ type saveCall struct {
 	playlistURI, trackURI string
 }
 
+// removeCall es una retirada que llegó al catálogo ficticio de escritura.
+type removeCall struct {
+	playlistURI, trackURI, snapshot string
+}
+
 // saveFake es el catálogo escribible de las pruebas: pagina listas como la
-// biblioteca, registra cada guardado y puede conceder el permiso una vez, para
-// que cada paso del flujo sea observable sin red.
+// biblioteca, registra cada guardado y cada retirada, y puede conceder el
+// permiso una vez, para que cada paso del flujo sea observable sin red.
 type saveFake struct {
 	*libraryFake
-	mu     sync.Mutex
-	calls  []saveCall
-	add    func(call int, playlistURI, trackURI string) (string, error)
-	grant  func(showURL func(string)) (spotify.PlaylistWriter, error)
-	links  []string
-	grants int
+	mu      sync.Mutex
+	calls   []saveCall
+	removes []removeCall
+	add     func(call int, playlistURI, trackURI string) (string, error)
+	remove  func(call int, playlistURI, trackURI, snapshot string) error
+	grant   func(showURL func(string)) (spotify.PlaylistWriter, error)
+	links   []string
+	grants  int
 
 	account  string
 	released bool
 }
 
 func newSaveFake(playlists func(context.Context, int) ([]libraryPlaylist, int, bool, error)) *saveFake {
-	return &saveFake{libraryFake: &libraryFake{playlists: playlists, tracks: libraryTracksFixture(2)}}
+	return &saveFake{libraryFake: &libraryFake{playlists: playlists, items: libraryTracksFixture(2)}}
 }
 
 func (f *saveFake) AddToPlaylist(_ context.Context, playlistURI, trackURI string) (string, error) {
@@ -73,6 +80,24 @@ func (f *saveFake) saved() []saveCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]saveCall(nil), f.calls...)
+}
+
+// RemoveFromPlaylist registra la retirada con el snapshot que la nombró.
+func (f *saveFake) RemoveFromPlaylist(_ context.Context, playlistURI, trackURI, snapshot string) error {
+	f.mu.Lock()
+	f.removes = append(f.removes, removeCall{playlistURI: playlistURI, trackURI: trackURI, snapshot: snapshot})
+	call, remove := len(f.removes), f.remove
+	f.mu.Unlock()
+	if remove == nil {
+		return nil
+	}
+	return remove(call, playlistURI, trackURI, snapshot)
+}
+
+func (f *saveFake) removed() []removeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]removeCall(nil), f.removes...)
 }
 
 // Profile responde como la cuenta de este catálogo y deja ver cuál la sirve.

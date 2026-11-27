@@ -45,6 +45,7 @@ func (m *playerModel) helpSections() []helpSection {
 			{"Enter", m.text("open the playlist", "abrir la lista")},
 			{"p", m.text("play the playlist", "reproducir la lista")},
 			{"S", m.text("shuffle the selected or open playlist", "reproducir al azar la lista seleccionada o abierta")},
+			{"x", m.text("remove the highlighted track from the open playlist", "quitar la pista marcada de la lista abierta")},
 		}},
 		{m.text("Search", "Búsqueda"), []helpEntry{
 			{"/", m.text("search", "buscar")},

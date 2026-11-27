@@ -8,10 +8,15 @@ import (
 )
 
 // Track es una fila reproducible de una página de lista o de búsqueda.
+// Snapshot es el snapshot de la página de elementos que produjo la fila: una
+// retirada lo nombra para no borrar sobre una lista que cambió. Solo la lectura
+// que arma la tabla de una lista abierta lo completa; una búsqueda lo deja vacío
+// y por eso no se puede quitar desde ahí.
 type Track struct {
 	Name, Artist string
 	DurationMS   int64
 	URI          string
+	Snapshot     string
 }
 
 // Playlist es una fila de la barra lateral; Total es el número de pistas de la

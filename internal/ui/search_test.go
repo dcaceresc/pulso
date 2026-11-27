@@ -47,7 +47,7 @@ func searchSubmit(t *testing.T, m tea.Model, query string) tea.Model {
 }
 
 func TestSearchFirstPageReplacesTable(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42), search: searchTracksFixture(42)}
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42), search: searchTracksFixture(42)}
 	m, out := searchWorkspace(t, preferences{}, playerState{Connected: true, SessionID: 7}, source)
 	m, cmd := libraryOpenFirst(t, m)
 	m = librarySettle(t, m, cmd)
@@ -78,7 +78,7 @@ func TestSearchFirstPageReplacesTable(t *testing.T) {
 }
 
 func TestSearchSecondPageLoadsPastCursor(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42), search: searchTracksFixture(42)}
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42), search: searchTracksFixture(42)}
 	m, _ := searchWorkspace(t, preferences{}, playerState{Connected: true, SessionID: 3}, source)
 	m = searchSubmit(t, m, "tren")
 	playerViewText(t, m, ">1 Tren al Sur")
@@ -98,7 +98,7 @@ func TestSearchSecondPageLoadsPastCursor(t *testing.T) {
 }
 
 func TestSearchEnterPlaysTheBoundSession(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42), search: searchTracksFixture(42)}
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42), search: searchTracksFixture(42)}
 	m, out := searchWorkspace(t, preferences{}, playerState{Connected: true, SessionID: 21}, source)
 	m = searchSubmit(t, m, "tren")
 	m, _ = m.Update(playerViewKey("j"))
@@ -118,7 +118,7 @@ func TestSearchEnterPlaysTheBoundSession(t *testing.T) {
 }
 
 func TestSearchSendsNothingWhenDisconnected(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42), search: searchTracksFixture(42)}
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42), search: searchTracksFixture(42)}
 	m, out := searchWorkspace(t, preferences{}, playerState{SessionID: 4}, source)
 	m = searchSubmit(t, m, "tren")
 	// The results still load while Soloist is away.
@@ -130,7 +130,7 @@ func TestSearchSendsNothingWhenDisconnected(t *testing.T) {
 }
 
 func TestSearchEscapeRestoresThePlaylistTable(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42), search: searchTracksFixture(42)}
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42), search: searchTracksFixture(42)}
 	m, _ := searchWorkspace(t, preferences{}, playerState{Connected: true, SessionID: 7}, source)
 	m, cmd := libraryOpenFirst(t, m)
 	m = librarySettle(t, m, cmd)
@@ -324,7 +324,7 @@ func TestSearchFieldReachableFromEveryPanel(t *testing.T) {
 }
 
 func TestSearchBounds(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42), search: searchTracksFixture(42)}
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42), search: searchTracksFixture(42)}
 	m, _ := searchWorkspace(t, preferences{}, playerState{
 		Connected: true, Status: "playing", Volume: 37, PositionMS: 62000,
 		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros", DurationMS: 381000},

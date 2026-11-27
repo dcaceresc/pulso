@@ -44,7 +44,7 @@ type libraryFake struct {
 	searchCalls   []int
 	searchQueries []string
 	playlists     func(context.Context, int) ([]libraryPlaylist, int, bool, error)
-	tracks        func(context.Context, string, int) ([]libraryTrack, int, bool, error)
+	items         func(context.Context, string, int) (spotify.PlaylistItemsPage, error)
 	search        func(context.Context, string, int) ([]libraryTrack, int, bool, error)
 }
 
@@ -58,15 +58,17 @@ func (f *libraryFake) PlaylistPage(ctx context.Context, offset int) ([]libraryPl
 	return f.playlists(ctx, offset)
 }
 
-func (f *libraryFake) TrackPage(ctx context.Context, uri string, offset int) ([]libraryTrack, int, bool, error) {
+// PlaylistItems sirve una página de la lista abierta con el snapshot de la
+// lectura que la produjo, igual que la fuente real.
+func (f *libraryFake) PlaylistItems(ctx context.Context, uri string, offset int) (spotify.PlaylistItemsPage, error) {
 	f.mu.Lock()
 	f.trackCalls = append(f.trackCalls, offset)
 	f.trackURIs = append(f.trackURIs, uri)
 	f.mu.Unlock()
-	if f.tracks == nil {
-		return nil, 0, false, nil
+	if f.items == nil {
+		return spotify.PlaylistItemsPage{}, nil
 	}
-	return f.tracks(ctx, uri, offset)
+	return f.items(ctx, uri, offset)
 }
 
 // SearchPage records one search request per call, so a test can prove the
@@ -129,14 +131,26 @@ func libraryTracksFor(uri string) []libraryTrack {
 	}
 }
 
+// librarySnapshotFor is the listing snapshot each fixture page reports, so a
+// removal names the page it was chosen from.
+func librarySnapshotFor(uri string) string {
+	if uri == "spotify:playlist:jazz" {
+		return "snapshot-jazz"
+	}
+	return "snapshot-rock"
+}
+
 // libraryTracksFixture serves one page and then a second one at the shared page
 // size, so paging past the loaded rows reaches a real request.
-func libraryTracksFixture(total int) func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
-	return func(_ context.Context, uri string, offset int) ([]libraryTrack, int, bool, error) {
+func libraryTracksFixture(total int) func(context.Context, string, int) (spotify.PlaylistItemsPage, error) {
+	return func(_ context.Context, uri string, offset int) (spotify.PlaylistItemsPage, error) {
 		if offset == 0 {
-			return libraryTracksFor(uri), total, true, nil
+			return spotify.PlaylistItemsPage{Tracks: libraryTracksFor(uri), Total: total, More: true, Snapshot: librarySnapshotFor(uri)}, nil
 		}
-		return []libraryTrack{{Name: "Página dos", Artist: "Artista", DurationMS: 200000, URI: "spotify:track:page2"}}, total, false, nil
+		return spotify.PlaylistItemsPage{
+			Tracks: []libraryTrack{{Name: "Página dos", Artist: "Artista", DurationMS: 200000, URI: "spotify:track:page2"}},
+			Total:  total,
+		}, nil
 	}
 }
 
@@ -258,8 +272,8 @@ func TestLibrarySidebarDropsOwnerWhenNarrow(t *testing.T) {
 }
 
 func TestLibraryPlaylistSelectionLoadsTracks(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(_ context.Context, uri string, offset int) ([]libraryTrack, int, bool, error) {
-		return libraryTracksFor(uri), 42, false, nil
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: func(_ context.Context, uri string, offset int) (spotify.PlaylistItemsPage, error) {
+		return spotify.PlaylistItemsPage{Tracks: libraryTracksFor(uri), Total: 42, Snapshot: librarySnapshotFor(uri)}, nil
 	}}
 	m, out, _ := libraryNewPlayer(t, 120, 40, preferences{Language: "es", Theme: "standard"}, playerState{Connected: true, SessionID: 9}, source, nil, "")
 	m, cmd := libraryOpenFirst(t, m)
@@ -282,7 +296,7 @@ func TestLibraryPlaylistSelectionLoadsTracks(t *testing.T) {
 }
 
 func TestLibraryPagesPastLoadedRows(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42)}
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42)}
 	m, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true, SessionID: 3}, source, nil, "")
 	m, cmd := libraryOpenFirst(t, m)
 	m = librarySettle(t, m, cmd)
@@ -312,8 +326,8 @@ func TestLibraryRestrictedPlaylist(t *testing.T) {
 		{"spanish", preferences{Language: "es"}, []string{"no disponible", "p:"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
-				return nil, 0, false, errPlaylistUnavailable
+			source := &libraryFake{playlists: libraryPlaylistsFixture(), items: func(context.Context, string, int) (spotify.PlaylistItemsPage, error) {
+				return spotify.PlaylistItemsPage{}, errPlaylistUnavailable
 			}}
 			m, out, _ := libraryNewPlayer(t, 120, 40, tt.p, playerState{Connected: true, SessionID: 11}, source, nil, "")
 			m, cmd := libraryOpenFirst(t, m)
@@ -339,8 +353,8 @@ func TestLibraryRestrictedPlaylist(t *testing.T) {
 }
 
 func TestLibraryPlaysPlaylistAndTrackForSession(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(_ context.Context, uri string, offset int) ([]libraryTrack, int, bool, error) {
-		return libraryTracksFor(uri), 42, false, nil
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: func(_ context.Context, uri string, offset int) (spotify.PlaylistItemsPage, error) {
+		return spotify.PlaylistItemsPage{Tracks: libraryTracksFor(uri), Total: 42, Snapshot: librarySnapshotFor(uri)}, nil
 	}}
 	m, out, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true, SessionID: 21}, source, nil, "")
 
@@ -372,8 +386,8 @@ func TestLibraryPlaysPlaylistAndTrackForSession(t *testing.T) {
 }
 
 func TestPlaylistShuffleShortcutAndExistingBindings(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
-		return nil, 0, false, errPlaylistUnavailable
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: func(context.Context, string, int) (spotify.PlaylistItemsPage, error) {
+		return spotify.PlaylistItemsPage{}, errPlaylistUnavailable
 	}}
 	m, out, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true, SessionID: 21}, source, nil, "")
 	check := func(key string, want ...playerCommand) {
@@ -411,15 +425,15 @@ func TestPlaylistShuffleShortcutAndExistingBindings(t *testing.T) {
 }
 
 func TestLibraryKeepsQueueWhenNoPlaylistOpen(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42)}
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42)}
 	queue := []playerTrack{{Title: "Queued Song", Artist: "Queued Artist", DurationMS: 100000}}
 	m, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true, SessionID: 5, Queue: queue}, source, nil, "")
 	playerViewText(t, m, "Queued Song", "Queued Artist", "1:40", "Rock Chileno")
 }
 
 func TestLibrarySendsNothingWhenDisconnected(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(_ context.Context, uri string, offset int) ([]libraryTrack, int, bool, error) {
-		return libraryTracksFor(uri), 42, false, nil
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: func(_ context.Context, uri string, offset int) (spotify.PlaylistItemsPage, error) {
+		return spotify.PlaylistItemsPage{Tracks: libraryTracksFor(uri), Total: 42, Snapshot: librarySnapshotFor(uri)}, nil
 	}}
 	m, out, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{SessionID: 4}, source, nil, "")
 	m = libraryFocusSidebar(t, m)
@@ -439,7 +453,7 @@ func TestLibrarySendsNothingWhenDisconnected(t *testing.T) {
 
 func TestLibraryAuthorizeOnDemand(t *testing.T) {
 	const url = "https://accounts.spotify.com/authorize?client_id=fixture-client&response_type=code"
-	fake := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42)}
+	fake := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42)}
 	requested := make(chan string, 1)
 	authorize := func(_ context.Context, clientID string, showURL func(string)) (CatalogAPI, error) {
 		requested <- clientID
@@ -547,8 +561,8 @@ func TestLibraryAuthorizeFailureKeepsPlayback(t *testing.T) {
 }
 
 func TestLibraryStaleGenerationDropped(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(_ context.Context, uri string, offset int) ([]libraryTrack, int, bool, error) {
-		return libraryTracksFor(uri), 1, false, nil
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: func(_ context.Context, uri string, offset int) (spotify.PlaylistItemsPage, error) {
+		return spotify.PlaylistItemsPage{Tracks: libraryTracksFor(uri), Total: 1, Snapshot: librarySnapshotFor(uri)}, nil
 	}}
 	m, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true, SessionID: 5}, source, nil, "")
 	m, stale := libraryOpenFirst(t, m)
@@ -574,10 +588,10 @@ func TestLibraryStaleGenerationDropped(t *testing.T) {
 
 func TestLibraryFetchCancelsWithTheModel(t *testing.T) {
 	blocked := make(chan struct{})
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(ctx context.Context, _ string, _ int) ([]libraryTrack, int, bool, error) {
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: func(ctx context.Context, _ string, _ int) (spotify.PlaylistItemsPage, error) {
 		close(blocked)
 		<-ctx.Done()
-		return nil, 0, false, ctx.Err()
+		return spotify.PlaylistItemsPage{}, ctx.Err()
 	}}
 	m, _, cancel := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true, SessionID: 1}, source, nil, "")
 	m, cmd := libraryOpenFirst(t, m)
@@ -601,8 +615,8 @@ func TestLibraryFetchCancelsWithTheModel(t *testing.T) {
 }
 
 func TestLibraryStatesAreNeverBlank(t *testing.T) {
-	failingTracks := func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
-		return nil, 0, false, errSpotifyCatalog
+	failingTracks := func(context.Context, string, int) (spotify.PlaylistItemsPage, error) {
+		return spotify.PlaylistItemsPage{}, errSpotifyCatalog
 	}
 	cases := []struct {
 		name             string
@@ -619,11 +633,11 @@ func TestLibraryStatesAreNeverBlank(t *testing.T) {
 		{"playlists failed", preferences{}, &libraryFake{playlists: func(context.Context, int) ([]libraryPlaylist, int, bool, error) {
 			return nil, 0, false, errSpotifyCatalog
 		}}, false, true, false, "Could not load Spotify data"},
-		{"tracks empty", preferences{}, &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
-			return nil, 0, false, nil
+		{"tracks empty", preferences{}, &libraryFake{playlists: libraryPlaylistsFixture(), items: func(context.Context, string, int) (spotify.PlaylistItemsPage, error) {
+			return spotify.PlaylistItemsPage{}, nil
 		}}, true, true, true, "Nothing here yet"},
-		{"tracks failed", preferences{Language: "es"}, &libraryFake{playlists: libraryPlaylistsFixture(), tracks: failingTracks}, true, true, true, "No se pudieron cargar los datos de Spotify"},
-		{"tracks loading", preferences{}, &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksForProbe}, true, true, false, "Loading"},
+		{"tracks failed", preferences{Language: "es"}, &libraryFake{playlists: libraryPlaylistsFixture(), items: failingTracks}, true, true, true, "No se pudieron cargar los datos de Spotify"},
+		{"tracks loading", preferences{}, &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksForProbe}, true, true, false, "Loading"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -645,8 +659,8 @@ func TestLibraryStatesAreNeverBlank(t *testing.T) {
 	}
 }
 
-func libraryTracksForProbe(_ context.Context, uri string, _ int) ([]libraryTrack, int, bool, error) {
-	return libraryTracksFor(uri), 42, true, nil
+func libraryTracksForProbe(_ context.Context, uri string, _ int) (spotify.PlaylistItemsPage, error) {
+	return spotify.PlaylistItemsPage{Tracks: libraryTracksFor(uri), Total: 42, More: true, Snapshot: librarySnapshotFor(uri)}, nil
 }
 
 func TestLibraryUsesTheAuthorizedCatalog(t *testing.T) {
@@ -680,7 +694,7 @@ func TestLibraryUsesTheAuthorizedCatalog(t *testing.T) {
 }
 
 func TestLibraryBounds(t *testing.T) {
-	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42)}
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42)}
 	m, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{
 		Connected: true, Status: "playing", Volume: 37, PositionMS: 62000,
 		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros", DurationMS: 381000},
