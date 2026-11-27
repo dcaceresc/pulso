@@ -9,6 +9,14 @@ import (
 	"testing"
 )
 
+func TestAdditiveOnlyNoFirewallKeepsEmptyPlan(t *testing.T) {
+	var calls []probeUnix
+	plan := Inspect(context.Background(), Options{Root: t.TempDir(), Runner: probeRunner(&calls, nil)})
+	if plan.Backend != BackendNone || len(plan.Commands) != 0 {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
 func TestUFWActiveWithMDNSAllowed(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, ufwBeforeRules, "*filter\n-A ufw-before-input -p udp -d 224.0.0.251 --dport 5353 -j ACCEPT\nCOMMIT\n")

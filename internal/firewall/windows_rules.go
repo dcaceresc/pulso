@@ -2,72 +2,77 @@ package firewall
 
 import (
 	"context"
-	"strconv"
 	"strings"
 )
 
-const (
-	// windowsProfilesScript imprime una línea "perfil=estado" por perfil.
-	windowsProfilesScript = "Get-NetFirewallProfile | ForEach-Object { $_.Name + '=' + $_.Enabled }"
-	windowsRuleName       = "Pulso (Soloist)"
-)
+// La dirección se proporciona como IPv4 validada. ActiveStore contiene la
+// política resultante, no solo las preferencias locales del administrador.
+const windowsPolicyScript = `
+$ErrorActionPreference = 'Stop'
+$ip = '%s'
+$interfaces = @(Get-NetIPAddress -AddressFamily IPv4 -IPAddress $ip)
+if ($interfaces.Count -ne 1) { return }
+$nic = $interfaces[0]
+if (-not $nic.InterfaceAlias -or -not $nic.InterfaceIndex) { return }
+$networks = @(Get-NetConnectionProfile -InterfaceIndex $nic.InterfaceIndex)
+if ($networks.Count -ne 1) { return }
+switch ([string]$networks[0].NetworkCategory) {
+    'DomainAuthenticated' { $name = 'Domain' }
+    'Private' { $name = 'Private' }
+    'Public' { $name = 'Public' }
+    default { return }
+}
+$profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore -Name $name)
+if ($profiles.Count -ne 1) { return }
+$profile = $profiles[0]
+switch ([string]$profile.Enabled) {
+    'False' { 'inactive'; return }
+    'True' {}
+    default { return }
+}
+foreach ($alias in $profile.DisabledInterfaceAliases) {
+    if ($alias -eq 'NotConfigured') { continue }
+    if ($nic.InterfaceAlias -eq $alias) { 'inactive'; return }
+    if ($nic.InterfaceAlias -like $alias) { return }
+}
+if ([string]$profile.AllowInboundRules -eq 'False' -and
+    [string]$profile.DefaultInboundAction -eq 'Block' -and
+    $null -ne $profile.DisabledInterfaceAliases) {
+    'inbound-blocked'; return
+}
+'active'
+`
 
-// inspectWindows consulta los perfiles del Firewall de Defender. Vive sin
-// etiqueta de compilación para que la suite pueda ejercitarlo con un Runner
-// inyectado desde cualquier sistema, sin ejecutar nada real.
+// Solo un bloqueo general de tráfico entrante no solicitado permite concluir
+// sin conocer las reglas de cada aplicación. Una excepción nueva no lo elude.
 func inspectWindows(ctx context.Context, opts Options) Plan {
-	out, err := opts.Runner(ctx, "powershell", "-NoProfile", "-Command", windowsProfilesScript)
-	if err != nil {
-		return unverifiablePlan(BackendWindows, "")
+	var state string
+	if opts.LocalAddr.Is4() {
+		script := strings.Replace(windowsPolicyScript, "%s", opts.LocalAddr.String(), 1)
+		out, err := opts.Runner(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+		if err == nil {
+			state = strings.TrimSpace(string(out))
+		}
 	}
-	enabled, known := parseWindowsProfiles(out)
-	if !known {
-		return unverifiablePlan(BackendWindows, "")
+	status, udp, tcp := Unverifiable, MDNSUnverified, ServiceUnverified
+	port := opts.Port
+	if port < 1 || port > 65535 {
+		port = 0
 	}
-	if !enabled {
-		return inactivePlan()
+	switch state {
+	case "inactive":
+		status = Inactive
+	case "active":
+		status = Active
+	case "inbound-blocked":
+		status, udp = Active, MDNSMissing
+		if port != 0 {
+			tcp = ServiceMissing
+		}
 	}
-
-	plan := Plan{Backend: BackendWindows, Findings: []Finding{
-		{Kind: Active, Backend: BackendWindows},
-		{Kind: MDNSMissing, Backend: BackendWindows, Port: 5353, Path: windowsRuleName},
-		{Kind: ServiceMissing, Backend: BackendWindows, Port: opts.Port, Path: windowsRuleName},
+	return Plan{Backend: BackendWindows, Findings: []Finding{
+		{Kind: status, Backend: BackendWindows},
+		{Kind: udp, Backend: BackendWindows, Port: 5353},
+		{Kind: tcp, Backend: BackendWindows, Port: port},
 	}}
-	plan.addCommand(MDNSMissing, netshRule("UDP", 5353)...)
-	if opts.Port > 0 {
-		plan.addCommand(ServiceMissing, netshRule("TCP", opts.Port)...)
-	}
-	return plan
-}
-
-// parseWindowsProfiles interpreta las líneas "perfil=True|False". known es
-// falso cuando ninguna línea trae un estado reconocible.
-func parseWindowsProfiles(data []byte) (enabled, known bool) {
-	for _, line := range splitLines(data) {
-		_, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		switch strings.ToLower(strings.TrimSpace(value)) {
-		case "true", "1", "yes", "enabled":
-			enabled = true
-			known = true
-		case "false", "0", "no", "disabled":
-			known = true
-		}
-	}
-	return enabled, known
-}
-
-// netshRule arma una regla entrante que solo añade una excepción. El nombre con
-// espacios y paréntesis viaja como un único argumento, sin comillas de shell.
-func netshRule(protocol string, port int) []string {
-	return []string{
-		"netsh", "advfirewall", "firewall", "add", "rule",
-		"name=" + windowsRuleName,
-		"dir=in",
-		"action=allow",
-		"protocol=" + protocol,
-		"localport=" + strconv.Itoa(port),
-	}
 }

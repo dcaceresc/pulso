@@ -235,8 +235,12 @@ const (
 func pairingLevelOf(d PairingDiagnosis, err error) pairingLevel {
 	for _, finding := range d.Firewall.Findings {
 		switch finding.Kind {
-		case firewall.MDNSMissing, firewall.ServiceMissing, firewall.Unverifiable:
+		case firewall.MDNSMissing, firewall.ServiceMissing:
 			return pairingBlocked
+		case firewall.Unverifiable:
+			if d.Firewall.Backend != firewall.BackendWindows {
+				return pairingBlocked
+			}
 		}
 	}
 	if err != nil || d.Network.Ambiguous() || len(d.Network.Virtual) > 0 {
@@ -962,6 +966,16 @@ func (m *setupModel) firewallSummary() string {
 	for _, finding := range m.diagnosis.Firewall.Findings {
 		blocked[finding.Kind] = true
 	}
+	if m.diagnosis.Firewall.Backend == firewall.BackendWindows {
+		switch {
+		case blocked[firewall.MDNSMissing] || blocked[firewall.ServiceMissing]:
+			return m.text("inbound blocked by policy", "entrada bloqueada por la política")
+		case blocked[firewall.Inactive]:
+			return m.text("firewall off on LAN", "cortafuegos inactivo en la LAN")
+		default:
+			return m.text("firewall check inconclusive", "cortafuegos sin verificar")
+		}
+	}
 	switch {
 	case blocked[firewall.ServiceMissing]:
 		return m.text("LAN blocked", "LAN bloqueada")
@@ -1027,6 +1041,27 @@ func (m *setupModel) diagnosisProblems() bool {
 }
 
 func (m *setupModel) findingLine(f firewall.Finding) string {
+	if f.Backend == firewall.BackendWindows {
+		switch f.Kind {
+		case firewall.Active:
+			return m.text("Firewall active on the LAN interface.", "Cortafuegos activo en la interfaz LAN.")
+		case firewall.Inactive:
+			return m.text("Firewall inactive on the LAN interface.", "Cortafuegos inactivo en la interfaz LAN.")
+		case firewall.Unverifiable:
+			return m.text("LAN firewall policy could not be determined.", "No se pudo determinar la política del cortafuegos en la LAN.")
+		case firewall.MDNSMissing:
+			return m.text("Policy blocks inbound discovery (UDP 5353).", "La política bloquea el descubrimiento entrante (UDP 5353).")
+		case firewall.ServiceMissing:
+			return fmt.Sprintf(m.text("Policy blocks inbound TCP %d.", "La política bloquea el tráfico entrante TCP %d."), f.Port)
+		case firewall.MDNSUnverified:
+			return m.text("Discovery (UDP 5353): not verified.", "Descubrimiento (UDP 5353): no verificado.")
+		case firewall.ServiceUnverified:
+			if f.Port == 0 {
+				return m.text("TCP: not verified (Connect port unknown).", "TCP: no verificado (puerto de Connect desconocido).")
+			}
+			return fmt.Sprintf(m.text("TCP %d: not verified.", "TCP %d: no verificado."), f.Port)
+		}
+	}
 	switch f.Kind {
 	case firewall.MDNSMissing:
 		return m.text("Discovery (UDP 5353) is blocked.", "El descubrimiento (UDP 5353) está bloqueado.")

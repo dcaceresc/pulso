@@ -129,6 +129,46 @@ func TestSetupPairingDetailListsFindingsAndCommands(t *testing.T) {
 		"sudo ufw allow from 192.168.1.0/24")
 }
 
+func TestSetupPairingWindowsPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, indicator, status, discovery string
+		policy, udp                        firewall.Kind
+	}{
+		{"active only", "● Review", "Firewall active on the LAN interface.", "Discovery (UDP 5353): not verified.", firewall.Active, firewall.MDNSUnverified},
+		{"policy unavailable", "● Review", "LAN firewall policy could not be determined.", "Discovery (UDP 5353): not verified.", firewall.Unverifiable, firewall.MDNSUnverified},
+		{"confirmed blanket block", "● Blocked", "Firewall active on the LAN interface.", "Policy blocks inbound discovery (UDP 5353).", firewall.Active, firewall.MDNSMissing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const backend = firewall.BackendWindows
+			service := setupDiagnosisService(
+				func(context.Context) (PairingDiagnosis, error) {
+					return PairingDiagnosis{Firewall: firewall.Plan{Backend: backend, Findings: []firewall.Finding{
+						{Kind: tc.policy, Backend: backend},
+						{Kind: tc.udp, Backend: backend, Port: 5353},
+						{Kind: firewall.ServiceUnverified, Backend: backend},
+					}}}, nil
+				}, func([]string) tea.Cmd { t.Fatal("Windows policy must not offer to apply a rule"); return nil })
+			service.Authorize = func(context.Context, string, func(string)) (CatalogAPI, error) { return nil, nil }
+			model := pairingDiagnosisModel(t, t.Context(), service)
+			expectSetupText(t, model.View(), tc.indicator, "d: diagnostics")
+			model, _ = model.Update(setupRunes("d"))
+			view := model.View()
+			expectSetupText(t, view, tc.status, tc.discovery, "TCP: not verified (Connect port unknown).")
+			for _, unwanted := range []string{"netsh", "a: apply rules", "The LAN cannot reach this device."} {
+				if strings.Contains(view, unwanted) {
+					t.Fatalf("unexpected %q in %s", unwanted, view)
+				}
+			}
+			if tc.udp == firewall.MDNSUnverified {
+				model, _ = model.Update(setupPairingUpdate{session: model.(*setupModel).pairing, status: setupPairingReady})
+				if m := model.(*setupModel); m.progress != SetupReady || m.phase == setupPairingDetail {
+					t.Fatal("pairing readiness did not advance past the diagnostics")
+				}
+			}
+		})
+	}
+}
+
 func TestSetupPairingApplyNeedsSecondConfirmation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

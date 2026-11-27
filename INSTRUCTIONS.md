@@ -56,7 +56,7 @@ Si el emparejamiento no avanza porque la clave quedó mal escrita, pulsa `b`: vu
 
 ### Diagnóstico del emparejamiento
 
-En el paso de emparejamiento el asistente diagnostica por qué el teléfono puede no ver el equipo y resume el resultado con un indicador al principio de la línea: `● OK` en verde cuando no hay nada que revisar, `● Revisar` en ámbar cuando hay un riesgo pero el emparejamiento puede funcionar (por ejemplo, un puente de contenedores compitiendo por el anuncio), y `● Bloqueado` en rojo cuando falta una regla y el teléfono no podrá conectar. La palabra acompaña siempre al color, así que se entiende también en una terminal sin color.
+En el paso de emparejamiento el asistente diagnostica por qué el teléfono puede no ver el equipo y resume el resultado con un indicador al principio de la línea: `● OK` en verde cuando no hay nada que revisar, `● Revisar` en ámbar cuando hay un riesgo pero el emparejamiento puede funcionar (por ejemplo, un puente de contenedores compitiendo por el anuncio), y `● Bloqueado` en rojo cuando el diagnóstico identifica una política o una regla que impide el acceso. La palabra acompaña siempre al color, así que se entiende también en una terminal sin color.
 
 El atajo `d: diagnóstico` aparece solo cuando hay algo que revisar: abre el detalle con los hallazgos y, si hay algo que aplicar, los comandos exactos. `Enter` vuelve al paso de emparejamiento. Si el detalle no puede proponer ningún comando, lo dice y no ofrece `a`.
 
@@ -64,17 +64,17 @@ El diagnóstico revisa tres cosas:
 
 - La dirección que usa tu equipo para llegar a la red local.
 - Las interfaces que compiten por la única dirección que Soloist anuncia: puentes de contenedores (los de Docker, por ejemplo), VPN y túneles.
-- El estado del cortafuegos y las reglas que faltan.
+- El estado del cortafuegos y los bloqueos que el diagnóstico puede identificar.
 
 Un puente o una VPN rompen el emparejamiento porque Soloist anuncia una sola dirección al arrancar y no ofrece ninguna opción para fijar la interfaz: puede anunciar la dirección del puente en lugar de la de tu red local, y el teléfono busca en la red equivocada. La recuperación concreta es arrancar Pulso con ese puente ausente, emparejar y volver a levantar el puente después. El anuncio sigue siendo válido hasta que Soloist se reinicie.
 
-El puerto de control de Soloist se elige al arrancar y cambia, así que una regla para un puerto concreto queda obsoleta en el siguiente arranque. Lo que se recomienda es un permiso acotado a la red local (por ejemplo `sudo ufw allow from 192.168.1.0/24`), que sigue sirviendo después de que cambie el puerto; es un permiso deliberadamente más amplio que un solo puerto. En Windows el asistente añade el puerto que leyó en ese momento, así que la regla manual de la red local de más abajo es la que evita repetir el trámite.
+El puerto de control de Soloist se elige al arrancar y cambia, así que una regla para un puerto concreto queda obsoleta en el siguiente arranque. Lo que se recomienda es un permiso acotado a la red local (por ejemplo `sudo ufw allow from 192.168.1.0/24`), que sigue sirviendo después de que cambie el puerto; es un permiso deliberadamente más amplio que un solo puerto. En Windows el asistente consulta la política efectiva del perfil de la interfaz LAN. Marca el descubrimiento (UDP 5353) como bloqueado solo si confirma que ese perfil bloquea en general las conexiones entrantes no solicitadas. Si no puede concluirlo, muestra «No verificado»; eso no es una prueba de conectividad. El puerto TCP de Spotify Connect no se obtiene del WebSocket local de Soloist y se muestra como desconocido.
 
 El asistente nunca cambia el cortafuegos por sí solo: solo añade reglas después de una confirmación en dos pasos, con `a: aplicar reglas` y una segunda `a`. Cualquier otra tecla cancela la aplicación, y `Esc` sigue cerrando Pulso. Tampoco elimina ni reemplaza reglas existentes, y no necesita permisos de administrador solo para inspeccionar: si no puede leer las reglas, lo dice en pantalla en lugar de suponer que están bien.
 
 ### Reglas manuales de cortafuegos
 
-Coinciden con lo que propone el asistente, con una excepción: en Windows el asistente añade el puerto que leyó en ese arranque, y aquí se propone un permiso por red de origen para no repetir el trámite. Sustituye `192.168.1.0/24` por el prefijo de tu red local. Donde el asistente todavía no puede proponer un comando (firewalld y nftables), estos son los equivalentes manuales.
+Sustituye `192.168.1.0/24` por el prefijo de tu red local. Para firewalld y nftables, donde el asistente no propone comandos, se indican equivalentes manuales.
 
 **ufw (Debian, Ubuntu):** la regla de descubrimiento ya viene en `before.rules` por defecto (`5353/udp` hacia `224.0.0.251`), así que lo que suele faltar es el tráfico desde la red local:
 
@@ -101,14 +101,7 @@ sudo nft add rule inet filter input ip saddr 192.168.1.0/24 accept
 
 Estas dos reglas se pierden al reiniciar: escríbelas en `/etc/nftables.conf` y recarga con `sudo nft -f /etc/nftables.conf`. El nombre de la tabla y de la cadena depende de tu configuración; usa los de tu cadena de entrada.
 
-**Windows Defender Firewall,** en una consola de Windows con permisos de administrador:
-
-```
-netsh advfirewall firewall add rule name="Pulso (Soloist)" dir=in action=allow protocol=UDP localport=5353
-netsh advfirewall firewall add rule name="Pulso (Soloist) LAN" dir=in action=allow protocol=TCP remoteip=192.168.1.0/24
-```
-
-La primera regla abre el descubrimiento y coincide con la que añade el asistente. La segunda permite el tráfico TCP de tu red local, que es lo que cambia de puerto en cada arranque.
+**Firewall de Windows Defender:** el asistente no ofrece cambios de reglas. Una excepción no corrige una política que ignora los permisos entrantes. Si hay un bloqueo confirmado y el dispositivo no aparece en Spotify, revisa la política del perfil LAN con quien administre el equipo. Si el emparejamiento funciona, no cambies el firewall por un estado «No verificado».
 
 ## Conectar Spotify para buscar y ver listas
 
@@ -199,7 +192,7 @@ En Windows el binario está en la misma carpeta como `pulso.exe`. Si una ruta no
 
 | Síntoma | Qué revisar |
 | --- | --- |
-| El dispositivo no aparece en Spotify | Misma red local, sin VPN ni aislamiento de invitados; en Windows, permite Soloist en el firewall |
+| El dispositivo no aparece en Spotify | Misma red local, sin VPN ni aislamiento de invitados; en Windows, revisa el diagnóstico de emparejamiento |
 | No hay sonido | Salida de audio del sistema; en Linux, PipeWire o PulseAudio |
 | Se pide el Client ID otra vez | Revisa `client-id`; debe tener 32 caracteres hexadecimales |
 | Spotify rechaza la URI de redirección | Debe ser exactamente `http://127.0.0.1:8888/callback` |

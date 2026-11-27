@@ -56,7 +56,7 @@ If pairing does not advance because the key was mistyped, press `b`: the wizard 
 
 ### Pairing diagnostics
 
-In the pairing step the wizard diagnoses why the phone may not see the computer and summarises the result with an indicator at the start of the line: `● OK` in green when there is nothing to review, `● Review` in amber when there is a risk but pairing can still work (a container bridge competing for the announcement, for example), and `● Blocked` in red when a rule is missing and the phone will not be able to connect. The word always accompanies the colour, so it still reads on a terminal without colour.
+In the pairing step the wizard diagnoses why the phone may not see the computer and summarises the result with an indicator at the start of the line: `● OK` in green when there is nothing to review, `● Review` in amber when there is a risk but pairing can still work (a container bridge competing for the announcement, for example), and `● Blocked` in red when the diagnosis identifies a policy or rule that prevents access. The word always accompanies the colour, so it still reads on a terminal without colour.
 
 The `d: diagnostics` shortcut appears only when there is something to review: it opens the detail with the findings and, when there is something to apply, the exact commands. `Enter` returns to the pairing step. When the detail can propose no command, it says so and offers no `a`.
 
@@ -64,17 +64,17 @@ The diagnosis checks three things:
 
 - The address your machine uses to reach the local network.
 - The interfaces that compete for the single address Soloist announces: container bridges (Docker's, for example), VPNs and tunnels.
-- The firewall state and the rules that are missing.
+- The firewall state and any blocks the diagnosis can identify.
 
 A bridge or a VPN breaks pairing because Soloist announces one address at startup and offers no option to pin the interface: it can advertise the bridge address instead of your LAN address, and the phone searches the wrong network. The concrete recovery is to start Pulso with that bridge absent, pair, and bring the bridge back afterwards. The advertisement stays valid until Soloist restarts.
 
-Soloist's control port is chosen at startup and changes, so a rule for one port goes stale on the next start. What is recommended is a LAN-scoped allow (for example `sudo ufw allow from 192.168.1.0/24`), which keeps working after the port changes; it is deliberately broader than a single port. On Windows the wizard adds the port it read at that moment, so the manual LAN rule below is the one that avoids repeating the work.
+Soloist's control port is chosen at startup and changes, so a rule for one port goes stale on the next start. What is recommended is a LAN-scoped allow (for example `sudo ufw allow from 192.168.1.0/24`), which keeps working after the port changes; it is deliberately broader than a single port. On Windows, the wizard reads the effective policy for the LAN interface profile. It marks discovery (UDP 5353) as blocked only if it confirms the profile blocks unsolicited inbound connections across the board. Otherwise it shows “Not verified”; this is not a connectivity test. Soloist's local WebSocket does not reveal the Spotify Connect TCP port, which is shown as unknown.
 
 The wizard never changes the firewall by itself: it only adds rules after a two-step confirmation, with `a: apply rules` and a second `a`. Any other key cancels the apply step, and `Esc` still quits Pulso. It never removes or replaces existing rules, and it needs no administrator rights just to inspect: when it cannot read the rules, it says so on screen instead of assuming they are fine.
 
 ### Manual firewall rules
 
-They match what the wizard proposes, with one exception: on Windows the wizard adds the port it read at that start, while the rule below uses a source-network allow so you do not repeat the step. Replace `192.168.1.0/24` with your own LAN prefix. Where the wizard cannot propose a command yet (firewalld and nftables), these are the manual equivalents.
+Replace `192.168.1.0/24` with your own LAN prefix. For firewalld and nftables, where the wizard does not propose commands, the manual equivalents are listed below.
 
 **ufw (Debian, Ubuntu):** the discovery rule is already present in the default `before.rules` (`5353/udp` to `224.0.0.251`), so what is usually missing is traffic from the LAN:
 
@@ -101,14 +101,7 @@ sudo nft add rule inet filter input ip saddr 192.168.1.0/24 accept
 
 Both nftables rules are lost on reboot: write them in `/etc/nftables.conf` and reload with `sudo nft -f /etc/nftables.conf`. The table and chain names depend on your configuration; use the ones from your input chain.
 
-**Windows Defender Firewall,** in a Windows console with administrator rights:
-
-```
-netsh advfirewall firewall add rule name="Pulso (Soloist)" dir=in action=allow protocol=UDP localport=5353
-netsh advfirewall firewall add rule name="Pulso (Soloist) LAN" dir=in action=allow protocol=TCP remoteip=192.168.1.0/24
-```
-
-The first rule opens discovery and matches the one the wizard adds. The second allows TCP traffic from your LAN, which is the part that changes port on every start.
+**Windows Defender Firewall:** the wizard does not offer to change rules. Adding an exception cannot fix a policy that ignores inbound allow rules. If a block is confirmed and the device does not appear in Spotify, ask whoever administers the computer to review the LAN profile policy. If pairing works, do not change the firewall because of a “Not verified” status.
 
 ## Connecting Spotify for search and playlists
 
@@ -199,7 +192,7 @@ On Windows the binary is `pulso.exe` in the same folder. If a path does not belo
 
 | Symptom | What to check |
 | --- | --- |
-| The device does not appear in Spotify | Same local network, no VPN or guest isolation; on Windows, allow Soloist through the firewall |
+| The device does not appear in Spotify | Same local network, no VPN or guest isolation; on Windows, check the pairing diagnostics |
 | No sound | System audio output; on Linux, PipeWire or PulseAudio |
 | The Client ID is requested again | Check `client-id`; it must be 32 hex characters |
 | Spotify rejects the redirect URI | It must be exactly `http://127.0.0.1:8888/callback` |

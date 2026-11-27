@@ -128,10 +128,17 @@ func pairingDiagnosis(ctx context.Context, network func() (netcheck.Report, erro
 	if err != nil {
 		return ui.PairingDiagnosis{Network: report}, err
 	}
+	// Una ruta de salida puede usar una VPN. Solo identifica el perfil de
+	// Windows cuando la dirección coincide con la única interfaz no virtual.
+	var localAddr netip.Addr
+	if len(report.Candidates) == 1 && !report.Candidates[0].Virtual && report.Candidates[0].Address == report.LAN {
+		localAddr = report.LAN
+	}
 	return ui.PairingDiagnosis{
 		Network: report,
 		Firewall: inspect(ctx, firewall.Options{
-			Prefix: pairingPrefix(report),
+			Prefix:    pairingPrefix(report),
+			LocalAddr: localAddr,
 		}),
 	}, nil
 }
