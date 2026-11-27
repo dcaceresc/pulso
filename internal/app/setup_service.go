@@ -39,6 +39,10 @@ type localSetup struct {
 	command        func(string, ...string) *exec.Cmd
 	startupTimeout time.Duration
 	startMu        sync.Mutex
+	// child es el daemon que arrancó esta sesión. Volver por una clave nueva lo
+	// reemplaza, porque Soloist conserva la clave con la que se inició.
+	child     *exec.Cmd
+	childDone chan struct{}
 }
 
 func runSetup(stdout io.Writer) error {
@@ -189,9 +193,15 @@ func (s *localSetup) start(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	// Inspect again after key entry: Soloist might have started in the meantime.
-	if status, err := soloist.Inspect(ctx, dir); err != nil || status != soloist.StatusNeedsKey {
-		return err
+	// Una clave nueva necesita un proceso nuevo: Soloist conserva la clave con la
+	// que se inició. La instancia detenida deja marcadores obsoletos, así que la
+	// reinspección no puede vetar el reemplazo que acaba de hacer necesario.
+	restarting := s.stopChildLocked()
+	if !restarting {
+		// Inspect again after key entry: Soloist might have started in the meantime.
+		if status, err := soloist.Inspect(ctx, dir); err != nil || status != soloist.StatusNeedsKey {
+			return err
+		}
 	}
 	path, err := s.find()
 	if err != nil || path == "" {
@@ -205,13 +215,29 @@ func (s *localSetup) start(ctx context.Context, key string) error {
 	if err := cmd.Start(); err != nil {
 		return errSoloistStart
 	}
-	return waitForSoloist(ctx, cmd, dir, s.startupTimeout)
+	done := make(chan struct{})
+	if err := waitForSoloist(ctx, cmd, dir, s.startupTimeout, done); err != nil {
+		return err
+	}
+	s.child, s.childDone = cmd, done
+	return nil
 }
 
-func waitForSoloist(ctx context.Context, cmd *exec.Cmd, dir string, timeout time.Duration) error {
+// stopChildLocked termina el daemon que arrancó esta sesión y espera a que se
+// recoja. Indica si había alguno que detener.
+func (s *localSetup) stopChildLocked() bool {
+	if s.child == nil {
+		return false
+	}
+	_ = s.child.Process.Kill()
+	<-s.childDone
+	s.child, s.childDone = nil, nil
+	return true
+}
+
+func waitForSoloist(ctx context.Context, cmd *exec.Cmd, dir string, timeout time.Duration, done chan struct{}) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	done := make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
 		close(done)

@@ -194,6 +194,16 @@ func (m *setupModel) cancelPairing() {
 	}
 }
 
+// backToKey vuelve al paso de la clave para reemplazar una clave mal escrita.
+// El campo empieza vacío: la clave que Soloist ya rechazó no se conserva. El
+// reinicio ocurre cuando se envía la clave nueva.
+func (m *setupModel) backToKey() {
+	m.cancelPairing()
+	m.clearKey()
+	m.pairingState, m.deviceName = setupPairingWaiting, ""
+	m.progress, m.phase = SetupNeedsKey, setupEnterKey
+}
+
 func (m *setupModel) openPlayer() (tea.Model, tea.Cmd) {
 	m.cancelPairing()
 	m.progress, m.phase = SetupReady, setupDone
@@ -489,6 +499,11 @@ func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.phase = setupPairingChecking
 			return m.Init()
 		}
+		if msg.Type == tea.KeyRunes && !msg.Paste && len(msg.Runes) == 1 &&
+			(msg.Runes[0] == 'b' || msg.Runes[0] == 'B') {
+			m.backToKey()
+			return nil
+		}
 	case setupConfirmInstall, setupInstallFailed:
 		if m.phase == setupInstallFailed && msg.Type == tea.KeyEnter {
 			return m.recheck()
@@ -605,12 +620,12 @@ func (m *setupModel) screen() setupScreen {
 			screen.status = m.text("Reconnecting to Soloist", "Reconectando con Soloist")
 			screen.reason = m.text("Run pulso doctor if it does not reconnect.", "Ejecuta pulso doctor si no se reconecta.")
 		}
-		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar")}
+		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar"), m.text("b: back to the key", "b: volver a la clave")}
 	case setupPairingStopped:
 		screen.action = m.text("Soloist stopped. Start it again, then press Enter to recheck.",
 			"Soloist se detuvo. Inícialo de nuevo y pulsa Enter para volver a comprobar.")
 		screen.status = m.text("Soloist stopped", "Soloist detenido")
-		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar")}
+		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar"), m.text("b: back to the key", "b: volver a la clave")}
 	case setupDone:
 		screen.action, screen.status = m.text("Soloist is ready.", "Soloist está listo."), m.text("Setup complete", "Configuración completa")
 	case setupSpotify:

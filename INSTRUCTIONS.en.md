@@ -52,6 +52,8 @@ Spotify authorizes the pairing from its own app; it does not happen inside Pulso
 
 If the device does not appear, check for guest Wi-Fi, client isolation or a VPN blocking local discovery.
 
+If pairing does not advance because the key was mistyped, press `b`: the wizard returns to the key step with an empty field. Submitting the new key makes Pulso stop the Soloist instance it had started with the previous key and start it again; `Enter` only rechecks the status.
+
 ## Connecting Spotify for search and playlists
 
 Search and playlist listing use the **Spotify Web API**, a different authorization from Soloist:

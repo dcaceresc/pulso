@@ -52,6 +52,8 @@ El emparejamiento lo autoriza Spotify desde su aplicación; no ocurre dentro de 
 
 Si el dispositivo no aparece, revisa que no haya una red de invitados, aislamiento de clientes o una VPN bloqueando el descubrimiento local.
 
+Si el emparejamiento no avanza porque la clave quedó mal escrita, pulsa `b`: vuelves al paso de la clave con el campo vacío. Al enviar la nueva, Pulso detiene el Soloist que había arrancado con la clave anterior y lo inicia otra vez; `Enter` solo vuelve a comprobar el estado.
+
 ## Conectar Spotify para buscar y ver listas
 
 Buscar y listar playlists usa la **Spotify Web API**, una autorización distinta del emparejamiento de Soloist:
