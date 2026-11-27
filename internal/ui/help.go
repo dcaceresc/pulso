@@ -43,6 +43,7 @@ func (m *playerModel) helpSections() []helpSection {
 			{"l", m.text("focus the library", "enfocar la biblioteca")},
 			{"Enter", m.text("open the playlist", "abrir la lista")},
 			{"p", m.text("play the playlist", "reproducir la lista")},
+			{"S", m.text("shuffle the selected or open playlist", "reproducir al azar la lista seleccionada o abierta")},
 		}},
 		{m.text("Search", "Búsqueda"), []helpEntry{
 			{"/", m.text("search", "buscar")},

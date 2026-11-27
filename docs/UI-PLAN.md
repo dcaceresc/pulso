@@ -40,7 +40,8 @@ Turn the current playback screen plus modal overlays into one keyboard-first wor
 | `n` `p` | Next/previous track |
 | `←` `→` | Seek 10 s inside the now-playing bar |
 | `+` `-` | Volume |
-| `s` | Cycle shuffle |
+| `s` | Toggle shuffle for current playback |
+| `S` | Start and shuffle the selected or open playlist by URI, including restricted playlists; not available in search results |
 | `r` | Cycle repeat: off → context → track |
 | `F2` / `F3` | Language / theme |
 | `Esc` | Leave the focused input or panel, then quit |
@@ -55,8 +56,11 @@ Turn the current playback screen plus modal overlays into one keyboard-first wor
 | Search results | `GET /v1/search?type=track` | exists, currently the only view |
 | User handle | `GET /me` `display_name` | new, no extra scope |
 | Shuffle, repeat, device, volume | Soloist `playback_state.options` and `device_changed` | partially mapped; add shuffle/repeat |
+| Confirmed playlist context | Soloist `playback_state.context` and `context_changed` | show only a validated playlist entity, independent of the library selection |
 | Seek | `seek` command, `position_sync` | transport exists, UI key is new |
 | Skipping to a track in a playlist | `play` with URI starts the context | exists |
+
+Playlist shuffle sends `play` with the playlist URI, waits for acceptance and confirmation of that playlist on the current Soloist session, then sends `set_shuffle`. An intervening observed change away from the confirmed context cancels the pending action. The commands are not atomic: an unobserved context switch between confirmation and command execution can still affect different playback. The first track is not guaranteed to be random. Spotify manages Autoplay; Pulso does not modify or simulate it.
 
 Albums, artists, liked songs and podcasts are out of this slice: they need new scopes and re-authorization.
 

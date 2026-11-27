@@ -542,6 +542,13 @@ func (m *playerModel) activateSelection(key tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, false
 	}
 	switch {
+	case key.String() == "S":
+		if uri := m.playlistShuffleURI(); uri != "" && m.state.Connected && m.commands != nil {
+			if m.send(playerCommand{Name: soloist.PlayPlaylistShuffle, URI: uri}) {
+				m.wantShuffle = nil
+			}
+		}
+		return nil, true
 	case key.Type == tea.KeyEnter && m.focus == playerFocusSidebar:
 		return m.activatePlaylist(), true
 	case key.Type == tea.KeyEnter && m.focus == playerFocusTable && m.search.active:
@@ -576,6 +583,22 @@ func (m *playerModel) activateSelection(key tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, true
 	}
 	return nil, false
+}
+
+func (m *playerModel) playlistShuffleURI() string {
+	var uri string
+	switch {
+	case m.focus == playerFocusSidebar:
+		if playlist, ok := m.library.selectedPlaylist(); ok {
+			uri = playlist.URI
+		}
+	case m.focus == playerFocusTable && !m.search.active && m.library.open():
+		uri = m.library.playlist.URI
+	}
+	if soloist.IsPlaylistURI(uri) {
+		return uri
+	}
+	return ""
 }
 
 // activatePlaylist opens the sidebar selection or starts authorization.
@@ -1010,6 +1033,9 @@ func (m *playerModel) playingRows(width int, styles playerStyles) []playerRow {
 	if m.focus == playerFocusPlaying {
 		marker = "> "
 	}
+	if playlist := playerText(m.state.PlaylistContext); m.loaded && m.state.Connected && playlist != "" {
+		title += " · " + m.text("Playlist: ", "Lista: ") + playlist
+	}
 	line := marker + glyph + " " + title
 	volume := fmt.Sprintf(m.text("Volume %d%%", "Volumen %d%%"), playerVolume(m.state.Volume))
 	if width < playerNarrowWidth {
@@ -1069,6 +1095,12 @@ func (m *playerModel) repeatMode() string {
 
 func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
 	notice := playerText(m.state.Notice)
+	switch m.state.PlaylistShuffle {
+	case soloist.PlaylistShuffleWaiting:
+		notice = m.text("Waiting for playlist confirmation…", "Esperando confirmación de la lista…")
+	case soloist.PlaylistShuffleUnconfirmed:
+		notice = m.text("Playlist shuffle not applied.", "No se aplicó el aleatorio de la lista.")
+	}
 	if m.busy {
 		notice = m.text("Controls busy; try again.", "Controles ocupados; inténtalo de nuevo.")
 	}
@@ -1184,6 +1216,9 @@ func (m *playerModel) hintPairs() []playerHint {
 			playerHint{"+/-", m.text("volume", "volumen")},
 			playerHint{"/", m.text("search", "buscar")},
 			playerHint{"l", m.text("library", "biblioteca")})
+	}
+	if m.playlistShuffleURI() != "" {
+		hints = append(hints, playerHint{"S", m.text("shuffle-list", "mezclar-lista")})
 	}
 	return append(hints,
 		playerHint{"F1", m.text("help", "ayuda")},

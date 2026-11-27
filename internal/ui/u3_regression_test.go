@@ -129,3 +129,27 @@ func TestPlayerUnknownModesRenderNeutral(t *testing.T) {
 		t.Fatalf("confirmed off modes were not rendered:\n%s", view)
 	}
 }
+
+func TestPlayerShowsConfirmedPlaylistContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	states := make(chan playerState, 1)
+	state := playingState()
+	state.PlaylistContext = "Focus Mix"
+	states <- state
+	m := NewPlayerModel(ctx, states, nil, 120, 40)
+	m, _ = m.Update(playerViewRun(t, m.Init()))
+
+	for _, want := range []string{"Playlist: Focus Mix", "Lista: Focus Mix"} {
+		if view := ansi.Strip(m.View()); !strings.Contains(view, want) {
+			t.Fatalf("missing %q in:\n%s", want, view)
+		}
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF2})
+	}
+
+	state.PlaylistContext = ""
+	m, _ = m.Update(playerViewState{state: state, ok: true})
+	if strings.Contains(ansi.Strip(m.View()), "Focus Mix") {
+		t.Fatal("the previous context is still visible")
+	}
+}

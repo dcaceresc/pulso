@@ -121,7 +121,7 @@ The screen is one workspace:
 - **Top bar:** search and your Spotify user.
 - **Library:** your playlists.
 - **Table:** tracks of the selected playlist, or search results, with number, title, artist and duration.
-- **Playing bar:** track, artist, album, progress, shuffle, repeat, volume and device.
+- **Playing bar:** track, artist, album, playlist confirmed by Soloist (when space permits), progress, shuffle, repeat, volume and device.
 - **Footer:** `key action` pairs for the focused panel; `F1` opens help.
 
 `Tab` cycles library, table, search and playing bar. With the search field focused you can type `q`, `s`, `r`, `+` and `-` without triggering shortcuts; `Enter` searches and `Esc` leaves the field.
@@ -138,7 +138,8 @@ Quitting Pulso pauses playback. Soloist stays in the background with its pairing
 | `Space` | Play or pause |
 | `n` / `p` | Next or previous |
 | `←` `→` | Seek 10 seconds (playing bar) |
-| `s` | Shuffle |
+| `s` | Toggle shuffle for current playback |
+| `S` | Start and shuffle the playlist selected in the library or open in the table (not search results) |
 | `r` | Repeat: off, context, track |
 | `+` / `-` | Volume |
 | `/` | Search |
@@ -149,6 +150,10 @@ Quitting Pulso pauses playback. Soloist stays in the background with its pairing
 | `q` / `Esc` | Quit |
 
 `F1`, `?`, `Esc` or `q` close help and return to the panel you came from.
+
+`S` works by playlist URI even when the tracks cannot be listed. Pulso waits for Soloist to accept playback and confirm the playlist context before sending a separate shuffle command. The first track is not guaranteed to be random, and another Spotify client can change the context between confirmation and shuffle. If confirmation does not arrive in time, Pulso does not send shuffle; the playlist may still start playing.
+
+Pulso does not change Autoplay. If it is enabled and Spotify continues playback after a playlist ends, Spotify chooses the tracks.
 
 ## Language and themes
 

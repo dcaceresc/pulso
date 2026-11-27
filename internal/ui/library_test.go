@@ -371,6 +371,45 @@ func TestLibraryPlaysPlaylistAndTrackForSession(t *testing.T) {
 	}
 }
 
+func TestPlaylistShuffleShortcutAndExistingBindings(t *testing.T) {
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: func(context.Context, string, int) ([]libraryTrack, int, bool, error) {
+		return nil, 0, false, errPlaylistUnavailable
+	}}
+	m, out, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true, SessionID: 21}, source, nil, "")
+	check := func(key string, want ...playerCommand) {
+		t.Helper()
+		m, _ = m.Update(playerViewKey(key))
+		for _, expected := range want {
+			expected.SessionID = 21
+			select {
+			case got := <-out:
+				if got != expected {
+					t.Fatalf("%q sent %+v, want %+v", key, got, expected)
+				}
+			default:
+				t.Fatalf("%q did not send %+v", key, expected)
+			}
+		}
+		select {
+		case got := <-out:
+			t.Fatalf("%q sent unexpected %+v", key, got)
+		default:
+		}
+	}
+	check("S")
+	m = libraryFocusSidebar(t, m)
+	check("S", playerCommand{Name: "play_playlist_shuffle", URI: "spotify:playlist:rock"})
+	check("p", playerCommand{Name: "play", URI: "spotify:playlist:rock"})
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = librarySettle(t, m, cmd)
+	check("S", playerCommand{Name: "play_playlist_shuffle", URI: "spotify:playlist:rock"})
+	check("p", playerCommand{Name: "play", URI: "spotify:playlist:rock"})
+	m.(*playerModel).search.active = true
+	check("S")
+	check("s", playerCommand{Name: "set_shuffle", Shuffle: true}, playerCommand{Name: "get_state"})
+}
+
 func TestLibraryKeepsQueueWhenNoPlaylistOpen(t *testing.T) {
 	source := &libraryFake{playlists: libraryPlaylistsFixture(), tracks: libraryTracksFixture(42)}
 	queue := []playerTrack{{Title: "Queued Song", Artist: "Queued Artist", DurationMS: 100000}}
