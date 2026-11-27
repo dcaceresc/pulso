@@ -9,7 +9,7 @@ This guide explains how to install, configure and use Pulso. The app targets my 
 - [Recommended install](#recommended-install)
 - [First launch](#first-launch)
 - [Pairing Soloist](#pairing-soloist)
-- [Connecting Spotify for search and playlists](#connecting-spotify-for-search-and-playlists)
+- [Connecting Spotify for search, playlist listing and adding or removing tracks](#connecting-spotify-for-search-playlist-listing-and-adding-or-removing-tracks)
 - [Daily use](#daily-use)
 - [Shortcuts](#shortcuts)
 - [Language and themes](#language-and-themes)
@@ -103,16 +103,16 @@ Both nftables rules are lost on reboot: write them in `/etc/nftables.conf` and r
 
 **Windows Defender Firewall:** the wizard does not offer to change rules. Adding an exception cannot fix a policy that ignores inbound allow rules. If a block is confirmed and the device does not appear in Spotify, ask whoever administers the computer to review the LAN profile policy. If pairing works, do not change the firewall because of a “Not verified” status.
 
-## Connecting Spotify for search and playlists
+## Connecting Spotify for search, playlist listing and adding or removing tracks
 
-Search and playlist listing use the **Spotify Web API**, a different authorization from Soloist:
+Search, playlist listing and adding or removing a track in a playlist use the **Spotify Web API**, a different authorization from Soloist:
 
 1. Create a free app in the [Spotify developer dashboard](https://developer.spotify.com/dashboard) and copy its **Client ID**. It is 32 hex characters; it is not the Soloist key.
 2. In that app's settings, add exactly `http://127.0.0.1:8888/callback` as a redirect URI. Spotify requires the explicit port for local addresses.
 3. The wizard asks for the Client ID once and stores it. You can also set `PULSO_SPOTIFY_CLIENT_ID` before launching.
 4. Approve access in the browser Pulso opens. Port 8888 must be free; if something else uses it, close that and retry.
 
-After the first approval the session is stored and refreshed automatically. You only approve again if you revoke the app in Spotify or delete the session file. Playback never depends on this authorization: if it fails or you skip it with `s`, controls and audio keep working.
+After the first approval the session is stored and refreshed automatically. You only approve again if you revoke the app in Spotify or delete the session file. Adding or removing a track also needs write permission: an older approval that only allowed reading does not have it, and Pulso offers to approve again at the moment you add or remove. When Spotify rejects the change without a recognizable cause, Pulso offers that same single approval instead of claiming the playlist cannot be changed; only when Spotify clearly states that the account cannot change that particular playlist does the notice repeat it. Playback never depends on this authorization: if it fails or you skip it with `s`, controls and audio keep working.
 
 ## Daily use
 
@@ -123,6 +123,10 @@ The screen is one workspace:
 - **Table:** tracks of the selected playlist, or search results, with number, title, artist and duration.
 - **Playing bar:** track, artist, album, playlist confirmed by Soloist (when space permits), progress, shuffle, repeat, volume and device.
 - **Footer:** `key action` pairs for the focused panel; `F1` opens help.
+
+`a` opens the playlist chooser for the playing track: `↑` `↓` or `j` `k` choose the playlist, the panel title names the targeted playlist, `Enter` saves and `Esc` cancels. The success notice appears only once Spotify confirmed the playlist, and a failure shows as one row that does not interrupt playback.
+
+`x` asks to remove the highlighted track from the open playlist: the confirmation names the track and the playlist, `Enter` removes it and `Esc` cancels. When Spotify accepts, the notice names the track and the playlist, and the playlist is read again so the row disappears. Playback and the queue are never touched.
 
 `Tab` cycles library, table, search and playing bar. With the search field focused you can type `q`, `s`, `r`, `+` and `-` without triggering shortcuts; `Enter` searches and `Esc` leaves the field.
 
@@ -140,6 +144,8 @@ Quitting Pulso pauses playback. Soloist stays in the background with its pairing
 | `←` `→` | Seek 10 seconds (playing bar) |
 | `s` | Toggle shuffle for current playback |
 | `S` | Start and shuffle the playlist selected in the library or open in the table (not search results) |
+| `a` | Save the playing track to a playlist: `↑` `↓` or `j` `k` choose, `Enter` saves, `Esc` cancels |
+| `x` | Remove the highlighted track from the open playlist: `Enter` confirms, `Esc` cancels |
 | `r` | Repeat: off, context, track |
 | `+` / `-` | Volume |
 | `/` | Search |
@@ -154,6 +160,10 @@ Quitting Pulso pauses playback. Soloist stays in the background with its pairing
 `S` works by playlist URI even when the tracks cannot be listed. Pulso waits for Soloist to accept playback and confirm the playlist context before sending a separate shuffle command. The first track is not guaranteed to be random, and another Spotify client can change the context between confirmation and shuffle. If confirmation does not arrive in time, Pulso does not send shuffle; the playlist may still start playing.
 
 Pulso does not change Autoplay. If it is enabled and Spotify continues playback after a playlist ends, Spotify chooses the tracks.
+
+`a` appears only with a track playing and a Spotify catalog that can write. After `Enter`, Pulso waits for Spotify's answer: when it accepts, it shows “Saved to …” with the playlist name; on failure it shows one row such as “Could not save to …” and playback stays as it was. When Spotify answers that the write permission is missing (for example, a session approved before this action existed), Pulso offers to approve again, opens the browser, shows the approval link and retries the save once. A playlist this account cannot edit, or an approval that does not complete, gets no retry. Spotify's response text is never shown.
+
+`x` appears only with a playlist open in the table, a row with a track URI and the snapshot of the playlist you were looking at, which Pulso reads from the playlist object because the items page does not return it; when Spotify does not return one, the key does not appear. In search results, in a restricted playlist or without a catalog that can write the key does nothing. Pulso removes exactly one occurrence: the one that belongs to the snapshot of the listing you were looking at, so a duplicated track keeps its other occurrences and is removed one at a time. After `Enter` it shows “Removed … from …” and reads the playlist again; a failure stays as one row such as “Could not remove … from …”. When Spotify answers that the listing changed since it was read, Pulso reads it again and asks again with the new listing instead of guessing which occurrence to drop. A missing write permission offers the same approval as saving and retries once; a playlist this account cannot edit, or an approval that does not complete, gets no retry. Spotify's response text is never shown, and playback and the queue stay as they were.
 
 ## Language and themes
 
@@ -217,7 +227,8 @@ Tests use local fixtures and fake transports: no real Spotify requests and no cr
 
 ## Known limits
 
-- No playlist editing, podcasts, lyrics, visualizer or history.
+- Does not create, rename or delete playlists: it appends the playing track to an existing playlist and removes one occurrence of a track from the open playlist, always where your account can write.
+- Does not save tracks without the Web API write permission, and Spotify development mode only allows editing playlists you own or collaborate on.
 - Does not work without Spotify Premium.
 - Only plays on platforms Spotify ships Soloist for.
 - Search returns ten results per page and requires paging.

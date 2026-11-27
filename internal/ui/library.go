@@ -8,13 +8,17 @@ import (
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/dcaceresc/pulso/internal/spotify"
 )
 
 // librarySource is the paginated Spotify library the workspace reads. Offsets
 // advance by spotifyCatalogPageSize, not by the number of usable rows.
 type librarySource interface {
 	PlaylistPage(ctx context.Context, offset int) ([]libraryPlaylist, int, bool, error)
-	TrackPage(ctx context.Context, uri string, offset int) ([]libraryTrack, int, bool, error)
+	// PlaylistItems reads one page of a browsed playlist with the snapshot of the
+	// listing it came from, so a removal can name the version the person saw.
+	PlaylistItems(ctx context.Context, uri string, offset int) (spotify.PlaylistItemsPage, error)
 	SearchPage(ctx context.Context, query string, offset int) ([]libraryTrack, int, bool, error)
 }
 
@@ -174,9 +178,24 @@ func (l *libraryState) fetchTracks(offset int) tea.Cmd {
 		if ctx.Err() != nil {
 			return nil
 		}
-		tracks, total, more, err := source.TrackPage(ctx, uri, offset)
-		return libraryPageMsg{generation: generation, tracks: tracks, offset: offset, total: total, more: more, err: err}
+		page, err := source.PlaylistItems(ctx, uri, offset)
+		return libraryPageMsg{generation: generation, tracks: libraryTracksOf(page), offset: offset,
+			total: page.Total, more: page.More, err: err}
 	}
+}
+
+// libraryTracksOf entrega las filas con el snapshot de la lectura que las
+// produjo: una retirada nombra esa versión de la lista y no adivina.
+func libraryTracksOf(page spotify.PlaylistItemsPage) []libraryTrack {
+	if len(page.Tracks) == 0 {
+		return nil
+	}
+	tracks := make([]libraryTrack, 0, len(page.Tracks))
+	for _, track := range page.Tracks {
+		track.Snapshot = page.Snapshot
+		tracks = append(tracks, track)
+	}
+	return tracks
 }
 
 // startAuth requests authorization and publishes the URL before the result.

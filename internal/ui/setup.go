@@ -891,11 +891,11 @@ func (m *setupModel) screen() setupScreen {
 	case setupSpotify:
 		switch m.spotify {
 		case setupSpotifyClientID:
-			screen.action = m.text("Connect Spotify to search tracks and see your playlists:\n"+
+			screen.action = m.text("Connect Spotify to search tracks, see your playlists and add or remove tracks in them:\n"+
 				"1. Create an app at https://developer.spotify.com/dashboard\n"+
 				"2. Add "+spotify.RedirectHint()+" as a redirect URI; the port must match exactly.\n"+
 				"3. Paste its Client ID below. Only the public Client ID is saved.",
-				"Conecta Spotify para buscar canciones y ver tus listas:\n"+
+				"Conecta Spotify para buscar canciones, ver tus listas y agregar o quitar canciones en ellas:\n"+
 					"1. Crea una app en https://developer.spotify.com/dashboard\n"+
 					"2. Añade "+spotify.RedirectHint()+" como URI de redirección; el puerto debe coincidir.\n"+
 					"3. Pega abajo su Client ID. Solo se guarda el Client ID público.")

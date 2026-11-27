@@ -48,9 +48,10 @@ Keep playback independent of Web API authentication and quotas: controls, the qu
 - [ ] `go install` installs `pulso` on Windows and Linux x86-64.
 - [ ] On each platform, first launch can offer to install the official Soloist build when missing, and a later launch can reuse an already working installation.
 - [ ] After initial pairing, the user can open Pulso, search for a track, play it, queue another, and switch to a playlist without keeping the official app open.
+- [ ] With the Web API authorized, the user can add the playing track to a chosen playlist and remove one occurrence of a track from the playlist being browsed, both after an explicit confirmation.
 - [ ] Known links and local playback controls still work if Spotify Web API access is unavailable.
 
-Out of scope for the MVP: lyrics, Spotify playlist editing, and validating additional platforms or architectures.
+Out of scope for the MVP: lyrics and validating additional platforms or architectures. Playlist edits are limited to adding the playing track and removing one occurrence of a chosen track; creating playlists, reordering or replacing their items stays out of scope.
 
 [downloads]: https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates
 [WebSocket API]: https://developer.spotify.com/documentation/soloist/reference/websocket-api

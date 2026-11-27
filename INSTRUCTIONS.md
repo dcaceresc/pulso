@@ -9,7 +9,7 @@ Esta guía explica cómo instalar, configurar y usar Pulso. La aplicación está
 - [Instalación recomendada](#instalación-recomendada)
 - [Primer arranque](#primer-arranque)
 - [Emparejar Soloist](#emparejar-soloist)
-- [Conectar Spotify para buscar y ver listas](#conectar-spotify-para-buscar-y-ver-listas)
+- [Conectar Spotify para buscar, ver listas y agregar o quitar canciones](#conectar-spotify-para-buscar-ver-listas-y-agregar-o-quitar-canciones)
 - [Uso diario](#uso-diario)
 - [Atajos](#atajos)
 - [Idioma y temas](#idioma-y-temas)
@@ -103,16 +103,16 @@ Estas dos reglas se pierden al reiniciar: escríbelas en `/etc/nftables.conf` y 
 
 **Firewall de Windows Defender:** el asistente no ofrece cambios de reglas. Una excepción no corrige una política que ignora los permisos entrantes. Si hay un bloqueo confirmado y el dispositivo no aparece en Spotify, revisa la política del perfil LAN con quien administre el equipo. Si el emparejamiento funciona, no cambies el firewall por un estado «No verificado».
 
-## Conectar Spotify para buscar y ver listas
+## Conectar Spotify para buscar, ver listas y agregar o quitar canciones
 
-Buscar y listar playlists usa la **Spotify Web API**, una autorización distinta del emparejamiento de Soloist:
+Buscar, listar playlists y agregar o quitar una canción de una lista usan la **Spotify Web API**, una autorización distinta del emparejamiento de Soloist:
 
 1. Crea una app gratuita en el [panel de Spotify para desarrolladores](https://developer.spotify.com/dashboard) y copia su **Client ID**. Tiene 32 caracteres hexadecimales; no es la clave de Soloist.
 2. En la configuración de esa app, añade exactamente `http://127.0.0.1:8888/callback` como URI de redirección. Spotify exige el puerto explícito en las direcciones locales.
 3. El asistente te pide el Client ID una vez y lo guarda. También puedes definirlo antes de arrancar con `PULSO_SPOTIFY_CLIENT_ID`.
 4. Aprueba el acceso en el navegador que Pulso abre. El puerto 8888 debe estar libre; si está ocupado, ciérralo y reintenta.
 
-Después de la primera aprobación, la sesión queda guardada y se renueva sola. Solo tendrás que aprobar de nuevo si revocas la app en Spotify o borras el archivo de sesión. La reproducción nunca depende de esta autorización: si falla o la omites con `s`, los controles y el audio siguen funcionando.
+Después de la primera aprobación, la sesión queda guardada y se renueva sola. Solo tendrás que aprobar de nuevo si revocas la app en Spotify o borras el archivo de sesión. Guardar o quitar una canción necesita además permisos de escritura: una aprobación anterior que solo permitía leer no los tiene, y Pulso te ofrece aprobar otra vez en el momento de guardar o quitar. Si Spotify rechaza el cambio sin un motivo reconocible, Pulso te ofrece esa misma aprobación única en lugar de afirmar que no puedes cambiar la lista; solo cuando Spotify dice claramente que la cuenta no puede cambiar esa lista concreta el aviso lo repite. La reproducción nunca depende de esta autorización: si falla o la omites con `s`, los controles y el audio siguen funcionando.
 
 ## Uso diario
 
@@ -123,6 +123,10 @@ La pantalla es un único espacio de trabajo:
 - **Tabla:** canciones de la lista elegida o resultados de búsqueda, con número, título, artista y duración.
 - **Barra de reproducción:** pista, artista, álbum, lista que confirma Soloist (si hay espacio), progreso, aleatorio, repetición, volumen y dispositivo.
 - **Pie:** pares `tecla acción` del panel activo; `F1` abre la ayuda.
+
+`a` abre el selector de lista para guardar la canción que suena: `↑` `↓` o `j` `k` eligen la lista, el título del panel nombra la lista apuntada, `Enter` guarda y `Esc` cancela. El aviso de éxito aparece solo cuando Spotify confirmó la lista, y un fallo se muestra como una línea que no interrumpe la reproducción.
+
+`x` pide quitar de la lista abierta la canción marcada: la confirmación nombra la canción y la lista, `Enter` la quita y `Esc` cancela. Cuando Spotify acepta, el aviso nombra la canción y la lista, y la lista se vuelve a leer para que la fila desaparezca. La reproducción y la cola no se tocan.
 
 `Tab` recorre biblioteca, tabla, búsqueda y barra de reproducción. Con la búsqueda enfocada puedes escribir `q`, `s`, `r`, `+` y `-` sin que se disparen atajos; `Enter` busca y `Esc` sale del campo.
 
@@ -140,6 +144,8 @@ Al cerrar Pulso, la reproducción se pausa. Soloist sigue en segundo plano con s
 | `←` `→` | Retroceder o avanzar 10 segundos (barra de reproducción) |
 | `s` | Alternar el aleatorio de la reproducción actual |
 | `S` | Iniciar en aleatorio la lista seleccionada en la biblioteca o abierta en la tabla (no en resultados de búsqueda) |
+| `a` | Guardar la canción en reproducción en una lista: `↑` `↓` o `j` `k` eligen, `Enter` guarda, `Esc` cancela |
+| `x` | Quitar de la lista abierta la canción marcada: `Enter` confirma, `Esc` cancela |
 | `r` | Repetición: desactivada, lista, canción |
 | `+` / `-` | Volumen |
 | `/` | Buscar |
@@ -154,6 +160,10 @@ Al cerrar Pulso, la reproducción se pausa. Soloist sigue en segundo plano con s
 `S` funciona con la URI de la lista aunque no se puedan consultar sus canciones. Pulso espera a que Soloist acepte la reproducción y confirme la lista antes de enviar una segunda orden para activar el aleatorio. No se garantiza que la primera canción sea aleatoria, y otro cliente de Spotify puede cambiar el contexto entre la confirmación y la segunda orden. Si la confirmación no llega a tiempo, Pulso no envía la segunda orden; la lista aún puede empezar a reproducirse.
 
 Pulso no cambia Autoplay. Si está activado y Spotify continúa la reproducción al terminar una lista, Spotify elige las canciones.
+
+`a` solo aparece con una canción en reproducción y un catálogo de Spotify que puede escribir. Después de `Enter`, Pulso espera la respuesta de Spotify: si la acepta, muestra «Guardada en …» con el nombre de la lista; si falla, muestra una línea como «No se pudo guardar en …» y la reproducción sigue igual. Cuando Spotify responde que falta el permiso de escritura (por ejemplo, una sesión aprobada antes de existir esta acción), Pulso ofrece aprobar otra vez, abre el navegador, muestra el enlace de aprobación y reintenta el guardado una sola vez. Si la lista es de otra cuenta y no se puede editar, o si la aprobación no se completa, no hay reintento. El texto de la respuesta de Spotify nunca se muestra.
+
+`x` solo aparece con una lista abierta en la tabla, una fila con URI de pista y el snapshot de la lista que estabas viendo, que Pulso lee del objeto de la lista porque la página de elementos no lo trae; si Spotify no lo devuelve, la tecla no aparece. En resultados de búsqueda, en una lista restringida o sin un catálogo que pueda escribir la tecla no hace nada. Pulso quita exactamente una aparición: la que corresponde al snapshot de la lista que estabas viendo, así que una canción repetida conserva sus demás apariciones y se quita una por vez. Después de `Enter` muestra «Se quitó … de …» y vuelve a leer la lista; un fallo queda como una línea como «No se pudo quitar … de …». Si Spotify responde que la lista cambió desde que se leyó, Pulso la relee y pregunta otra vez con la lectura nueva en vez de adivinar cuál aparición borrar. Si falta el permiso de escritura, ofrece la misma aprobación que al guardar y reintenta una sola vez; una lista que esta cuenta no puede editar, o una aprobación que no se completa, no se reintenta. El texto de la respuesta de Spotify nunca se muestra, y la reproducción y la cola siguen igual.
 
 ## Idioma y temas
 
@@ -217,7 +227,8 @@ Las pruebas usan servidores y transportes locales simulados: no hacen peticiones
 
 ## Límites conocidos
 
-- No implementa listas editables, podcasts, letras, visualizador ni historial.
+- No crea, renombra ni borra listas: agrega la canción en reproducción a una lista existente y quita una aparición de una pista de la lista abierta, siempre donde tu cuenta pueda escribir.
+- No guarda canciones sin el permiso de escritura de la Web API, y en el modo de desarrollo de Spotify solo puede editar listas propias o colaborativas.
 - No funciona sin Spotify Premium.
 - Solo reproduce en plataformas con binario oficial de Soloist.
 - La búsqueda devuelve diez resultados por página y exige paginar.

@@ -88,6 +88,10 @@ func TestSpotifyCatalogPlaylists(t *testing.T) {
 	if err == nil || more || tracks != nil || calls != 3 {
 		t.Fatalf("invalid URI = %#v, %v, %v; calls=%d", tracks, more, err, calls)
 	}
+	// El mensaje visible del rechazo no cambia al compartir el error tipado.
+	if err.Error() != "Invalid Spotify playlist URI" {
+		t.Fatalf("invalid URI message = %q", err.Error())
+	}
 }
 
 func TestSpotifyCatalogRateLimitAndRedirect(t *testing.T) {
