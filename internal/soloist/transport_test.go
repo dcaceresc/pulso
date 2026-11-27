@@ -269,7 +269,7 @@ func TestPlaylistShuffleSwitchover(t *testing.T) {
 		},
 		{
 			name:     "standalone play cancels pending playlist",
-			exchange: []string{match, "!", `>{"type":"command","command":"play","uri":"spotify:track:Single"}`, ack, match},
+			exchange: []string{match, "!", `>{"type":"command","command":"play","uri":"spotify:track:Single"}`, ack, match, "~"},
 			barrier:  PlaylistShuffleWaiting,
 			command:  Command{Name: "play", URI: "spotify:track:Single"},
 		},
@@ -288,6 +288,14 @@ func TestPlaylistShuffleSwitchover(t *testing.T) {
 					return
 				}
 				for _, step := range tc.exchange {
+					if step == "~" {
+						select {
+						case <-time.After(playlistShuffleTimeout + 50*time.Millisecond):
+						case <-ctx.Done():
+							return
+						}
+						continue
+					}
 					if step == "!" {
 						if !playerTestSend(t, ctx, conn, `{"type":"volume_changed","volume":40}`) {
 							return
@@ -327,7 +335,10 @@ func TestPlaylistShuffleSwitchover(t *testing.T) {
 				}
 				close(ready)
 			}
-			state = playerTestState(t, states, func(s State) bool { return s.Volume == 41 })
+			settled := playerTestState(t, states, func(s State) bool { return s.Volume == 41 || !s.Connected })
+			if !settled.Connected || settled.SessionID != state.SessionID {
+				t.Fatalf("playlist exchange lost session %d: %+v", state.SessionID, settled)
+			}
 			playerTestCommand(t, commands, Command{Name: "set_volume", Volume: 12, SessionID: state.SessionID})
 			select {
 			case ok := <-done:

@@ -326,7 +326,7 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 	var deadline time.Time
 	var timeout *time.Timer
 	var timeoutC <-chan time.Time
-	// La espera de resultados sobrevive a la cancelación de la intención.
+	// La espera del resultado de play tiene su propio plazo.
 	var ackDeadline time.Time
 	var ackTimer *time.Timer
 	var ackTimeout <-chan time.Time
@@ -398,6 +398,9 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 				timeoutC = timeout.C
 				publish(state)
 			} else if command.Name != "get_state" && command.Name != "set_volume" && state.PlaylistShuffle != PlaylistShuffleIdle {
+				if ackTimeout != nil {
+					markPlayResultsAmbiguous()
+				}
 				finishShuffle(PlaylistShuffleIdle)
 				publish(state)
 			}
