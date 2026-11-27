@@ -54,6 +54,62 @@ Si el dispositivo no aparece, revisa que no haya una red de invitados, aislamien
 
 Si el emparejamiento no avanza porque la clave quedó mal escrita, pulsa `b`: vuelves al paso de la clave con el campo vacío. Al enviar la nueva, Pulso detiene el Soloist que había arrancado con la clave anterior y lo inicia otra vez; `Enter` solo vuelve a comprobar el estado.
 
+### Diagnóstico del emparejamiento
+
+En el paso de emparejamiento el asistente diagnostica por qué el teléfono puede no ver el equipo y resume el resultado con un indicador al principio de la línea: `● OK` en verde cuando no hay nada que revisar, `● Revisar` en ámbar cuando hay un riesgo pero el emparejamiento puede funcionar (por ejemplo, un puente de contenedores compitiendo por el anuncio), y `● Bloqueado` en rojo cuando falta una regla y el teléfono no podrá conectar. La palabra acompaña siempre al color, así que se entiende también en una terminal sin color.
+
+El atajo `d: diagnóstico` aparece solo cuando hay algo que revisar: abre el detalle con los hallazgos y, si hay algo que aplicar, los comandos exactos. `Enter` vuelve al paso de emparejamiento. Si el detalle no puede proponer ningún comando, lo dice y no ofrece `a`.
+
+El diagnóstico revisa tres cosas:
+
+- La dirección que usa tu equipo para llegar a la red local.
+- Las interfaces que compiten por la única dirección que Soloist anuncia: puentes de contenedores (los de Docker, por ejemplo), VPN y túneles.
+- El estado del cortafuegos y las reglas que faltan.
+
+Un puente o una VPN rompen el emparejamiento porque Soloist anuncia una sola dirección al arrancar y no ofrece ninguna opción para fijar la interfaz: puede anunciar la dirección del puente en lugar de la de tu red local, y el teléfono busca en la red equivocada. La recuperación concreta es arrancar Pulso con ese puente ausente, emparejar y volver a levantar el puente después. El anuncio sigue siendo válido hasta que Soloist se reinicie.
+
+El puerto de control de Soloist se elige al arrancar y cambia, así que una regla para un puerto concreto queda obsoleta en el siguiente arranque. Lo que se recomienda es un permiso acotado a la red local (por ejemplo `sudo ufw allow from 192.168.1.0/24`), que sigue sirviendo después de que cambie el puerto; es un permiso deliberadamente más amplio que un solo puerto. En Windows el asistente añade el puerto que leyó en ese momento, así que la regla manual de la red local de más abajo es la que evita repetir el trámite.
+
+El asistente nunca cambia el cortafuegos por sí solo: solo añade reglas después de una confirmación en dos pasos, con `a: aplicar reglas` y una segunda `a`. Cualquier otra tecla cancela la aplicación, y `Esc` sigue cerrando Pulso. Tampoco elimina ni reemplaza reglas existentes, y no necesita permisos de administrador solo para inspeccionar: si no puede leer las reglas, lo dice en pantalla en lugar de suponer que están bien.
+
+### Reglas manuales de cortafuegos
+
+Coinciden con lo que propone el asistente, con una excepción: en Windows el asistente añade el puerto que leyó en ese arranque, y aquí se propone un permiso por red de origen para no repetir el trámite. Sustituye `192.168.1.0/24` por el prefijo de tu red local. Donde el asistente todavía no puede proponer un comando (firewalld y nftables), estos son los equivalentes manuales.
+
+**ufw (Debian, Ubuntu):** la regla de descubrimiento ya viene en `before.rules` por defecto (`5353/udp` hacia `224.0.0.251`), así que lo que suele faltar es el tráfico desde la red local:
+
+```sh
+sudo ufw allow from 192.168.1.0/24
+```
+
+**firewalld (Fedora, RHEL):**
+
+```sh
+sudo firewall-cmd --permanent --add-service=mdns
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" accept'
+sudo firewall-cmd --reload
+```
+
+Si tu versión de firewalld no trae el servicio `mdns`, sustituye la primera línea por `sudo firewall-cmd --permanent --add-port=5353/udp`.
+
+**nftables:**
+
+```sh
+sudo nft add rule inet filter input udp dport 5353 accept
+sudo nft add rule inet filter input ip saddr 192.168.1.0/24 accept
+```
+
+Estas dos reglas se pierden al reiniciar: escríbelas en `/etc/nftables.conf` y recarga con `sudo nft -f /etc/nftables.conf`. El nombre de la tabla y de la cadena depende de tu configuración; usa los de tu cadena de entrada.
+
+**Windows Defender Firewall,** en una consola de Windows con permisos de administrador:
+
+```
+netsh advfirewall firewall add rule name="Pulso (Soloist)" dir=in action=allow protocol=UDP localport=5353
+netsh advfirewall firewall add rule name="Pulso (Soloist) LAN" dir=in action=allow protocol=TCP remoteip=192.168.1.0/24
+```
+
+La primera regla abre el descubrimiento y coincide con la que añade el asistente. La segunda permite el tráfico TCP de tu red local, que es lo que cambia de puerto en cada arranque.
+
 ## Conectar Spotify para buscar y ver listas
 
 Buscar y listar playlists usa la **Spotify Web API**, una autorización distinta del emparejamiento de Soloist:
@@ -117,6 +173,25 @@ Todo vive en la carpeta de configuración de tu usuario (`%APPDATA%\pulso` en Wi
 | `bin/soloist.exe` o `bin/soloist` | Copia de Soloist descargada por Pulso |
 
 Los archivos se crean con permisos privados. Pulso nunca escribe tokens en registros ni en la salida. El audio y el emparejamiento los guarda Soloist en su propio directorio: `%LOCALAPPDATA%\soloist\data` en Windows, o `$XDG_DATA_HOME/soloist` (con `~/.local/share/soloist` por defecto) en Linux.
+
+## Desinstalar
+
+`pulso uninstall` borra lo que Pulso y Soloist guardan en tu usuario. Primero imprime la ruta absoluta de cada objetivo y después espera una confirmación escrita: hay que escribir exactamente `uninstall`. Un Enter vacío o cualquier otra palabra responde «Cancelled; nothing was deleted.» y sale con código 1 sin borrar nada.
+
+Si Soloist está corriendo, el comando no borra nada por su cuenta: lo informa y pregunta `Close it and continue? [y/N]`. Solo con `y` o `Y` comprueba que el proceso del marcador sea realmente Soloist y, si lo es, le pide que termine y espera a que salga; si sigue vivo al agotarse la espera, aborta sin borrar nada. Si no puede confirmar que ese proceso es Soloist, no le envía ninguna señal y aborta. Nunca envía `SIGKILL`; en Windows usa la terminación del sistema.
+
+Se borra el binario de Soloist que descargó Pulso (`bin/soloist` o `bin/soloist.exe`), el Client ID, la sesión de Spotify, las preferencias y los directorios de datos y de caché de Soloist, donde viven el emparejamiento y su caché.
+
+Cada objetivo se informa como `Removed`, `Absent` o `Failed` con el error. Un objetivo que ya no existe no es un problema: ejecutar el comando dos veces termina bien. Si un borrado falla, se informa y se sigue con los demás, pero el código de salida es 1; solo es 0 cuando todo se borró o ya no estaba.
+
+El emparejamiento de Spotify y la autorización de la Web API no se pueden recuperar: después de desinstalar hay que repetir los dos pasos, con la clave de Soloist y con el Client ID. La desinstalación tampoco borra el binario de Pulso: indica su ruta para que lo borres tú, porque `go install` es su dueño.
+
+```sh
+bin="$(go env GOBIN)"; [ -n "$bin" ] || bin="$(go env GOPATH)/bin"
+rm "$bin/pulso"
+```
+
+En Windows el binario está en la misma carpeta como `pulso.exe`. Si una ruta no pertenece a Pulso o Soloist, es tu carpeta personal, la raíz del sistema o el directorio donde estás trabajando, el comando se niega a borrar y termina sin tocar nada.
 
 ## Diagnóstico y solución de problemas
 
