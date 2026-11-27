@@ -26,10 +26,12 @@ var (
 	ErrPlaylistUnavailable = errors.New("Spotify playlist contents are unavailable")
 	ErrSpotifyCatalog      = errors.New("Spotify catalog request failed")
 	// ErrSpotifyWriteScope significa que la aprobación guardada no incluye el
-	// permiso de escritura: se recupera aprobando otra vez, sin cambiar de sesión.
+	// permiso de escritura, o que Spotify rechazó el cambio sin nombrar una lista
+	// que esta cuenta no pueda editar: se recupera aprobando otra vez, sin cambiar
+	// de sesión.
 	ErrSpotifyWriteScope = errors.New("Spotify authorization cannot change playlists; authorize again")
-	// ErrPlaylistNotEditable significa que esta cuenta no puede modificar la
-	// lista elegida; volver a aprobar no lo arregla.
+	// ErrPlaylistNotEditable significa que Spotify afirmó que esta cuenta no
+	// puede modificar la lista elegida; volver a aprobar no lo arregla.
 	ErrPlaylistNotEditable = errors.New("Spotify playlist cannot be changed by this account")
 	// ErrPlaylistSnapshotConflict significa que la lista cambió desde que se
 	// leyó: hay que volver a leerla antes de reintentar la retirada.
@@ -173,14 +175,15 @@ func (c *Catalog) AddToPlaylist(ctx context.Context, playlistURI, trackURI strin
 	if spotifyURIID(trackURI, "track") == "" {
 		return "", errSpotifyTrackURI
 	}
-	// La ruta documentada por Spotify para añadir elementos a una lista.
+	// La ruta vigente de Spotify para añadir elementos a una lista; su cuerpo
+	// conserva la forma documentada con las URI que se agregan.
 	var response struct {
 		SnapshotID string `json:"snapshot_id"`
 	}
 	payload := struct {
 		URIs []string `json:"uris"`
 	}{URIs: []string{trackURI}}
-	if err := c.write(ctx, "/v1/playlists/"+id+"/tracks", payload, &response); err != nil {
+	if err := c.write(ctx, "/v1/playlists/"+id+"/items", payload, &response); err != nil {
 		return "", err
 	}
 	return response.SnapshotID, nil
@@ -208,12 +211,13 @@ func (c *Catalog) RemoveFromPlaylist(ctx context.Context, playlistURI, trackURI,
 	if trimmed := strings.TrimSpace(snapshot); trimmed == "" || trimmed != snapshot {
 		return errSpotifySnapshot
 	}
-	// La ruta documentada por Spotify para quitar elementos de una lista.
+	// La misma ruta vigente de elementos, con el cuerpo documentado para quitar:
+	// una sola aparición en `items` y el snapshot de la lectura que la eligió.
 	payload := struct {
-		Tracks     []spotifyPlaylistItem `json:"tracks"`
+		Items      []spotifyPlaylistItem `json:"items"`
 		SnapshotID string                `json:"snapshot_id"`
-	}{Tracks: []spotifyPlaylistItem{{URI: trackURI}}, SnapshotID: snapshot}
-	return c.remove(ctx, "/v1/playlists/"+id+"/tracks", payload)
+	}{Items: []spotifyPlaylistItem{{URI: trackURI}}, SnapshotID: snapshot}
+	return c.remove(ctx, "/v1/playlists/"+id+"/items", payload)
 }
 
 // write hace una sola petición POST autenticada al host fijado de la API. Igual
@@ -295,21 +299,42 @@ func (c *Catalog) writeRequest(ctx context.Context, method, target string, paylo
 	return resp, nil
 }
 
-// spotifyWriteForbidden separa los dos 403 de la API de escritura: un permiso
-// que falta, recuperable aprobando otra vez, y una lista que esta cuenta no
-// puede editar. Solo el mensaje clasifica la respuesta; su texto nunca sale de
-// aquí, y un cuerpo sin clasificar se trata como lista no editable para no
-// mandar a nadie al navegador sin motivo.
+// spotifyPlaylistEditRefusals nombra las frases con las que Spotify afirma que
+// esta cuenta no puede cambiar esa lista concreta. Solo ellas producen
+// ErrPlaylistNotEditable.
+var spotifyPlaylistEditRefusals = []string{
+	"you cannot add tracks to a playlist you don't own",
+	"you cannot remove tracks from a playlist you don't own",
+	"you can't add tracks to a playlist you don't own",
+	"you can't remove tracks from a playlist you don't own",
+	"you don't own this playlist",
+	"you do not own this playlist",
+	"not editable by this user",
+}
+
+// spotifyWriteForbidden separa los dos 403 de la API de escritura. Un rechazo
+// que nombra la falta de permiso sobre esa lista se reporta como lista no
+// editable, porque volver a aprobar no lo arregla. Cualquier otro, incluido uno
+// sin cuerpo, sin mensaje o sin clasificar, se trata como permiso de escritura
+// que falta: así la persona recibe la misma aprobación única en vez de que se le
+// diga que no puede cambiar su propia lista. Solo el mensaje clasifica la
+// respuesta; su texto nunca sale de aquí.
 func spotifyWriteForbidden(body io.Reader) error {
 	var response struct {
 		Error struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if readSpotifyJSON(body, 1<<20, &response) && strings.Contains(strings.ToLower(response.Error.Message), "scope") {
+	if !readSpotifyJSON(body, 1<<20, &response) {
 		return ErrSpotifyWriteScope
 	}
-	return ErrPlaylistNotEditable
+	message := strings.ToLower(response.Error.Message)
+	for _, refusal := range spotifyPlaylistEditRefusals {
+		if strings.Contains(message, refusal) {
+			return ErrPlaylistNotEditable
+		}
+	}
+	return ErrSpotifyWriteScope
 }
 
 // ReleaseSession impide que el catálogo reemplazado guarde su token viejo.

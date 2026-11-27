@@ -47,6 +47,28 @@ func spotifyWriteCatalog(t *testing.T, handler http.HandlerFunc) (*Catalog, *ato
 	}, &calls
 }
 
+// TestSpotifyWritePathsUseDocumentedItemsRoute fija la ruta vigente de Spotify
+// para los dos caminos de escritura: la de /tracks está obsoleta y no se usa.
+func TestSpotifyWritePathsUseDocumentedItemsRoute(t *testing.T) {
+	var requests []string
+	catalog, calls := spotifyWriteCatalog(t, func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"snapshot_id":"snapshot-two"}`)
+	})
+	if _, err := catalog.AddToPlaylist(context.Background(), "spotify:playlist:mine", "spotify:track:one"); err != nil {
+		t.Fatalf("add to playlist = %v", err)
+	}
+	if err := catalog.RemoveFromPlaylist(context.Background(), "spotify:playlist:mine", "spotify:track:one", "snapshot-one"); err != nil {
+		t.Fatalf("remove from playlist = %v", err)
+	}
+	want := []string{"POST /v1/playlists/mine/items", "DELETE /v1/playlists/mine/items"}
+	if len(requests) != len(want) || requests[0] != want[0] || requests[1] != want[1] || calls.Load() != 2 {
+		t.Fatalf("write requests = %v; calls=%d", requests, calls.Load())
+	}
+}
+
 func TestSpotifyAddToPlaylistRequest(t *testing.T) {
 	catalog, calls := spotifyWriteCatalog(t, func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -54,7 +76,7 @@ func TestSpotifyAddToPlaylistRequest(t *testing.T) {
 			t.Errorf("read body: %v", err)
 			return
 		}
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/playlists/mine/tracks" || r.URL.RawQuery != "" {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/playlists/mine/items" || r.URL.RawQuery != "" {
 			t.Errorf("request = %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer fixture-access" {
@@ -142,6 +164,11 @@ func TestSpotifyAddToPlaylistRejectedResponses(t *testing.T) {
 	}
 }
 
+// TestSpotifyAddToPlaylistForbiddenMapping fija que solo un rechazo que nombra
+// la falta de permiso sobre esa lista se reporta como lista no editable: un 403
+// sin clasificar se trata como permiso de escritura que falta, porque volver a
+// aprobar sí puede arreglarlo y decirle a la persona que no puede cambiar su
+// propia lista es falso.
 func TestSpotifyAddToPlaylistForbiddenMapping(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
@@ -158,9 +185,29 @@ func TestSpotifyAddToPlaylistForbiddenMapping(t *testing.T) {
 			want: ErrPlaylistNotEditable,
 		},
 		{
+			name: "rechazo en mayúsculas",
+			body: `{"error":{"status":403,"message":"YOU CANNOT ADD TRACKS TO A PLAYLIST YOU DON'T OWN"}}`,
+			want: ErrPlaylistNotEditable,
+		},
+		{
+			name: "lista sin ser dueño",
+			body: `{"error":{"status":403,"message":"You do not own this playlist."}}`,
+			want: ErrPlaylistNotEditable,
+		},
+		{
+			name: "sin clasificar",
+			body: `{"error":{"status":403,"message":"Forbidden"}}`,
+			want: ErrSpotifyWriteScope,
+		},
+		{
 			name: "cuerpo sin clasificar",
 			body: `{"message":"fixture secret body"}`,
-			want: ErrPlaylistNotEditable,
+			want: ErrSpotifyWriteScope,
+		},
+		{
+			name: "cuerpo vacío",
+			body: ``,
+			want: ErrSpotifyWriteScope,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -232,7 +279,7 @@ func TestSpotifyAddToPlaylistRefreshesExpiredToken(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"access_token":"new-access","token_type":"Bearer","expires_in":3600}`)
-		case "/v1/playlists/mine/tracks":
+		case "/v1/playlists/mine/items":
 			if r.Header.Get("Authorization") != "Bearer new-access" {
 				t.Errorf("refreshed token not used: %q", r.Header.Get("Authorization"))
 			}
@@ -425,7 +472,7 @@ func TestSpotifyRemoveFromPlaylistRequest(t *testing.T) {
 			t.Errorf("read body: %v", err)
 			return
 		}
-		if r.Method != http.MethodDelete || r.URL.Path != "/v1/playlists/mine/tracks" || r.URL.RawQuery != "" {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/playlists/mine/items" || r.URL.RawQuery != "" {
 			t.Errorf("request = %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer fixture-access" {
@@ -437,7 +484,7 @@ func TestSpotifyRemoveFromPlaylistRequest(t *testing.T) {
 		if got := r.Header.Get("Accept"); got != "application/json" {
 			t.Errorf("accept = %q", got)
 		}
-		if got := string(body); got != `{"tracks":[{"uri":"spotify:track:one"}],"snapshot_id":"snapshot-one"}` {
+		if got := string(body); got != `{"items":[{"uri":"spotify:track:one"}],"snapshot_id":"snapshot-one"}` {
 			t.Errorf("body = %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -494,6 +541,9 @@ func TestSpotifyRemoveFromPlaylistSnapshotConflict(t *testing.T) {
 	}
 }
 
+// TestSpotifyRemoveFromPlaylistForbiddenMapping fija la misma separación en la
+// retirada: un rechazo sin clasificar ofrece la aprobación, no la noticia de que
+// la cuenta no puede cambiar la lista.
 func TestSpotifyRemoveFromPlaylistForbiddenMapping(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
@@ -510,9 +560,19 @@ func TestSpotifyRemoveFromPlaylistForbiddenMapping(t *testing.T) {
 			want: ErrPlaylistNotEditable,
 		},
 		{
+			name: "sin clasificar",
+			body: `{"error":{"status":403,"message":"Forbidden"}}`,
+			want: ErrSpotifyWriteScope,
+		},
+		{
 			name: "cuerpo sin clasificar",
 			body: `{"message":"fixture secret body"}`,
-			want: ErrPlaylistNotEditable,
+			want: ErrSpotifyWriteScope,
+		},
+		{
+			name: "cuerpo vacío",
+			body: ``,
+			want: ErrSpotifyWriteScope,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -635,7 +695,7 @@ func TestSpotifyRemoveFromPlaylistRefreshesExpiredToken(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"access_token":"new-access","token_type":"Bearer","expires_in":3600}`)
-		case "/v1/playlists/mine/tracks":
+		case "/v1/playlists/mine/items":
 			if r.Method != http.MethodDelete || r.Header.Get("Authorization") != "Bearer new-access" {
 				t.Errorf("refreshed token not used: %s %s %q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
 			}

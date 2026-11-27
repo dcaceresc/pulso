@@ -544,6 +544,56 @@ func TestSaveFailuresAreQuietAndLocalized(t *testing.T) {
 	}
 }
 
+// TestSaveWriteRefusalOffersApprovalInsteadOfBlamingThePlaylist reproduce el
+// defecto informado: guardar en una lista propia recibió un 403 que la app no
+// supo clasificar y el aviso decía que la cuenta no puede cambiar esa lista. Un
+// permiso de escritura que falta debe ofrecer la única reaprobación; solo un
+// rechazo que nombra la falta de permiso sobre esa lista conserva el aviso.
+func TestSaveWriteRefusalOffersApprovalInsteadOfBlamingThePlaylist(t *testing.T) {
+	t.Run("rechazo sin clasificar en una lista propia", func(t *testing.T) {
+		api := newSaveFake(libraryPlaylistsFixture())
+		api.add = func(int, string, string) (string, error) { return "", spotify.ErrSpotifyWriteScope }
+		m, out, opened := savePlayer(t, preferences{}, saveTrackState(), api)
+		m, _ = m.Update(playerViewKey("a"))
+		playerViewText(t, m, "Save to playlist · Rock Chileno")
+		m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		m = librarySettle(t, m, cmd)
+		if view := ansi.Strip(m.View()); strings.Contains(view, "cannot change that playlist") {
+			t.Fatalf("a missing write grant was reported as an unchangeable playlist:\n%s", view)
+		}
+		playerViewText(t, m, "Spotify needs your approval to change playlists. Enter: authorize again.")
+		if len(api.saved()) != 1 || len(*opened) != 0 {
+			t.Fatalf("the offer saved %+v and opened %v before approving", api.saved(), *opened)
+		}
+		if len(out) != 0 {
+			t.Fatal("the offer touched playback")
+		}
+	})
+
+	t.Run("rechazo explícito de permiso", func(t *testing.T) {
+		api := newSaveFake(libraryPlaylistsFixture())
+		api.add = func(int, string, string) (string, error) { return "", spotify.ErrPlaylistNotEditable }
+		m, out, opened := savePlayer(t, preferences{}, saveTrackState(), api)
+		m, _ = m.Update(playerViewKey("a"))
+		m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		m = librarySettle(t, m, cmd)
+		view := playerViewText(t, m, "Could not save to Rock Chileno: this account cannot change that playlist.")
+		if strings.Contains(view, "authorize again") {
+			t.Fatalf("a definite refusal offered an approval:\n%s", view)
+		}
+		m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd != nil || len(*opened) != 0 {
+			t.Fatalf("the definite refusal scheduled %v and opened %v", cmd, *opened)
+		}
+		if len(api.saved()) != 1 {
+			t.Fatalf("the definite refusal saved %+v", api.saved())
+		}
+		if len(out) != 0 {
+			t.Fatal("the definite refusal touched playback")
+		}
+	})
+}
+
 // TestSaveChooserReusesPlaylistPaging proves the chooser reads the same playlist
 // page the library loads, including its paging.
 func TestSaveChooserReusesPlaylistPaging(t *testing.T) {

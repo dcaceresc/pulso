@@ -56,7 +56,9 @@ const (
 	// saveConfirming waits for the explicit confirmation a removal needs.
 	saveConfirming
 	// saveScopeOffered waits for the explicit approval an older read-only session
-	// needs before it can change a playlist.
+	// needs before it can change a playlist, and for the same single approval when
+	// Spotify rejected the change without naming a playlist this account cannot
+	// edit.
 	saveScopeOffered
 	saveAuthorization
 	saveSaving
@@ -1106,11 +1108,15 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 			m.saveTo.removeSnapshot = ""
 			return m.library.fetchTracks(0)
 		case errors.Is(msg.err, spotify.ErrPlaylistNotEditable):
+			// Solo un rechazo que nombra la falta de permiso sobre esa lista llega
+			// aquí: la noticia afirma que esta cuenta no puede cambiarla.
 			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeNotEditable, msg.name
 		case errors.Is(msg.err, spotify.ErrSpotifyWriteScope) && !m.saveTo.retried && m.saveTo.target.URI != "":
-			// Falta el permiso de escritura: se ofrece aprobarlo otra vez.
+			// Falta el permiso de escritura, o Spotify rechazó el cambio sin motivo
+			// clasificable: se ofrece aprobarlo otra vez, una sola vez.
 			m.saveTo.phase = saveScopeOffered
 		default:
+			// Cualquier otra causa se reporta por su nombre y sin inventar un motivo.
 			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeFailed, msg.name
 		}
 		return nil

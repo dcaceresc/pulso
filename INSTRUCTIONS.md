@@ -112,7 +112,7 @@ Buscar, listar playlists y agregar o quitar una canción de una lista usan la **
 3. El asistente te pide el Client ID una vez y lo guarda. También puedes definirlo antes de arrancar con `PULSO_SPOTIFY_CLIENT_ID`.
 4. Aprueba el acceso en el navegador que Pulso abre. El puerto 8888 debe estar libre; si está ocupado, ciérralo y reintenta.
 
-Después de la primera aprobación, la sesión queda guardada y se renueva sola. Solo tendrás que aprobar de nuevo si revocas la app en Spotify o borras el archivo de sesión. Guardar o quitar una canción necesita además permisos de escritura: una aprobación anterior que solo permitía leer no los tiene, y Pulso te ofrece aprobar otra vez en el momento de guardar o quitar. La reproducción nunca depende de esta autorización: si falla o la omites con `s`, los controles y el audio siguen funcionando.
+Después de la primera aprobación, la sesión queda guardada y se renueva sola. Solo tendrás que aprobar de nuevo si revocas la app en Spotify o borras el archivo de sesión. Guardar o quitar una canción necesita además permisos de escritura: una aprobación anterior que solo permitía leer no los tiene, y Pulso te ofrece aprobar otra vez en el momento de guardar o quitar. Si Spotify rechaza el cambio sin un motivo reconocible, Pulso te ofrece esa misma aprobación única en lugar de afirmar que no puedes cambiar la lista; solo cuando Spotify dice claramente que la cuenta no puede cambiar esa lista concreta el aviso lo repite. La reproducción nunca depende de esta autorización: si falla o la omites con `s`, los controles y el audio siguen funcionando.
 
 ## Uso diario
 

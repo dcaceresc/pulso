@@ -535,6 +535,56 @@ func TestRemoveFailuresAreQuietAndLocalized(t *testing.T) {
 	}
 }
 
+// TestRemoveWriteRefusalOffersApprovalInsteadOfBlamingThePlaylist fija la
+// misma separación en la retirada que en el guardado: un rechazo sin clasificar
+// sobre una lista propia ofrece la única reaprobación y nunca afirma que la
+// cuenta no puede cambiar la lista; solo un rechazo explícito conserva el aviso.
+func TestRemoveWriteRefusalOffersApprovalInsteadOfBlamingThePlaylist(t *testing.T) {
+	t.Run("rechazo sin clasificar en una lista propia", func(t *testing.T) {
+		api := newSaveFake(libraryPlaylistsFixture())
+		api.remove = func(int, string, string, string) error { return spotify.ErrSpotifyWriteScope }
+		m, out, opened := removeWorkspace(t, preferences{}, saveTrackState(), api)
+		m, _ = m.Update(playerViewKey("j"))
+		m, _ = m.Update(playerViewKey("x"))
+		m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		m = librarySettle(t, m, cmd)
+		if view := ansi.Strip(m.View()); strings.Contains(view, "cannot change that playlist") {
+			t.Fatalf("a missing write grant was reported as an unchangeable playlist:\n%s", view)
+		}
+		playerViewText(t, m, "Spotify needs your approval to change playlists. Enter: authorize again.")
+		if len(api.removed()) != 1 || len(*opened) != 0 {
+			t.Fatalf("the offer removed %+v and opened %v before approving", api.removed(), *opened)
+		}
+		if len(out) != 0 {
+			t.Fatal("the offer touched playback")
+		}
+	})
+
+	t.Run("rechazo explícito de permiso", func(t *testing.T) {
+		api := newSaveFake(libraryPlaylistsFixture())
+		api.remove = func(int, string, string, string) error { return spotify.ErrPlaylistNotEditable }
+		m, out, opened := removeWorkspace(t, preferences{}, saveTrackState(), api)
+		m, _ = m.Update(playerViewKey("j"))
+		m, _ = m.Update(playerViewKey("x"))
+		m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		m = librarySettle(t, m, cmd)
+		view := playerViewText(t, m, "Could not remove Estrechez de Corazón from Rock Chileno: this account cannot change that playlist.")
+		if strings.Contains(view, "authorize again") {
+			t.Fatalf("a definite refusal offered an approval:\n%s", view)
+		}
+		if len(out) != 0 {
+			t.Fatal("the definite refusal touched playback")
+		}
+		m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd != nil || len(*opened) != 0 {
+			t.Fatalf("the definite refusal scheduled %v and opened %v", cmd, *opened)
+		}
+		if len(api.removed()) != 1 {
+			t.Fatalf("the definite refusal removed %+v", api.removed())
+		}
+	})
+}
+
 // TestRemoveKeepsPreExistingKeys proves the removal key changes no binding: over
 // a browsable playlist the same keys still send the same playback commands and
 // the add flow still opens its chooser.

@@ -112,7 +112,7 @@ Search, playlist listing and adding or removing a track in a playlist use the **
 3. The wizard asks for the Client ID once and stores it. You can also set `PULSO_SPOTIFY_CLIENT_ID` before launching.
 4. Approve access in the browser Pulso opens. Port 8888 must be free; if something else uses it, close that and retry.
 
-After the first approval the session is stored and refreshed automatically. You only approve again if you revoke the app in Spotify or delete the session file. Adding or removing a track also needs write permission: an older approval that only allowed reading does not have it, and Pulso offers to approve again at the moment you add or remove. Playback never depends on this authorization: if it fails or you skip it with `s`, controls and audio keep working.
+After the first approval the session is stored and refreshed automatically. You only approve again if you revoke the app in Spotify or delete the session file. Adding or removing a track also needs write permission: an older approval that only allowed reading does not have it, and Pulso offers to approve again at the moment you add or remove. When Spotify rejects the change without a recognizable cause, Pulso offers that same single approval instead of claiming the playlist cannot be changed; only when Spotify clearly states that the account cannot change that particular playlist does the notice repeat it. Playback never depends on this authorization: if it fails or you skip it with `s`, controls and audio keep working.
 
 ## Daily use
 
