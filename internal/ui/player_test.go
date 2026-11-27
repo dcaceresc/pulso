@@ -150,18 +150,25 @@ func TestPlayerViewResponsiveAndSafeMetadata(t *testing.T) {
 			if strings.ContainsAny(view, "\r\t\x00\x07\x1b") || strings.Contains(m.View(), "UNTRUSTED") || strings.Contains(m.View(), "\x1b[31m") {
 				t.Fatalf("metadata injected controls: %q", m.View())
 			}
-			if size.width >= 40 {
-				playerViewText(t, m, "Pulso", "playing", "Good news", "Title", "Volume 37%")
-			} else if size.width >= 30 {
-				// Por debajo de 40 columnas la línea de estado pierde la palabra
-				// y conserva el porcentaje.
-				playerViewText(t, m, "Pulso", "playing", "Good news", "Title", "37%")
+			band := playerBand(size.width, size.height)
+			if band == playerBandInsufficient {
+				// La banda insuficiente solo nombra el tamaño: ningún dato de la
+				// sesión se dibuja.
+				for _, gone := range []string{"Pulso", "playing", "Good news", "Title", "Volume"} {
+					if strings.Contains(view, gone) {
+						t.Fatalf("the size message kept %q at %dx%d:\n%s", gone, size.width, size.height, view)
+					}
+				}
+				return
 			}
+			playerViewText(t, m, "Pulso", "playing", "Good news", "Title", "Volume 37%")
 			if size.width >= 60 {
-				playerViewText(t, m, "Artist")
+				playerViewText(t, m, "Artist", "彩虹 Title", "1:02", "3:07", "Desk Device")
 			}
-			if size.width >= 60 {
-				playerViewText(t, m, "彩虹 Title", "1:02", "3:07", "Desk Device", "Duration")
+			// El encabezado de la tabla solo existe en las bandas que dibujan la
+			// tabla: la mínima se queda con el contexto y el reproductor.
+			if playerViewBandHasTable(band) {
+				playerViewText(t, m, "Duration")
 			}
 		})
 	}
@@ -190,7 +197,7 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 		{100, 30, []string{
 			"Pulso", "Search:", "LIBRARY", "Nothing here yet", "#", "Title", "Artist", "Duration",
 			"Estrechez de Corazón", "1:02", "6:21", "Volume 37%", "Device Desk", "Esc back/quit",
-		}, nil},
+		}, []string{"UP NEXT", "CONTEXT"}},
 		{80, 24, []string{
 			"Pulso", "LIBRARY:", "Nothing here yet", "#", "Title", "Artist", "Duration",
 			"Estrechez de Corazón", "Volume 37%", "Esc back/quit", "├─", "└",
@@ -200,7 +207,7 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 			"Estrechez de Corazón", "Volume 37%",
 		}, nil},
 		{40, 12, []string{"Pulso", "▶", "Volume 37%", "Estrechez de Corazón", "├─", "└"}, nil},
-		{20, 8, []string{"Pulso", "37%", "├─"}, nil},
+		{20, 8, []string{"Minimum 40×12"}, []string{"Pulso", "├─"}},
 		{1, 1, nil, nil},
 	} {
 		t.Run(fmt.Sprintf("%dx%d", tt.width, tt.height), func(t *testing.T) {
@@ -223,14 +230,15 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 				}
 			}
 			if tt.width >= 100 && tt.height >= 30 {
-				sidebar := false
+				// La biblioteca es una caja: su título vive en el borde superior.
+				library := false
 				for _, row := range rows {
-					if strings.Contains(row, "LIBRARY") && strings.Contains(row, "│") {
-						sidebar = true
+					if strings.Contains(row, "LIBRARY") && strings.Contains(row, "┌") {
+						library = true
 					}
 				}
-				if !sidebar {
-					t.Fatalf("wide layout lost the sidebar column:\n%s", view)
+				if !library {
+					t.Fatalf("wide layout lost the library box:\n%s", view)
 				}
 			}
 		})
@@ -568,7 +576,8 @@ func TestPlayerViewCatalogKeysNoLongerOpenAnOverlay(t *testing.T) {
 
 func TestPlayerViewPreferenceShortcuts(t *testing.T) {
 	var saved []preferences
-	m := NewPlayerModelWithPreferences(context.Background(), nil, nil, 100, 24, preferences{Language: "en", Theme: "standard"}, func(p preferences) error {
+	// La banda amplia nombra la tabla, así que “Playback” sigue siendo legible.
+	m := NewPlayerModelWithPreferences(context.Background(), nil, nil, 120, 40, preferences{Language: "en", Theme: "standard"}, func(p preferences) error {
 		saved = append(saved, p)
 		return nil
 	}, "", nil)
@@ -1239,7 +1248,7 @@ func TestPlayerViewPolishBounds(t *testing.T) {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
 			rows := playerViewRows(t, m, size.width, size.height)
 			view := strings.Join(rows, "\n")
-			if size.width >= 2 && !strings.Contains(view, "Pulso") {
+			if playerBand(size.width, size.height) != playerBandInsufficient && !strings.Contains(view, "Pulso") {
 				t.Fatalf("missing the frame at %dx%d:\n%s", size.width, size.height, view)
 			}
 			for _, r := range view {
@@ -1257,16 +1266,17 @@ func TestPlayerViewPolishBounds(t *testing.T) {
 	}
 }
 
-// TestPlayerViewNarrowColumns keeps the breakpoint rule: below 60 columns the
-// table keeps the number, the title and a short duration, and the player box
-// keeps the title, the state line and its borders.
+// TestPlayerViewNarrowColumns keeps the column rules: the narrowest band that
+// still holds a table drops the artist and the long duration label, and 40x12
+// has no rows for a header at all.
 func TestPlayerViewNarrowColumns(t *testing.T) {
 	m, _ := playerViewModel(t, 120, 40, playerState{
 		Connected: true, Status: "playing", Volume: 42, PositionMS: 1000,
 		Track: playerTrack{Title: "Song", Artist: "Artist", DurationMS: 200000},
 		Queue: []playerTrack{{Title: "Queued", Artist: "Queued Artist", DurationMS: 100000}},
 	})
-	// A 40x12 la tabla no tiene filas: el pie es de la caja del reproductor.
+	// A 40x12 la banda mínima no tiene filas para el encabezado: el pie es de
+	// la caja del reproductor.
 	box := strings.Join(playerViewRows(t, m, 40, 12), "\n")
 	for _, want := range []string{"Song", "Volume 42%", "├─", "│", "└"} {
 		if !strings.Contains(box, want) {
@@ -1296,6 +1306,13 @@ func TestPlayerViewNarrowColumns(t *testing.T) {
 			t.Fatalf("narrow layout kept %q in the table header:\n%s", gone, narrow)
 		}
 	}
+	// La regla de columnas sigue viva donde se calcula, por si otra banda la usa.
+	player := m.(*playerModel)
+	short := player.tableColumns(50)
+	if len(short) != 3 || short[2].label != "Dur." {
+		t.Fatalf("the 50-column table renders %+v, want three columns ending in %q", short, "Dur.")
+	}
+	// Desde 60 columnas caben las cuatro columnas.
 	wide := strings.Join(playerViewRows(t, m, 60, 20), "\n")
 	for _, want := range []string{"#", "Title", "Artist", "Duration"} {
 		if !strings.Contains(wide, want) {
@@ -1317,7 +1334,7 @@ func TestPlayerViewLibrarySwitcher(t *testing.T) {
 		{80, 24, []string{"LIBRARY: Rock Chileno", "Tab: library"}},
 		{60, 20, []string{"LIBRARY: Rock Chileno", "Tab: library"}},
 		{40, 12, []string{"LIBRARY: Rock Chileno", "Tab"}},
-		{20, 8, []string{"Pulso", "├─"}},
+		{20, 8, []string{"Minimum 40×12"}},
 	} {
 		view := strings.Join(playerViewRows(t, m, tt.width, tt.height), "\n")
 		for _, want := range tt.want {
@@ -1438,7 +1455,7 @@ func TestPlayerViewSearchReachableAtEverySize(t *testing.T) {
 					t.Fatalf("/ from panel %d focused %v", panel, got)
 				}
 				playerViewRows(t, m, size.width, size.height)
-				if size.height >= 2 {
+				if size.height >= 2 && playerBand(size.width, size.height) != playerBandInsufficient {
 					playerViewText(t, m, "Search:")
 				}
 				// Esc blurs the empty field, so the next panel starts from the table.
@@ -1882,7 +1899,9 @@ func TestPlayerBoxFitsShortWideViewport(t *testing.T) {
 		Connected: true, Status: "playing", Volume: 85, PositionMS: 62000,
 		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros", DurationMS: 381000},
 	})
-	for _, size := range []struct{ width, height int }{{120, 14}, {120, 12}, {120, 10}, {60, 10}} {
+	// La matriz reserva los altos menores que 12 para el mensaje de tamaño, así
+	// que la caja se comprueba en el alto mínimo que aún la dibuja.
+	for _, size := range []struct{ width, height int }{{120, 14}, {120, 12}, {60, 12}} {
 		rows := playerViewRows(t, m, size.width, size.height)
 		view := strings.Join(rows, "\n")
 		for _, want := range []string{"├─", "Estrechez de Corazón"} {
@@ -1896,5 +1915,659 @@ func TestPlayerBoxFitsShortWideViewport(t *testing.T) {
 		if !strings.Contains(view, bottom) {
 			t.Fatalf("the %dx%d box lost its bottom border:\n%s", size.width, size.height, view)
 		}
+	}
+}
+
+// playerZoneModel builds the workspace with the first playlist open: that is
+// the state that names the table box after a playlist and leaves the queue with
+// its own entries.
+func playerZoneModel(t *testing.T, language string) tea.Model {
+	t.Helper()
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(42)}
+	m, _, _ := libraryNewPlayer(t, 120, 40, preferences{Language: language}, playerState{
+		Connected: true, Status: "playing", Volume: 37, OptionsKnown: true,
+		Shuffle: true, Repeat: "context", PlaylistContext: "Rock Chileno",
+		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros", DurationMS: 381000},
+		Queue: []playerTrack{{Title: "Huelga de Dolores", Artist: "Los Miserables", DurationMS: 258000}},
+	}, source, nil, "")
+	m, cmd := libraryOpenFirst(t, m)
+	return librarySettle(t, m, cmd)
+}
+
+// playerViewZoneCells cuts one zone out of a rendered row, so a rule about a
+// zone cannot be satisfied by a neighbour's text. The view is single-width, so
+// one rune is one cell.
+func playerViewZoneCells(row string, start, width int) string {
+	cells := []rune(row)
+	if start < 0 || width <= 0 || start+width > len(cells) {
+		return ""
+	}
+	return string(cells[start : start+width])
+}
+
+// playerViewBandHasTable names the bands whose composition still draws the
+// table: the three above the minimum one.
+func playerViewBandHasTable(band int) bool {
+	return band == playerBandWide || band == playerBandMedium || band == playerBandCompact
+}
+
+// TestPlayerViewZoneBands fixes the size matrix: the boxes each band draws, the
+// table header it hides and the exact width every row measures.
+func TestPlayerViewZoneBands(t *testing.T) {
+	m := playerZoneModel(t, "en")
+	for _, band := range []struct {
+		name          string
+		width, height int
+		want, absent  []string
+	}{
+		{"wide 140x40", 140, 40,
+			[]string{"LIBRARY", "Rock Chileno · 42 tracks", "UP NEXT", "CONTEXT", "Huelga de Dolores", "Los Miserables"},
+			nil},
+		{"wide 120x34", 120, 34,
+			[]string{"LIBRARY", "UP NEXT", "CONTEXT", "#", "Title"},
+			nil},
+		{"medium 100x30", 100, 30,
+			[]string{"LIBRARY", "Rock Chileno · 42 tracks", "#", "Title", "Tren al Sur"},
+			[]string{"UP NEXT", "CONTEXT"}},
+		{"compact 80x24", 80, 24,
+			[]string{"LIBRARY:", "#", "Title", "Tren al Sur"},
+			[]string{"UP NEXT", "CONTEXT"}},
+		{"minimum 79x23", 79, 23,
+			[]string{"LIBRARY:", "Rock Chileno", "#", "Title", "Tren al Sur"},
+			[]string{"UP NEXT", "CONTEXT"}},
+		{"minimum 40x12", 40, 12,
+			[]string{"Pulso", "LIBRARY:", "├─"},
+			[]string{"#", "Title", "UP NEXT"}},
+		{"insufficient 39x11", 39, 11,
+			[]string{"40×12", "39×11"},
+			[]string{"Pulso", "LIBRARY", "┌", "│", "└"}},
+	} {
+		t.Run(band.name, func(t *testing.T) {
+			rows := playerViewRows(t, m, band.width, band.height)
+			view := strings.Join(rows, "\n")
+			for _, want := range band.want {
+				if !strings.Contains(view, want) {
+					t.Errorf("missing %q in %dx%d:\n%s", want, band.width, band.height, view)
+				}
+			}
+			for _, gone := range band.absent {
+				if strings.Contains(view, gone) {
+					t.Errorf("unexpected %q in %dx%d:\n%s", gone, band.width, band.height, view)
+				}
+			}
+			for i, row := range rows {
+				if got := lipgloss.Width(row); got != band.width {
+					t.Fatalf("row %d of %dx%d measures %d cells: %q", i, band.width, band.height, got, row)
+				}
+			}
+		})
+	}
+}
+
+// TestPlayerViewZoneBandsLocalized repeats the zone titles in Spanish: every
+// visible string travels through m.text.
+func TestPlayerViewZoneBandsLocalized(t *testing.T) {
+	m := playerZoneModel(t, "es")
+	wide := strings.Join(playerViewRows(t, m, 120, 34), "\n")
+	for _, want := range []string{"BIBLIOTECA", "A CONTINUACIÓN", "CONTEXTO", "Rock Chileno", "Título"} {
+		if !strings.Contains(wide, want) {
+			t.Fatalf("missing %q in the Spanish wide band:\n%s", want, wide)
+		}
+	}
+	minimum := strings.Join(playerViewRows(t, m, 79, 23), "\n")
+	for _, want := range []string{"BIBLIOTECA: Rock Chileno", "Tab: biblioteca"} {
+		if !strings.Contains(minimum, want) {
+			t.Fatalf("missing %q in the Spanish minimum band:\n%s", want, minimum)
+		}
+	}
+	insufficient := strings.Join(playerViewRows(t, m, 39, 11), "\n")
+	for _, want := range []string{"Mínimo 40×12", "ahora 39×11"} {
+		if !strings.Contains(insufficient, want) {
+			t.Fatalf("missing %q in the Spanish size message:\n%s", want, insufficient)
+		}
+	}
+}
+
+// TestPlayerViewQueueKeepsArtistBelowTitle holds the queue box shape: each
+// entry writes its title and, on the next row, its artist.
+func TestPlayerViewQueueKeepsArtistBelowTitle(t *testing.T) {
+	m := playerZoneModel(t, "en")
+	const width, height, queueWidth = 120, 40, 30
+	rows := playerViewRows(t, m, width, height)
+	start := width - queueWidth
+	found := false
+	for i := 0; i+1 < len(rows); i++ {
+		cells := playerViewZoneCells(rows[i], start, queueWidth)
+		if !strings.Contains(cells, "Huelga de Dolores") {
+			continue
+		}
+		found = true
+		if strings.Contains(cells, "Los Miserables") {
+			t.Fatalf("the queue wrote the artist beside the title:\n%s", strings.Join(rows, "\n"))
+		}
+		if next := playerViewZoneCells(rows[i+1], start, queueWidth); !strings.Contains(next, "Los Miserables") {
+			t.Fatalf("the queue did not write the artist below the title:\n%s", strings.Join(rows, "\n"))
+		}
+	}
+	if !found {
+		t.Fatalf("the queue box did not list the playback queue:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
+// TestPlayerViewZoneFocusAccentsItsBorder keeps the accent honest: the zone
+// that holds the focus draws an accented border and every other zone stays
+// muted. Los colores se comprueban en el estilo, porque la prueba los dibuja sin
+// terminal.
+func TestPlayerViewZoneFocusAccentsItsBorder(t *testing.T) {
+	opened := playerZoneModel(t, "en").(*playerModel)
+	opened.focus = playerFocusTable
+	styles := opened.styles()
+	if got := opened.zoneEdge(playerFocusTable, styles); got.GetForeground() != styles.accent.GetForeground() || !got.GetBold() {
+		t.Fatalf("the focused table box is not accented: %+v", got)
+	}
+	if got := opened.zoneEdge(playerFocusSidebar, styles); got.GetForeground() != styles.muted.GetForeground() {
+		t.Fatalf("the unfocused library box is accented: %+v", got)
+	}
+	// Con una lista abierta la cola no es el contenido de la tabla: va apagada.
+	if got := opened.queueEdge(styles); got.GetForeground() != styles.muted.GetForeground() {
+		t.Fatalf("the queue zone is accented while the table shows a playlist: %+v", got)
+	}
+	// La biblioteca lleva el acento cuando el foco la alcanza.
+	opened.focus = playerFocusSidebar
+	if got := opened.zoneEdge(playerFocusSidebar, styles); got.GetForeground() != styles.accent.GetForeground() {
+		t.Fatalf("the focused library box is not accented: %+v", got)
+	}
+	// Sin lista ni búsqueda, la tabla muestra la cola y su zona tiene el foco.
+	queue, _ := playerViewModel(t, 120, 34, playerState{Connected: true})
+	if got := queue.(*playerModel).queueEdge(styles); got.GetForeground() != styles.accent.GetForeground() {
+		t.Fatalf("the queue zone is not accented while the table shows the queue: %+v", got)
+	}
+}
+
+// TestPlayerViewZonesShareOneHeight proves the boxed bands draw three boxes of
+// one height and leave the player box its own rows.
+func TestPlayerViewZonesShareOneHeight(t *testing.T) {
+	m := playerZoneModel(t, "en")
+	for _, size := range []struct{ width, height int }{{140, 40}, {120, 34}} {
+		rows := playerViewRows(t, m, size.width, size.height)
+		tops, bottoms := -1, -1
+		for i, row := range rows {
+			switch {
+			case strings.Count(row, "┌─ ") == 3:
+				if tops >= 0 {
+					t.Fatalf("%dx%d drew two rows of zone tops", size.width, size.height)
+				}
+				tops = i
+			case strings.Count(row, "└") >= 3:
+				if bottoms >= 0 {
+					t.Fatalf("%dx%d drew two rows of zone bottoms", size.width, size.height)
+				}
+				bottoms = i
+			}
+		}
+		if tops < 0 || bottoms <= tops {
+			t.Fatalf("%dx%d has no three-zone body:\n%s", size.width, size.height, strings.Join(rows, "\n"))
+		}
+		if bottoms-tops+1 < 5 {
+			t.Fatalf("%dx%d drew %d zone rows, want at least five", size.width, size.height, bottoms-tops+1)
+		}
+		bottom := "└" + strings.Repeat("─", size.width-2) + "┘"
+		if !strings.Contains(strings.Join(rows, "\n"), bottom) {
+			t.Fatalf("%dx%d lost the player box bottom border", size.width, size.height)
+		}
+	}
+}
+
+// TestPlayerViewMediumLibraryFitsNames keeps Rule 1: the medium library box is
+// 24 columns, so a playlist name with its cursor still fits its interior.
+func TestPlayerViewMediumLibraryFitsNames(t *testing.T) {
+	source := &libraryFake{playlists: func(context.Context, int) ([]libraryPlaylist, int, bool, error) {
+		return []libraryPlaylist{{Name: "Rock Chileno Clasico", Owner: "owner", URI: "spotify:playlist:rock", Total: 1}}, 1, false, nil
+	}}
+	m, _, _ := libraryNewPlayer(t, 100, 30, preferences{}, playerState{Connected: true}, source, nil, "")
+	rows := playerViewRows(t, m, 100, 30)
+	view := strings.Join(rows, "\n")
+	if !strings.Contains(view, "Rock Chileno Clasico") {
+		t.Fatalf("the medium library box cut the playlist name:\n%s", view)
+	}
+	top := ""
+	for _, row := range rows {
+		if strings.Contains(row, "LIBRARY") && strings.Contains(row, "┌") {
+			top = row
+			break
+		}
+	}
+	if top == "" {
+		t.Fatalf("the medium band has no library box:\n%s", view)
+	}
+	cells := []rune(top)
+	if len(cells) < playerLibraryMid || string(cells[playerLibraryMid-1]) != "┐" {
+		t.Fatalf("the medium library box is not %d columns wide: %q", playerLibraryMid, top)
+	}
+	// La tabla se queda el resto: 100 - 24 - 1 columnas.
+	_, table, _ := playerZoneWidths(100, false)
+	if table != 100-playerLibraryMid-playerZoneGap {
+		t.Fatalf("medium table width = %d, want %d", table, 100-playerLibraryMid-playerZoneGap)
+	}
+}
+
+// playerViewPromotedRow locates the only row that carries a promoted sentence
+// and checks it measures the window width.
+func playerViewPromotedRow(t *testing.T, rows []string, width int, sentence string) int {
+	t.Helper()
+	at := -1
+	for i, row := range rows {
+		if !strings.Contains(row, sentence) {
+			continue
+		}
+		if at >= 0 {
+			t.Fatalf("the sentence appears twice:\n%s", strings.Join(rows, "\n"))
+		}
+		if got := lipgloss.Width(row); got != width {
+			t.Fatalf("the promoted row measures %d cells, want %d: %q", got, width, row)
+		}
+		at = i
+	}
+	if at < 0 {
+		t.Fatalf("missing the promoted sentence %q:\n%s", sentence, strings.Join(rows, "\n"))
+	}
+	return at
+}
+
+// playerViewBoxMark is the only content of the library box while its sentence
+// is promoted: the short state marker.
+func playerViewBoxMark(t *testing.T, rows []string, mark string) {
+	t.Helper()
+	for _, row := range rows {
+		cells := []rune(row)
+		if len(cells) < 3 || cells[0] != '│' {
+			continue
+		}
+		end := -1
+		for i := 1; i < len(cells); i++ {
+			if cells[i] == '│' {
+				end = i
+				break
+			}
+		}
+		if end > 0 && strings.TrimSpace(string(cells[1:end])) == mark {
+			return
+		}
+	}
+	t.Fatalf("the library box lost its %q marker:\n%s", mark, strings.Join(rows, "\n"))
+}
+
+// TestPlayerViewPromotesOverflowSentence keeps Rule 2: a session sentence that
+// does not fit its zone is drawn once, full width, directly above the player
+// box, and the zone keeps only its short marker.
+func TestPlayerViewPromotesOverflowSentence(t *testing.T) {
+	authorize := func(context.Context, string, func(string)) (CatalogAPI, error) {
+		return nil, errors.New("offline fixture")
+	}
+	unauthorized, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true}, nil, authorize, "fixture-client")
+	failing := &libraryFake{playlists: func(context.Context, int) ([]libraryPlaylist, int, bool, error) {
+		return nil, 0, false, errSpotifyCatalog
+	}}
+	failed, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true}, failing, nil, "")
+	for _, tt := range []struct {
+		name     string
+		model    tea.Model
+		sentence string
+		mark     string
+	}{
+		{"unauthorized", unauthorized, "● No Spotify. Enter: connect", playerMarkNotice},
+		{"failure", failed, "! Could not load Spotify data. Enter: retry.", playerMarkFailure},
+	} {
+		for _, size := range []struct{ width, height int }{{120, 40}, {100, 30}} {
+			t.Run(fmt.Sprintf("%s %dx%d", tt.name, size.width, size.height), func(t *testing.T) {
+				rows := playerViewRows(t, tt.model, size.width, size.height)
+				at := playerViewPromotedRow(t, rows, size.width, tt.sentence)
+				box := -1
+				for i, row := range rows {
+					if strings.HasPrefix(row, "├─") {
+						box = i
+						break
+					}
+				}
+				if box < 0 || at != box-1 {
+					t.Fatalf("the sentence is not directly above the player box:\n%s", strings.Join(rows, "\n"))
+				}
+				playerViewBoxMark(t, rows, tt.mark)
+			})
+		}
+	}
+	// En la banda compacta no hay caja de biblioteca: la fila del selector ya
+	// ocupa todo el ancho y no hay nada que promover.
+	compact := strings.Join(playerViewRows(t, failed, 80, 24), "\n")
+	if !strings.Contains(compact, "LIBRARY: ! Could not load Spotify data. Enter: retry.") {
+		t.Fatalf("the compact selector lost the sentence:\n%s", compact)
+	}
+}
+
+// TestPlayerViewPromotesSavePrompt keeps Rule 2 for the save panel: its
+// approval prompt is session state and leaves the table box whole.
+func TestPlayerViewPromotesSavePrompt(t *testing.T) {
+	const sentence = "Spotify needs your approval to change playlists. Enter: authorize again."
+	model := playerZoneModel(t, "en").(*playerModel)
+	model.saveTo.phase = saveScopeOffered
+	rows := playerViewRows(t, model, 120, 40)
+	at := playerViewPromotedRow(t, rows, 120, sentence)
+	box := -1
+	for i, row := range rows {
+		if strings.HasPrefix(row, "├─") {
+			box = i
+			break
+		}
+	}
+	if box < 0 || at != box-1 {
+		t.Fatalf("the prompt is not directly above the player box:\n%s", strings.Join(rows, "\n"))
+	}
+	if !strings.Contains(strings.Join(rows, "\n"), "┌─ Save to playlist ─") {
+		t.Fatalf("the save panel lost its box title:\n%s", strings.Join(rows, "\n"))
+	}
+	// La caja de la tabla conserva la marca corta y no repite la frase.
+	if !playerViewTableMark(rows, playerMarkFailure) {
+		t.Fatalf("the table box lost its %q marker:\n%s", playerMarkFailure, strings.Join(rows, "\n"))
+	}
+}
+
+// playerViewTableMark reports whether the table box, which starts after the
+// library box and its gap, holds only the short state marker in a row.
+func playerViewTableMark(rows []string, mark string) bool {
+	start := playerLibraryZone + playerZoneGap
+	for _, row := range rows {
+		cells := []rune(row)
+		if len(cells) <= start+2 || cells[start] != '│' {
+			continue
+		}
+		end := -1
+		for i := start + 1; i < len(cells); i++ {
+			if cells[i] == '│' {
+				end = i
+				break
+			}
+		}
+		if end > start && strings.TrimSpace(string(cells[start+1:end])) == mark {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPlayerViewBandBoundaries keeps the ladder monotone: a height that misses
+// the threshold of its width lands on the next richest shape, never on the
+// poorest, and the table is drawn whenever the resolved shape has one.
+func TestPlayerViewBandBoundaries(t *testing.T) {
+	m := playerZoneModel(t, "en")
+	for _, tt := range []struct {
+		width, height int
+		band          int
+		shape         string
+		table         bool
+	}{
+		{120, 29, playerBandMedium, "medium", true},
+		{100, 25, playerBandCompact, "compact", true},
+		{80, 19, playerBandMinimum, "minimum", true},
+		{119, 40, playerBandMedium, "medium", true},
+		{99, 40, playerBandCompact, "compact", true},
+		{79, 24, playerBandMinimum, "minimum", true},
+	} {
+		t.Run(fmt.Sprintf("%dx%d %s", tt.width, tt.height, tt.shape), func(t *testing.T) {
+			if got := playerBand(tt.width, tt.height); got != tt.band {
+				t.Fatalf("band at %dx%d = %d, want %d", tt.width, tt.height, got, tt.band)
+			}
+			rows := playerViewRows(t, m, tt.width, tt.height)
+			view := strings.Join(rows, "\n")
+			for i, row := range rows {
+				if got := lipgloss.Width(row); got != tt.width {
+					t.Fatalf("row %d of %dx%d measures %d cells: %q", i, tt.width, tt.height, got, row)
+				}
+			}
+			tops := 0
+			for _, row := range rows {
+				if n := strings.Count(row, "┌─ "); n > tops {
+					tops = n
+				}
+			}
+			switch tt.shape {
+			case "medium":
+				if tops != 2 {
+					t.Fatalf("the medium shape drew %d zone titles, want two:\n%s", tops, view)
+				}
+				if strings.Contains(view, "UP NEXT") {
+					t.Fatalf("the medium shape kept the queue column:\n%s", view)
+				}
+			default:
+				if tops != 0 {
+					t.Fatalf("the %s shape drew %d zone titles, want none:\n%s", tt.shape, tops, view)
+				}
+				if !strings.Contains(view, "LIBRARY:") {
+					t.Fatalf("the %s shape lost the library selector:\n%s", tt.shape, view)
+				}
+			}
+			header := false
+			for _, row := range rows {
+				if strings.Contains(row, "#") && strings.Contains(row, "Title") {
+					header = true
+				}
+			}
+			if header != tt.table {
+				t.Fatalf("the %s shape table header = %v, want %v:\n%s", tt.shape, header, tt.table, view)
+			}
+		})
+	}
+}
+
+// TestPlayerViewBandMatrix pins the resolved band, the exact row width and the
+// table header at every size of the approved matrix.
+func TestPlayerViewBandMatrix(t *testing.T) {
+	m := playerZoneModel(t, "en")
+	for _, tt := range []struct {
+		width, height int
+		band          int
+		table         bool
+	}{
+		{140, 40, playerBandWide, true},
+		{120, 34, playerBandWide, true},
+		{120, 29, playerBandMedium, true},
+		{100, 30, playerBandMedium, true},
+		{100, 25, playerBandCompact, true},
+		{80, 24, playerBandCompact, true},
+		{80, 19, playerBandMinimum, true},
+		{79, 24, playerBandMinimum, true},
+		{40, 12, playerBandMinimum, false},
+		{39, 11, playerBandInsufficient, false},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", tt.width, tt.height), func(t *testing.T) {
+			if got := playerBand(tt.width, tt.height); got != tt.band {
+				t.Fatalf("band at %dx%d = %d, want %d", tt.width, tt.height, got, tt.band)
+			}
+			rows := playerViewRows(t, m, tt.width, tt.height)
+			view := strings.Join(rows, "\n")
+			for i, row := range rows {
+				if got := lipgloss.Width(row); got != tt.width {
+					t.Fatalf("row %d measures %d cells, want %d: %q", i, got, tt.width, row)
+				}
+			}
+			header := false
+			for _, row := range rows {
+				if strings.Contains(row, "#") && strings.Contains(row, "Title") {
+					header = true
+				}
+			}
+			if header != tt.table {
+				t.Fatalf("table header = %v at %dx%d, want %v:\n%s", header, tt.width, tt.height, tt.table, view)
+			}
+		})
+	}
+}
+
+// TestPlayerViewEdgeSizes walks the sizes around and below the matrix: none may
+// panic, none may overflow, and every window with room renders rows.
+func TestPlayerViewEdgeSizes(t *testing.T) {
+	m := playerZoneModel(t, "en")
+	for _, size := range []struct{ width, height int }{
+		{1, 1}, {0, 0}, {0, 10}, {10, 0}, {1, 12}, {2, 2}, {2, 40}, {3, 3},
+		{40, 1}, {39, 12}, {40, 11}, {41, 12}, {120, 1},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			// playerViewRows falla si una fila desborda o si sobran filas.
+			rows := playerViewRows(t, m, size.width, size.height)
+			if size.width < 1 || size.height < 1 {
+				if len(rows) != 0 {
+					t.Fatalf("an empty window rendered %d rows", len(rows))
+				}
+				return
+			}
+			if len(rows) == 0 {
+				t.Fatal("a window with room rendered no rows")
+			}
+			for i, row := range rows {
+				if got := lipgloss.Width(row); got != size.width {
+					t.Fatalf("row %d measures %d cells, want %d: %q", i, got, size.width, row)
+				}
+			}
+		})
+	}
+}
+
+// TestPlayerViewVolumeSurvivesEveryBand fija la regla de S2 en las dos lenguas:
+// el valor del volumen nunca desaparece de la línea de estado. En español la
+// forma con etiqueta no cabe a 40 ni 41 columnas («Volumen 37%»), así que el
+// porcentaje suelto sigue siendo alcanzable y no puede borrarse del degradado.
+func TestPlayerViewVolumeSurvivesEveryBand(t *testing.T) {
+	for _, language := range []string{"en", "es"} {
+		for _, size := range []struct{ width, height int }{
+			{140, 40}, {120, 34}, {100, 30}, {80, 24}, {79, 23}, {43, 12}, {42, 12}, {41, 12}, {40, 12},
+		} {
+			t.Run(fmt.Sprintf("%s/%dx%d", language, size.width, size.height), func(t *testing.T) {
+				m, _, _ := libraryNewPlayer(t, size.width, size.height, preferences{Language: language}, playerState{
+					Connected: true, Status: "playing", Volume: 37, OptionsKnown: true,
+				}, &libraryFake{playlists: libraryPlaylistsFixture()}, nil, "")
+				rows := playerViewRows(t, m, size.width, size.height)
+				line := ""
+				for _, row := range rows {
+					if strings.Contains(row, "├─") {
+						line = ansi.Strip(row)
+						break
+					}
+				}
+				if line == "" {
+					t.Fatalf("the %dx%d view drew no player box", size.width, size.height)
+				}
+				if !strings.Contains(line, "37%") {
+					t.Fatalf("the state line lost the volume value at %dx%d in %s:\n%s", size.width, size.height, language, line)
+				}
+			})
+		}
+	}
+}
+
+// TestPlayerViewPromotesAnySessionSentence fija que la promoción no depende del
+// texto: una frase de sesión sin glifo inicial se ve entera, una sola vez y sin
+// copia recortada dentro de la zona.
+func TestPlayerViewPromotesAnySessionSentence(t *testing.T) {
+	m := playerZoneModel(t, "es").(*playerModel)
+	m.saveTo.phase = saveConfirming
+	m.saveTo.action = saveActionRemove
+	m.saveTo.removeTrackName = "Bohemian Rhapsody (Remastered 2011)"
+	m.saveTo.target = libraryPlaylist{Name: "Clásicos del Rock Chileno & Latinoamericano"}
+	prompt := m.removePrompt()
+	for _, size := range []struct{ width, height int }{{140, 40}, {120, 34}} {
+		rows := playerViewRows(t, m, size.width, size.height)
+		count, cut := 0, 0
+		head := prompt
+		if len([]rune(head)) > 12 {
+			head = string([]rune(head)[:12])
+		}
+		for _, row := range rows {
+			plain := ansi.Strip(row)
+			if strings.Contains(plain, prompt) {
+				count++
+			} else if strings.Contains(plain, head) {
+				cut++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("the %dx%d view shows the confirmation %d times, want 1", size.width, size.height, count)
+		}
+		if cut != 0 {
+			t.Fatalf("the %dx%d view kept a truncated confirmation inside a zone", size.width, size.height)
+		}
+	}
+}
+
+func TestPlayerViewFooterPresence(t *testing.T) {
+	m := playerZoneModel(t, "en")
+	for _, tt := range []struct {
+		width, height int
+		hints         bool
+	}{
+		{140, 40, true}, {120, 34, true}, {100, 30, true}, {80, 24, true}, {79, 23, true},
+		{40, 12, false}, {39, 11, false},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", tt.width, tt.height), func(t *testing.T) {
+			view := strings.Join(playerViewRows(t, m, tt.width, tt.height), "\n")
+			for _, want := range []string{"Tab focus", "q quit"} {
+				if got := strings.Contains(view, want); got != tt.hints {
+					t.Fatalf("%q present = %v at %dx%d, want %v:\n%s", want, got, tt.width, tt.height, tt.hints, view)
+				}
+			}
+		})
+	}
+}
+
+// TestPlayerViewRemoveConfirmationKeepsItsText pins the promotion defect: the
+// confirmation is session state, so a prompt that does not fit the table box is
+// drawn whole on the full-width row and the box keeps no cut copy.
+func TestPlayerViewRemoveConfirmationKeepsItsText(t *testing.T) {
+	const track = "Bohemian Rhapsody (Remastered 2011)"
+	const playlist = "Clásicos del Rock Chileno & Latinoamericano"
+	for _, size := range []struct{ width, height int }{{140, 40}, {120, 34}} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			model := playerZoneModel(t, "en").(*playerModel)
+			model.saveTo.phase = saveConfirming
+			model.saveTo.removeTrackName = track
+			model.saveTo.target = libraryPlaylist{Name: playlist, URI: "spotify:playlist:clasicos"}
+			prompt := model.removePrompt()
+			library, table, _ := playerZoneWidths(size.width, playerBand(size.width, size.height) == playerBandWide)
+			if lipgloss.Width(prompt) <= table-2 {
+				t.Fatalf("the prompt (%d cells) fits the table box (%d cells): the test proves nothing",
+					lipgloss.Width(prompt), table-2)
+			}
+			rows := playerViewRows(t, model, size.width, size.height)
+			view := strings.Join(rows, "\n")
+			at := playerViewPromotedRow(t, rows, size.width, prompt)
+			box := -1
+			for i, row := range rows {
+				if strings.HasPrefix(row, "├─") {
+					box = i
+					break
+				}
+			}
+			if box < 0 || at != box-1 {
+				t.Fatalf("the confirmation is not directly above the player box:\n%s", view)
+			}
+			// Dentro de las zonas no queda una copia recortada del aviso.
+			top, bottom := -1, -1
+			for i, row := range rows {
+				if top < 0 && strings.Contains(row, "┌─ LIBRARY") {
+					top = i
+				}
+				if top >= 0 && i > top && strings.HasPrefix(row, "└") {
+					bottom = i
+					break
+				}
+			}
+			if top < 0 || bottom < 0 {
+				t.Fatalf("the zones are missing at %dx%d:\n%s", size.width, size.height, view)
+			}
+			for _, row := range rows[top : bottom+1] {
+				if strings.Contains(row, "Bohemian") {
+					t.Fatalf("the table box kept a cut copy of the confirmation:\n%s", view)
+				}
+			}
+			_ = library
+		})
 	}
 }
