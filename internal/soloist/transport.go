@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	playerQueueLimit = 10
-	playerReadLimit  = 256 << 10 // Includes metadata for the entire queue.
-	playerRetryMin   = 200 * time.Millisecond
-	playerRetryMax   = 5 * time.Second
+	playerQueueLimit       = 10
+	playerReadLimit        = 256 << 10 // Includes metadata for the entire queue.
+	playerRetryMin         = 200 * time.Millisecond
+	playerRetryMax         = 5 * time.Second
+	playlistShuffleTimeout = 3 * time.Second
 )
 
 const (
@@ -34,11 +35,25 @@ type Track struct {
 	DurationMS           int64
 }
 
+type PlaylistShuffleStatus uint8
+
+const (
+	PlaylistShuffleIdle PlaylistShuffleStatus = iota
+	PlaylistShuffleWaiting
+	PlaylistShuffleUnconfirmed
+)
+
+const PlayPlaylistShuffle = "play_playlist_shuffle"
+
 type State struct {
 	Track  Track
 	Queue  []Track
 	Status string
 	Device string
+	// PlaylistContext contiene el nombre o URI de la lista reportada por Soloist.
+	PlaylistContext        string
+	PlaylistShuffle        PlaylistShuffleStatus
+	playlistDeviceInactive bool
 	// PositionMS is the playhead Soloist reported at AnchorAt; the UI adds the
 	// elapsed time at Speed on top of it. AnchorAt is zero when unknown.
 	PositionMS   int64
@@ -79,13 +94,17 @@ func NewStream(ctx context.Context, dataDir func() (string, error)) (<-chan Stat
 		input := (<-chan Command)(commands)
 		var nextSessionID uint64
 		for delay := playerRetryMin; ctx.Err() == nil; delay = min(2*delay, playerRetryMax) {
-			if playerSession(ctx, dataDir, &input, &nextSessionID, publish) {
+			authenticated, retry := playerSession(ctx, dataDir, &input, &nextSessionID, publish)
+			if authenticated {
 				delay = playerRetryMin
 			}
 			if ctx.Err() != nil {
 				return
 			}
-			publish(State{Notice: playerRetryNotice})
+			if retry.Notice == "" {
+				retry.Notice = playerRetryNotice
+			}
+			publish(retry)
 			if !playerRetry(ctx, delay, &input) {
 				return
 			}
@@ -137,6 +156,9 @@ type playerEvent struct {
 	Status     *string          `json:"status"`
 	Volume     *int             `json:"volume"`
 	Item       *playerWireTrack `json:"item"`
+	Context    *playerContext   `json:"context"`
+	IsActive   *bool            `json:"is_active"`
+	Command    string           `json:"command"`
 	PositionMS *int64           `json:"position_ms"`
 	Position   *struct {
 		MS    *int64   `json:"position_ms"`
@@ -149,6 +171,36 @@ type playerEvent struct {
 	Upcoming []struct {
 		Item *playerWireTrack `json:"item"`
 	} `json:"upcoming"`
+}
+
+func (event playerEvent) deviceActivity() *bool {
+	if event.Type == "playback_state" || event.Type == "device_changed" {
+		return event.IsActive
+	}
+	return nil
+}
+
+type playerContext struct {
+	URI        string `json:"uri"`
+	EntityType string `json:"entity_type"`
+	playerEntity
+}
+
+func (entity *playerContext) playlistLabel() string {
+	if uri := entity.playlistURI(); uri != "" {
+		if name := entity.name(); name != "" {
+			return name
+		}
+		return uri
+	}
+	return ""
+}
+
+func (entity *playerContext) playlistURI() string {
+	if entity != nil && entity.EntityType == "playlist" && IsPlaylistURI(entity.URI) {
+		return entity.URI
+	}
+	return ""
 }
 
 type playerEntity struct {
@@ -261,7 +313,7 @@ func playerRead(ctx context.Context, dataDir func() (string, error), frames chan
 	}
 }
 
-func playerSession(ctx context.Context, dataDir func() (string, error), input *<-chan Command, nextSessionID *uint64, publish func(State)) (authenticated bool) {
+func playerSession(ctx context.Context, dataDir func() (string, error), input *<-chan Command, nextSessionID *uint64, publish func(State)) (authenticated bool, retry State) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	frames := make(chan playerFrame)
@@ -269,43 +321,132 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 
 	var state State
 	var conn *websocket.Conn
+	var target string
+	var matched bool
+	var deadline time.Time
+	var timeout *time.Timer
+	var timeoutC <-chan time.Time
+	// La espera del resultado de play tiene su propio plazo.
+	var ackDeadline time.Time
+	var ackTimer *time.Timer
+	var ackTimeout <-chan time.Time
+	stopAckTimer := func() {
+		if ackTimer != nil {
+			ackTimer.Stop()
+		}
+		ackTimeout = nil
+	}
+	defer stopAckTimer()
+	ackExpired := func() bool { return ackTimeout != nil && !time.Now().Before(ackDeadline) }
+	// Los resultados de play no tienen identificador. No se atribuye una
+	// aceptación a la solicitud más reciente si quedan respuestas anteriores.
+	var playsAwaitingResult uint64
+	var playResultsAmbiguous bool
+	markPlayResultsAmbiguous := func() {
+		// Un ACK tardío no puede rehabilitar este socket para aleatorio de lista.
+		playResultsAmbiguous = true
+		playsAwaitingResult = 0
+		stopAckTimer()
+	}
+	finishShuffle := func(status PlaylistShuffleStatus) {
+		if timeout != nil {
+			timeout.Stop()
+		}
+		target, matched, timeoutC = "", false, nil
+		state.PlaylistShuffle = status
+	}
+	defer func() { finishShuffle(PlaylistShuffleIdle) }()
 	for ctx.Err() == nil {
+		if ackExpired() {
+			return authenticated, State{PlaylistShuffle: PlaylistShuffleUnconfirmed}
+		}
 		select {
 		case <-ctx.Done():
-			return authenticated
+			return
+		case <-ackTimeout:
+			return authenticated, State{PlaylistShuffle: PlaylistShuffleUnconfirmed}
+		case <-timeoutC:
+			finishShuffle(PlaylistShuffleUnconfirmed)
+			publish(state)
 		case command, ok := <-*input:
 			if !ok {
 				*input = nil
 				continue
 			}
-			packets, allowed := playerCommandPacket(command)
-			if !allowed || !state.Connected || command.SessionID != state.SessionID {
+			if !state.Connected || command.SessionID != state.SessionID {
 				continue
+			}
+			playlistShuffle := command.Name == PlayPlaylistShuffle
+			if playlistShuffle {
+				if !IsPlaylistURI(command.URI) {
+					continue
+				}
+				if playResultsAmbiguous {
+					return authenticated, State{PlaylistShuffle: PlaylistShuffleUnconfirmed}
+				}
+				command.Name = "play"
+			}
+			packets, allowed := playerCommandPacket(command)
+			if !allowed {
+				continue
+			}
+			if playlistShuffle {
+				finishShuffle(PlaylistShuffleWaiting)
+				target = command.URI
+				deadline = time.Now().Add(playlistShuffleTimeout)
+				timeout = time.NewTimer(time.Until(deadline))
+				timeoutC = timeout.C
+				publish(state)
+			} else if command.Name != "get_state" && command.Name != "set_volume" && state.PlaylistShuffle != PlaylistShuffleIdle {
+				if ackTimeout != nil {
+					markPlayResultsAmbiguous()
+				}
+				finishShuffle(PlaylistShuffleIdle)
+				publish(state)
 			}
 			// Frames of one command go out in order; a failed write ends the
 			// session instead of replaying it.
 			for _, packet := range packets {
 				if !playerWrite(ctx, conn, packet) {
-					return authenticated
+					return
 				}
+			}
+			if command.Name == "play" && !playResultsAmbiguous {
+				playsAwaitingResult++
+			}
+			if playlistShuffle && ackTimeout == nil {
+				ackDeadline = deadline
+				ackTimer = time.NewTimer(time.Until(ackDeadline))
+				ackTimeout = ackTimer.C
 			}
 		case frame, ok := <-frames:
 			if !ok {
-				return authenticated
+				return
 			}
 			conn = frame.conn
 			event := frame.event
+			if target != "" && !time.Now().Before(deadline) {
+				finishShuffle(PlaylistShuffleUnconfirmed)
+				publish(state)
+			}
 			switch event.Type {
-			case "auth_state":
-				if event.LoggedIn == nil {
-					return authenticated
+			case "auth_state", "logout":
+				if event.Type == "auth_state" && event.LoggedIn == nil {
+					return
 				}
-				if !*event.LoggedIn {
+				if event.Type == "logout" || !*event.LoggedIn {
+					if playsAwaitingResult != 0 {
+						if target != "" {
+							return authenticated, State{Notice: playerPairNotice}
+						}
+						markPlayResultsAmbiguous()
+					}
+					finishShuffle(PlaylistShuffleIdle)
 					state = State{Notice: playerPairNotice}
 				} else if !state.Connected {
 					limit := playerQueueLimit
 					if !playerWrite(ctx, conn, playerRequest{Command: "get_state"}) || !playerWrite(ctx, conn, playerRequest{Command: "get_queue", Limit: limit}) {
-						return authenticated
+						return
 					}
 					// Drop input buffered before the new session became ready.
 					// There is no retry of commands from a failed write either.
@@ -318,22 +459,68 @@ func playerSession(ctx context.Context, dataDir func() (string, error), input *<
 					state.Connected, state.Notice = true, ""
 					authenticated = true
 				}
-				if event.DeviceName != nil {
+				if event.Type == "auth_state" && event.DeviceName != nil {
 					state.Device = playerMetadataText(*event.DeviceName)
 				}
-			case "logout":
-				state = State{Notice: playerPairNotice}
 			case "error":
+				// El error no identifica la orden; no se puede descartar solo un ACK.
+				if playsAwaitingResult != 0 {
+					if target != "" {
+						return authenticated, State{Notice: playerErrorNotice}
+					}
+					markPlayResultsAmbiguous()
+				}
+				if target != "" {
+					finishShuffle(PlaylistShuffleUnconfirmed)
+				}
 				state.Notice = playerErrorNotice
+			case "command_result":
+				if event.Command != "play" || playsAwaitingResult == 0 {
+					continue
+				}
+				if ackExpired() {
+					return authenticated, State{PlaylistShuffle: PlaylistShuffleUnconfirmed}
+				}
+				playsAwaitingResult--
+				if playsAwaitingResult == 0 {
+					stopAckTimer()
+					if target != "" && !matched && !playerWrite(ctx, conn, playerRequest{Command: "get_state"}) {
+						return
+					}
+				}
+				if target == "" {
+					continue
+				}
 			default:
 				if !state.Connected || !state.apply(event) {
 					continue
+				}
+				if target != "" {
+					if active := event.deviceActivity(); active != nil && !*active {
+						finishShuffle(PlaylistShuffleUnconfirmed)
+					} else if event.Type == "context_changed" || event.Type == "playback_state" {
+						if !state.playlistDeviceInactive && event.Context.playlistURI() == target {
+							matched = true
+						} else if matched {
+							finishShuffle(PlaylistShuffleUnconfirmed)
+						}
+					}
+				}
+			}
+			if target != "" && matched && playsAwaitingResult == 0 {
+				if !time.Now().Before(deadline) {
+					finishShuffle(PlaylistShuffleUnconfirmed)
+				} else {
+					if !playerWrite(ctx, conn, playerShufflePacket(true)) || !playerWrite(ctx, conn, playerRequest{Command: "get_state"}) {
+						return
+					}
+					finishShuffle(PlaylistShuffleIdle)
 				}
 			}
 			publish(state)
 		}
 	}
-	return authenticated
+	return
 }
 
 // playerRepeatMode normalizes the repeat modes Soloist reports and accepts.
@@ -346,6 +533,12 @@ func playerRepeatMode(raw string) (string, bool) {
 }
 
 func (state *State) apply(event playerEvent) bool {
+	if active := event.deviceActivity(); active != nil {
+		state.playlistDeviceInactive = !*active
+		if !*active {
+			state.PlaylistContext = ""
+		}
+	}
 	now := time.Now()
 	// Every reported position starts a new interpolation anchor.
 	updatePosition := func() {
@@ -393,6 +586,9 @@ func (state *State) apply(event playerEvent) bool {
 	case "playback_state", "track_changed":
 		state.Track = event.Item.track()
 		state.PositionMS, state.AnchorAt = 0, now
+		if event.Type == "playback_state" && !state.playlistDeviceInactive {
+			state.PlaylistContext = event.Context.playlistLabel()
+		}
 		if event.Type == "playback_state" || event.Item == nil {
 			state.Status = ""
 		}
@@ -402,6 +598,10 @@ func (state *State) apply(event playerEvent) bool {
 		updateOptions()
 		if event.Volume != nil {
 			state.Volume = min(100, max(0, *event.Volume))
+		}
+	case "context_changed":
+		if !state.playlistDeviceInactive {
+			state.PlaylistContext = event.Context.playlistLabel()
 		}
 	case "playback_changed":
 		updateStatus()
@@ -470,8 +670,7 @@ func playerCommandPacket(command Command) ([]playerRequest, bool) {
 		position := max(0, command.PositionMS)
 		return []playerRequest{{Command: "seek", PositionMS: &position}}, true
 	case "set_shuffle":
-		enabled := command.Shuffle
-		return []playerRequest{{Command: "set_shuffle", Enabled: &enabled}}, true
+		return []playerRequest{playerShufflePacket(command.Shuffle)}, true
 	case "set_repeat":
 		repeat, ok := playerRepeatMode(command.Repeat)
 		if !ok {
@@ -490,6 +689,10 @@ func playerCommandPacket(command Command) ([]playerRequest, bool) {
 	return nil, false
 }
 
+func playerShufflePacket(enabled bool) playerRequest {
+	return playerRequest{Command: "set_shuffle", Enabled: &enabled}
+}
+
 func playerSpotifyURI(raw string) (string, bool) {
 	if rest, ok := strings.CutPrefix(raw, "spotify:"); ok {
 		kind, id, found := strings.Cut(rest, ":")
@@ -499,6 +702,11 @@ func playerSpotifyURI(raw string) (string, bool) {
 		return "spotify:" + kind + ":" + id, true
 	}
 	return "", false
+}
+
+func IsPlaylistURI(uri string) bool {
+	_, ok := playerSpotifyURI(uri)
+	return ok && strings.HasPrefix(uri, "spotify:playlist:")
 }
 
 func playerPlayableKind(kind string) bool {

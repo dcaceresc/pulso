@@ -119,6 +119,27 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 		{`{"type":"playback_changed","status":"paused","position":{"position_ms":700}}`, func(s State) bool {
 			return s.Status == "paused" && s.PositionMS == 700 && s.Track.Title == "Next"
 		}},
+		{`{"type":"playback_state","item":` + playerTestItem + `,"status":"paused","context":{"uri":"spotify:playlist:First","entity_type":"playlist","decorations":{"identity":{"name":"First list"}}}}`, func(s State) bool {
+			return s.PlaylistContext == "First list"
+		}},
+		{`{"type":"context_changed","context":{"uri":"spotify:playlist:Second","entity_type":"playlist"}}`, func(s State) bool {
+			return s.PlaylistContext == "spotify:playlist:Second" && s.Track.Title == "Song"
+		}},
+		{`{"type":"playback_state","is_active":false,"status":"paused","volume":30,"item":` + playerTestItem + `,"context":{"uri":"spotify:playlist:Second","entity_type":"playlist"}}`, func(s State) bool {
+			return s.Volume == 30 && s.PlaylistContext == "" && s.Track.Title == "Song"
+		}},
+		{`{"type":"playback_state","is_active":true,"status":"paused","volume":31,"item":` + playerTestItem + `,"context":{"uri":"spotify:playlist:Second","entity_type":"playlist"}}`, func(s State) bool {
+			return s.Volume == 31 && s.PlaylistContext == "spotify:playlist:Second"
+		}},
+		{`{"type":"device_changed","is_active":false,"device_name":"Away"}`, func(s State) bool {
+			return s.Device == "Away" && s.PlaylistContext == ""
+		}},
+		{`{"type":"device_changed","is_active":true,"device_name":"Living Room"}`, func(s State) bool {
+			return s.Device == "Living Room" && s.PlaylistContext == ""
+		}},
+		{`{"type":"context_changed","context":{"uri":"spotify:playlist:Bad?","entity_type":"playlist"}}`, func(s State) bool {
+			return s.PlaylistContext == "" && s.Track.Title == "Song"
+		}},
 		{`{"type":"position_sync","position":{"position_ms":1234}}`, func(s State) bool { return s.PositionMS == 1234 && s.Status == "paused" }},
 		{`{"type":"volume_changed","volume":27}`, func(s State) bool { return s.Volume == 27 }},
 		{`{"type":"device_changed","device_name":"Bedroom"}`, func(s State) bool { return s.Device == "Bedroom" }},
@@ -150,6 +171,9 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 			if i == 0 {
 				for _, cmd := range []string{`{"type":"command","command":"play"}`, `{"type":"command","command":"pause"}`, `{"type":"command","command":"skip_next"}`, `{"type":"command","command":"skip_prev"}`, `{"type":"command","command":"set_volume","volume":100}`, `{"type":"command","command":"set_volume","volume":0}`, `{"type":"command","command":"play","uri":"spotify:track:AbC123"}`, `{"type":"command","command":"play","uri":"spotify:album:AbC123"}`, `{"type":"command","command":"play","uri":"spotify:playlist:AbC123"}`, `{"type":"command","command":"play","uri":"spotify:episode:AbC123"}`} {
 					if !playerTestRead(t, ctx, conn, cmd) {
+						return
+					}
+					if strings.Contains(cmd, `"command":"play"`) && !playerTestSend(t, ctx, conn, `{"type":"command_result","command":"play"}`) {
 						return
 					}
 				}
@@ -210,6 +234,244 @@ func TestPlayerTransportEventsAndCommands(t *testing.T) {
 		case <-stop:
 			t.Fatal("states did not close after cancellation")
 		}
+	}
+}
+
+func TestPlaylistShuffleSwitchover(t *testing.T) {
+	const (
+		playlist = "spotify:playlist:Target"
+		play = `{"type":"command","command":"play","uri":"spotify:playlist:Target"}`
+		match = `{"type":"context_changed","context":{"uri":"spotify:playlist:Target","entity_type":"playlist"}}`
+		other = `{"type":"context_changed","context":{"uri":"spotify:playlist:Other","entity_type":"playlist"}}`
+		ack = `{"type":"command_result","command":"play"}`
+		shuffle = `{"type":"command","command":"set_shuffle","enabled":true}`
+		probe = `{"type":"command","command":"set_volume","volume":12}`
+		stateRequest = `{"type":"command","command":"get_state"}`
+	)
+	for _, tc := range []struct {
+		name     string
+		exchange []string
+		barrier  PlaylistShuffleStatus
+		command  Command
+	}{
+		{name: "initial context then target", exchange: []string{other, match, ack, ">" + shuffle, ">" + stateRequest}},
+		{name: "ack before context", exchange: []string{ack, ">" + stateRequest, other, match, ">" + shuffle, ">" + stateRequest}},
+		{name: "observed switchover away from target", exchange: []string{match, other, ack, match}},
+		{name: "device loss cancels before a matching context", exchange: []string{
+			`{"type":"device_changed","is_active":false,"device_name":"Away"}`,
+			`{"type":"device_changed","is_active":true,"device_name":"Back"}`, match, ack,
+		}},
+		{
+			name:     "replacement fences old confirmation and waits for both play results",
+			exchange: []string{match, "!", `>{"type":"command","command":"play","uri":"spotify:playlist:Other"}`, match, ack, other, match, ack},
+			barrier:  PlaylistShuffleWaiting,
+			command:  Command{Name: "play_playlist_shuffle", URI: "spotify:playlist:Other"},
+		},
+		{
+			name:     "standalone play cancels pending playlist",
+			exchange: []string{match, "!", `>{"type":"command","command":"play","uri":"spotify:track:Single"}`, ack, match, "~"},
+			barrier:  PlaylistShuffleWaiting,
+			command:  Command{Name: "play", URI: "spotify:track:Single"},
+		},
+
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			done := make(chan bool, 1)
+			ready := make(chan struct{})
+			server := playerTestServer(t, func(ctx context.Context, conn *websocket.Conn) {
+				if !playerTestSend(t, ctx, conn, `{"type":"auth_state","logged_in":true}`) ||
+					!playerTestRead(t, ctx, conn, stateRequest) ||
+					!playerTestRead(t, ctx, conn, `{"type":"command","command":"get_queue","limit":10}`) ||
+					!playerTestRead(t, ctx, conn, play) {
+					done <- false
+					return
+				}
+				for _, step := range tc.exchange {
+					if step == "~" {
+						select {
+						case <-time.After(playlistShuffleTimeout + 50*time.Millisecond):
+						case <-ctx.Done():
+							return
+						}
+						continue
+					}
+					if step == "!" {
+						if !playerTestSend(t, ctx, conn, `{"type":"volume_changed","volume":40}`) {
+							return
+						}
+						select {
+						case <-ready:
+						case <-ctx.Done():
+							return
+						}
+						continue
+					}
+					var ok bool
+					if want, read := strings.CutPrefix(step, ">"); read {
+						ok = playerTestRead(t, ctx, conn, want)
+					} else {
+						ok = playerTestSend(t, ctx, conn, step)
+					}
+					if !ok {
+						done <- false
+						return
+					}
+				}
+				done <- playerTestSend(t, ctx, conn, `{"type":"volume_changed","volume":41}`) &&
+					playerTestRead(t, ctx, conn, probe)
+			})
+			playerTestMarkers(t, dir, server.URL)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			states, commands := NewStream(ctx, func() (string, error) { return dir, nil })
+			state := playerTestState(t, states, func(s State) bool { return s.Connected })
+			playerTestCommand(t, commands, Command{Name: "play_playlist_shuffle", URI: playlist, SessionID: state.SessionID})
+			if tc.barrier != PlaylistShuffleIdle {
+				playerTestState(t, states, func(s State) bool { return s.Volume == 40 && s.PlaylistShuffle == tc.barrier })
+				if cmd := tc.command; cmd.Name != "" {
+					cmd.SessionID = state.SessionID
+					playerTestCommand(t, commands, cmd)
+				}
+				close(ready)
+			}
+			settled := playerTestState(t, states, func(s State) bool { return s.Volume == 41 || !s.Connected })
+			if !settled.Connected || settled.SessionID != state.SessionID {
+				t.Fatalf("playlist exchange lost session %d: %+v", state.SessionID, settled)
+			}
+			playerTestCommand(t, commands, Command{Name: "set_volume", Volume: 12, SessionID: state.SessionID})
+			select {
+			case ok := <-done:
+				if !ok {
+					t.Fatal("playlist exchange failed")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("playlist exchange did not finish")
+			}
+		})
+	}
+}
+
+func TestPlaylistShuffleReconnectsAfterUnansweredPlay(t *testing.T) {
+	const (
+		stateRequest = `{"type":"command","command":"get_state"}`
+		queueRequest = `{"type":"command","command":"get_queue","limit":10}`
+		oldPlay      = `{"type":"command","command":"play","uri":"spotify:playlist:Old"}`
+		legacyPlay   = `{"type":"command","command":"play","uri":"spotify:track:Legacy"}`
+		newPlay      = `{"type":"command","command":"play","uri":"spotify:playlist:Fresh"}`
+		playlist     = `{"uri":"spotify:playlist:Fresh","entity_type":"playlist"}`
+	)
+	for _, tc := range []struct {
+		name, command, event, notice string
+		unconfirmed                  bool
+	}{
+		{name: "legacy error", command: "play", event: `{"type":"error","message":"rejected"}`, notice: playerErrorNotice},
+		{name: "legacy logout", command: "play", event: `{"type":"logout"}`, notice: playerPairNotice},
+		{name: "legacy authentication lost", command: "play", event: `{"type":"auth_state","logged_in":false}`, notice: playerPairNotice},
+		{name: "targeted error", command: PlayPlaylistShuffle, event: `{"type":"error","message":"rejected"}`, notice: playerErrorNotice},
+		{name: "targeted timeout", command: PlayPlaylistShuffle, notice: playerRetryNotice, unconfirmed: true},
+		{name: "targeted logout", command: PlayPlaylistShuffle, event: `{"type":"logout"}`, notice: playerPairNotice},
+		{name: "targeted authentication lost", command: PlayPlaylistShuffle, event: `{"type":"auth_state","logged_in":false}`, notice: playerPairNotice},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var accepted atomic.Int32
+			freshAuth := make(chan struct{})
+			legacyReauth := make(chan struct{})
+			legacy := tc.command == "play"
+			server := playerTestServer(t, func(ctx context.Context, conn *websocket.Conn) {
+				socket := accepted.Add(1)
+				if socket == 2 {
+					select {
+					case <-freshAuth:
+					case <-ctx.Done():
+						return
+					}
+				}
+				if socket > 2 || !playerTestSend(t, ctx, conn, `{"type":"auth_state","logged_in":true}`) ||
+					!playerTestRead(t, ctx, conn, stateRequest) || !playerTestRead(t, ctx, conn, queueRequest) {
+					return
+				}
+				if socket == 1 {
+					wantPlay := oldPlay
+					if legacy {
+						wantPlay = legacyPlay
+					}
+					if !playerTestRead(t, ctx, conn, wantPlay) || tc.event != "" && !playerTestSend(t, ctx, conn, tc.event) {
+						return
+					}
+					if legacy {
+						if tc.notice == playerPairNotice {
+							select {
+							case <-legacyReauth:
+							case <-ctx.Done():
+								return
+							}
+							if !playerTestSend(t, ctx, conn, `{"type":"auth_state","logged_in":true}`) ||
+								!playerTestRead(t, ctx, conn, stateRequest) || !playerTestRead(t, ctx, conn, queueRequest) {
+								return
+							}
+						}
+						if !playerTestRead(t, ctx, conn, `{"type":"command","command":"set_volume","volume":21}`) ||
+							!playerTestSend(t, ctx, conn, `{"type":"command_result","command":"play"}`) ||
+							!playerTestSend(t, ctx, conn, `{"type":"volume_changed","volume":21}`) {
+							return
+						}
+					}
+					if _, data, err := conn.Read(ctx); err == nil || ctx.Err() != nil {
+						t.Errorf("ambiguous socket was not retired; frame %q, error %v", data, err)
+					}
+					return
+				}
+				if !playerTestRead(t, ctx, conn, newPlay) ||
+					!playerTestSend(t, ctx, conn, `{"type":"context_changed","context":`+playlist+`}`) ||
+					!playerTestSend(t, ctx, conn, `{"type":"command_result","command":"play"}`) ||
+					!playerTestRead(t, ctx, conn, `{"type":"command","command":"set_shuffle","enabled":true}`) ||
+					!playerTestRead(t, ctx, conn, stateRequest) ||
+					!playerTestSend(t, ctx, conn, `{"type":"playback_state","context":`+playlist+`,"is_active":true,"options":{"shuffle":true}}`) {
+					return
+				}
+				_, _, _ = conn.Read(ctx)
+			})
+			playerTestMarkers(t, dir, server.URL)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			states, commands := NewStream(ctx, func() (string, error) { return dir, nil })
+			old := playerTestState(t, states, func(s State) bool { return s.Connected })
+			uri := "spotify:playlist:Old"
+			if legacy {
+				uri = "spotify:track:Legacy"
+			}
+			playerTestCommand(t, commands, Command{Name: tc.command, URI: uri, SessionID: old.SessionID})
+			if legacy {
+				if tc.notice == playerErrorNotice {
+					playerTestState(t, states, func(s State) bool {
+						return s.Connected && s.SessionID == old.SessionID && s.Notice == playerErrorNotice
+					})
+				} else {
+					playerTestState(t, states, func(s State) bool { return !s.Connected && s.Notice == playerPairNotice })
+					close(legacyReauth)
+					old = playerTestState(t, states, func(s State) bool { return s.Connected && s.SessionID != old.SessionID })
+				}
+				playerTestCommand(t, commands, Command{Name: "set_volume", Volume: 21, SessionID: old.SessionID})
+				playerTestState(t, states, func(s State) bool { return s.Connected && s.SessionID == old.SessionID && s.Volume == 21 })
+				playerTestCommand(t, commands, Command{Name: PlayPlaylistShuffle, URI: "spotify:playlist:Old", SessionID: old.SessionID})
+				playerTestState(t, states, func(s State) bool {
+					return !s.Connected && s.Notice == playerRetryNotice && s.PlaylistShuffle == PlaylistShuffleUnconfirmed
+				})
+			} else {
+				playerTestState(t, states, func(s State) bool {
+					return !s.Connected && s.Notice == tc.notice && (s.PlaylistShuffle == PlaylistShuffleUnconfirmed) == tc.unconfirmed
+				})
+			}
+			close(freshAuth)
+			fresh := playerTestState(t, states, func(s State) bool { return s.Connected && s.SessionID != old.SessionID })
+			playerTestCommand(t, commands, Command{Name: PlayPlaylistShuffle, URI: "spotify:playlist:Old", SessionID: old.SessionID})
+			playerTestCommand(t, commands, Command{Name: PlayPlaylistShuffle, URI: "spotify:playlist:Fresh", SessionID: fresh.SessionID})
+			playerTestState(t, states, func(s State) bool {
+				return s.SessionID == fresh.SessionID && s.PlaylistContext == "spotify:playlist:Fresh" && s.OptionsKnown && s.Shuffle
+			})
+		})
 	}
 }
 

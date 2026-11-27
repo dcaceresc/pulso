@@ -121,7 +121,7 @@ La pantalla es un único espacio de trabajo:
 - **Barra superior:** búsqueda y tu usuario de Spotify.
 - **Biblioteca:** tus listas de reproducción.
 - **Tabla:** canciones de la lista elegida o resultados de búsqueda, con número, título, artista y duración.
-- **Barra de reproducción:** pista, artista, álbum, progreso, aleatorio, repetición, volumen y dispositivo.
+- **Barra de reproducción:** pista, artista, álbum, lista que confirma Soloist (si hay espacio), progreso, aleatorio, repetición, volumen y dispositivo.
 - **Pie:** pares `tecla acción` del panel activo; `F1` abre la ayuda.
 
 `Tab` recorre biblioteca, tabla, búsqueda y barra de reproducción. Con la búsqueda enfocada puedes escribir `q`, `s`, `r`, `+` y `-` sin que se disparen atajos; `Enter` busca y `Esc` sale del campo.
@@ -138,7 +138,8 @@ Al cerrar Pulso, la reproducción se pausa. Soloist sigue en segundo plano con s
 | `Espacio` | Reproducir o pausar |
 | `n` / `p` | Siguiente o anterior |
 | `←` `→` | Retroceder o avanzar 10 segundos (barra de reproducción) |
-| `s` | Aleatorio |
+| `s` | Alternar el aleatorio de la reproducción actual |
+| `S` | Iniciar en aleatorio la lista seleccionada en la biblioteca o abierta en la tabla (no en resultados de búsqueda) |
 | `r` | Repetición: desactivada, lista, canción |
 | `+` / `-` | Volumen |
 | `/` | Buscar |
@@ -149,6 +150,10 @@ Al cerrar Pulso, la reproducción se pausa. Soloist sigue en segundo plano con s
 | `q` / `Esc` | Salir |
 
 `F1`, `?`, `Esc` o `q` cierran la ayuda y vuelven al panel donde estabas.
+
+`S` funciona con la URI de la lista aunque no se puedan consultar sus canciones. Pulso espera a que Soloist acepte la reproducción y confirme la lista antes de enviar una segunda orden para activar el aleatorio. No se garantiza que la primera canción sea aleatoria, y otro cliente de Spotify puede cambiar el contexto entre la confirmación y la segunda orden. Si la confirmación no llega a tiempo, Pulso no envía la segunda orden; la lista aún puede empezar a reproducirse.
+
+Pulso no cambia Autoplay. Si está activado y Spotify continúa la reproducción al terminar una lista, Spotify elige las canciones.
 
 ## Idioma y temas
 
