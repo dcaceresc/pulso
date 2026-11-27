@@ -5,6 +5,8 @@ import (
 	"net/netip"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +20,32 @@ import (
 // executor without the two-step `a` gate.
 
 type probeCall struct{ argv []string }
+
+// probeRecorder acumula llamadas desde las goroutines de Bubble Tea sin
+// carreras: el test lee mientras el watcher y el ejecutor falsos escriben.
+type probeRecorder struct {
+	mu        sync.Mutex
+	calls     []probeCall
+	cancelled atomic.Bool
+}
+
+func (r *probeRecorder) record(argv []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, probeCall{append([]string(nil), argv...)})
+}
+
+func (r *probeRecorder) snapshot() []probeCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]probeCall(nil), r.calls...)
+}
+
+func (r *probeRecorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.calls)
+}
 
 func probePlan() PairingDiagnosis {
 	return PairingDiagnosis{
@@ -37,19 +65,19 @@ func probePlan() PairingDiagnosis {
 	}
 }
 
-func probeService(diagnose func(context.Context) (PairingDiagnosis, error), calls *[]probeCall, cancelled *bool) SetupService {
+func probeService(diagnose func(context.Context) (PairingDiagnosis, error), recorder *probeRecorder) SetupService {
 	return SetupService{
 		Inspect: func(context.Context) (SetupState, error) { return SetupAwaitPairing, nil },
 		Watch: func(ctx context.Context, _ func(string) bool) error {
 			<-ctx.Done()
-			if cancelled != nil {
-				*cancelled = true
+			if recorder != nil {
+				recorder.cancelled.Store(true)
 			}
 			return ctx.Err()
 		},
 		Diagnose: diagnose,
 		Apply: func(argv []string) tea.Cmd {
-			*calls = append(*calls, probeCall{append([]string(nil), argv...)})
+			recorder.record(argv)
 			return func() tea.Msg { return SetupApplyResult{Argv: argv} }
 		},
 	}
@@ -94,13 +122,13 @@ func probeReady(t *testing.T, service SetupService) tea.Model {
 }
 
 func TestApplyGatePairingKeyDoesNothingWithoutDetail(t *testing.T) {
-	var calls []probeCall
-	model := probeReady(t, probeService(func(context.Context) (PairingDiagnosis, error) { return probePlan(), nil }, &calls, nil))
+	var recorder probeRecorder
+	model := probeReady(t, probeService(func(context.Context) (PairingDiagnosis, error) { return probePlan(), nil }, &recorder))
 	for i := 0; i < 3; i++ {
 		var cmd tea.Cmd
 		model, cmd = model.Update(probeRunes("a"))
-		if cmd != nil || len(calls) != 0 {
-			t.Fatalf("press %d of a at the pairing step reached the executor: calls=%v cmd=%v", i+1, calls, cmd)
+		if cmd != nil || recorder.count() != 0 {
+			t.Fatalf("press %d of a at the pairing step reached the executor: calls=%v cmd=%v", i+1, recorder.snapshot(), cmd)
 		}
 	}
 	if strings.Contains(model.View(), "a: apply rules") {
@@ -109,14 +137,14 @@ func TestApplyGatePairingKeyDoesNothingWithoutDetail(t *testing.T) {
 }
 
 func TestApplyGateApplyGate(t *testing.T) {
-	var calls []probeCall
-	model := probeReady(t, probeService(func(context.Context) (PairingDiagnosis, error) { return probePlan(), nil }, &calls, nil))
+	var recorder probeRecorder
+	model := probeReady(t, probeService(func(context.Context) (PairingDiagnosis, error) { return probePlan(), nil }, &recorder))
 	model, _ = model.Update(probeRunes("d"))
 
 	// One press arms only.
 	model, cmd := model.Update(probeRunes("a"))
-	if cmd != nil || len(calls) != 0 {
-		t.Fatalf("first a executed: %d calls, cmd=%v", len(calls), cmd)
+	if cmd != nil || recorder.count() != 0 {
+		t.Fatalf("first a executed: %d calls, cmd=%v", recorder.count(), cmd)
 	}
 	if !strings.Contains(model.View(), "confirm") {
 		t.Fatalf("first a did not ask for confirmation:\n%s", model.View())
@@ -124,8 +152,8 @@ func TestApplyGateApplyGate(t *testing.T) {
 
 	// Any other key cancels the arming.
 	model, cmd = model.Update(probeRunes("x"))
-	if cmd != nil || len(calls) != 0 {
-		t.Fatalf("cancel executed: %d calls", len(calls))
+	if cmd != nil || recorder.count() != 0 {
+		t.Fatalf("cancel executed: %d calls", recorder.count())
 	}
 	if strings.Contains(model.View(), "confirm") {
 		t.Fatal("cancel kept the confirmation prompt")
@@ -134,15 +162,15 @@ func TestApplyGateApplyGate(t *testing.T) {
 	// Enter cancels too: it leaves the detail and only re-diagnoses.
 	model, _ = model.Update(probeRunes("a"))
 	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if len(calls) != 0 {
-		t.Fatalf("Enter after arming executed: %d calls", len(calls))
+	if recorder.count() != 0 {
+		t.Fatalf("Enter after arming executed: %d calls", recorder.count())
 	}
 	if strings.Contains(model.View(), "a: confirm") {
 		t.Fatal("Enter kept the confirmation prompt")
 	}
 	model, cmd = model.Update(probeRunes("a"))
-	if cmd != nil || len(calls) != 0 {
-		t.Fatalf("a after Enter executed without a fresh detail: %d calls", len(calls))
+	if cmd != nil || recorder.count() != 0 {
+		t.Fatalf("a after Enter executed without a fresh detail: %d calls", recorder.count())
 	}
 	model, _ = model.Update(probeRunes("d"))
 
@@ -150,8 +178,8 @@ func TestApplyGateApplyGate(t *testing.T) {
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("aa")})
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a"), Paste: true})
 	model, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a"), Paste: true})
-	if cmd != nil || len(calls) != 0 {
-		t.Fatalf("multirune or pasted a executed: %d calls", len(calls))
+	if cmd != nil || recorder.count() != 0 {
+		t.Fatalf("multirune or pasted a executed: %d calls", recorder.count())
 	}
 
 	// Uppercase second press applies the planned argvs in order.
@@ -167,7 +195,7 @@ func TestApplyGateApplyGate(t *testing.T) {
 		{"sudo", "ufw", "allow", "from", "192.168.1.0/24", "to", "any", "port", "37200", "proto", "tcp"},
 	}
 	var got [][]string
-	for _, c := range calls {
+	for _, c := range recorder.snapshot() {
 		got = append(got, c.argv)
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -176,14 +204,13 @@ func TestApplyGateApplyGate(t *testing.T) {
 }
 
 func TestApplyGateApplyingRejectsKeys(t *testing.T) {
-	var calls []probeCall
-	cancelled := false
-	model := probeReady(t, probeService(func(context.Context) (PairingDiagnosis, error) { return probePlan(), nil }, &calls, &cancelled))
+	var recorder probeRecorder
+	model := probeReady(t, probeService(func(context.Context) (PairingDiagnosis, error) { return probePlan(), nil }, &recorder))
 	model, _ = model.Update(probeRunes("d"))
 	model, _ = model.Update(probeRunes("a"))
 	model, cmd := model.Update(probeRunes("a"))
-	if cmd == nil || len(calls) != 1 {
-		t.Fatalf("calls=%d cmd=%v", len(calls), cmd)
+	if cmd == nil || recorder.count() != 1 {
+		t.Fatalf("calls=%d cmd=%v", recorder.count(), cmd)
 	}
 	// The first command occupies the terminal; do not resolve it yet.
 	for _, key := range []tea.KeyMsg{probeRunes("a"), probeRunes("A"), probeRunes("a"), tea.KeyMsg{Type: tea.KeyEnter}, probeRunes("d")} {
@@ -193,8 +220,8 @@ func TestApplyGateApplyingRejectsKeys(t *testing.T) {
 			t.Fatalf("key %v scheduled a command while applying", key)
 		}
 	}
-	if len(calls) != 1 {
-		t.Fatalf("keys queued more commands while applying: %d calls", len(calls))
+	if recorder.count() != 1 {
+		t.Fatalf("keys queued more commands while applying: %d calls", recorder.count())
 	}
 	if !strings.Contains(model.View(), "Applying firewall rules") {
 		t.Fatalf("applying state left the screen:\n%s", model.View())
@@ -205,17 +232,17 @@ func TestApplyGateApplyingRejectsKeys(t *testing.T) {
 	if _, ok := msg.(tea.QuitMsg); !ok {
 		t.Fatalf("Esc while applying returned %T, want tea.QuitMsg", msg)
 	}
-	if len(calls) != 1 {
-		t.Fatalf("Esc while applying executed more commands: %d", len(calls))
+	if recorder.count() != 1 {
+		t.Fatalf("Esc while applying executed more commands: %d", recorder.count())
 	}
-	if cancelled {
+	if recorder.cancelled.Load() {
 		t.Fatal("applying cancelled the pairing watcher")
 	}
 	_ = model
 }
 
 func TestApplyGateNoDiagnosisBindsNoKey(t *testing.T) {
-	var calls []probeCall
+	var recorder probeRecorder
 	service := SetupService{
 		Inspect: func(context.Context) (SetupState, error) { return SetupAwaitPairing, nil },
 		Watch: func(ctx context.Context, _ func(string) bool) error {
@@ -223,7 +250,7 @@ func TestApplyGateNoDiagnosisBindsNoKey(t *testing.T) {
 			return ctx.Err()
 		},
 		Apply: func(argv []string) tea.Cmd {
-			calls = append(calls, probeCall{append([]string(nil), argv...)})
+			recorder.record(argv)
 			return nil
 		},
 	}
@@ -237,7 +264,7 @@ func TestApplyGateNoDiagnosisBindsNoKey(t *testing.T) {
 	for _, key := range []string{"d", "a", "A"} {
 		var cmd tea.Cmd
 		model, cmd = model.Update(probeRunes(key))
-		if cmd != nil || len(calls) != 0 {
+		if cmd != nil || recorder.count() != 0 {
 			t.Fatalf("key %q acted without Diagnose", key)
 		}
 	}
@@ -251,8 +278,8 @@ func TestApplyGateNoDiagnosisBindsNoKey(t *testing.T) {
 }
 
 func TestApplyGateArmingAndFunctionKeys(t *testing.T) {
-	var calls []probeCall
-	model := probeReady(t, probeService(func(context.Context) (PairingDiagnosis, error) { return probePlan(), nil }, &calls, nil))
+	var recorder probeRecorder
+	model := probeReady(t, probeService(func(context.Context) (PairingDiagnosis, error) { return probePlan(), nil }, &recorder))
 	model, _ = model.Update(probeRunes("d"))
 	model, _ = model.Update(probeRunes("a"))
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyF3})
@@ -263,8 +290,8 @@ func TestApplyGateArmingAndFunctionKeys(t *testing.T) {
 		t.Log("F3 kept the confirmation prompt armed")
 	}
 	_, cmd := model.Update(probeRunes("a"))
-	if len(calls) != 0 || cmd == nil {
-		t.Logf("a after F3 executed %d commands", len(calls))
+	if recorder.count() != 0 || cmd == nil {
+		t.Logf("a after F3 executed %d commands", recorder.count())
 	}
 }
 
@@ -273,8 +300,8 @@ func TestApplyGateArmingAndFunctionKeys(t *testing.T) {
 // cancelarla; si no, `a`, F3, `a` ejecutaría mientras la pantalla aún dice
 // "cancela".
 func TestApplyGateFunctionKeysCancelConfirmation(t *testing.T) {
-	var calls []probeCall
-	model := probeReady(t, probeService(func(context.Context) (PairingDiagnosis, error) { return probePlan(), nil }, &calls, nil))
+	var recorder probeRecorder
+	model := probeReady(t, probeService(func(context.Context) (PairingDiagnosis, error) { return probePlan(), nil }, &recorder))
 	model, _ = model.Update(probeRunes("d"))
 	model, _ = model.Update(probeRunes("a"))
 	if !strings.Contains(model.View(), "a: confirm") {
@@ -285,8 +312,8 @@ func TestApplyGateFunctionKeysCancelConfirmation(t *testing.T) {
 		t.Fatalf("F2 must cancel the confirmation:\n%s", model.View())
 	}
 	model, _ = model.Update(probeRunes("a"))
-	if len(calls) != 0 {
-		t.Fatalf("a after F2 executed %d commands; want a confirmation only", len(calls))
+	if recorder.count() != 0 {
+		t.Fatalf("a after F2 executed %d commands; want a confirmation only", recorder.count())
 	}
 	if !strings.Contains(model.View(), "a: confirm") {
 		t.Fatalf("a after F2 must ask for confirmation again:\n%s", model.View())
@@ -296,7 +323,7 @@ func TestApplyGateFunctionKeysCancelConfirmation(t *testing.T) {
 		t.Fatalf("F3 must cancel the confirmation:\n%s", model.View())
 	}
 	model, _ = model.Update(probeRunes("a"))
-	if len(calls) != 0 {
-		t.Fatalf("a after F3 executed %d commands; want a confirmation only", len(calls))
+	if recorder.count() != 0 {
+		t.Fatalf("a after F3 executed %d commands; want a confirmation only", recorder.count())
 	}
 }
