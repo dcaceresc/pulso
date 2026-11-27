@@ -84,6 +84,8 @@ const (
 	saveNoticeFailed
 	saveNoticeNotEditable
 	saveNoticeDeclined
+	// saveNoticeNeedsPlaylist explica por qué `x` no tiene nada que quitar.
+	saveNoticeNeedsPlaylist
 )
 
 // savePanel is the playlist edit panel: the writer the catalog handed over, the
@@ -485,6 +487,10 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	case "a":
 		return m.openSave()
 	case "x":
+		if !m.removeAvailable() {
+			m.explainRemove()
+			return nil
+		}
 		return m.openRemove()
 	}
 	// Shuffle, repeat and the bar's own seek keys come next; s and r reach
@@ -809,6 +815,17 @@ func (m *playerModel) openSave() tea.Cmd {
 		return m.library.fetchPlaylists(0)
 	}
 	return nil
+}
+
+// explainRemove dice qué falta cuando `x` no puede actuar, en lugar de que la
+// tecla parezca rota: hace falta una lista abierta, una fila de pista y un
+// catálogo que pueda escribir en ella.
+func (m *playerModel) explainRemove() {
+	m.saveTo.action = saveActionRemove
+	m.saveTo.notice, m.saveTo.noticeName = saveNoticeNeedsPlaylist, ""
+	if m.saveTo.writer == nil {
+		m.saveTo.noticeName = m.text("no write permission", "sin permiso de escritura")
+	}
 }
 
 // openRemove asks to remove the highlighted row of the playlist being browsed.
@@ -1267,6 +1284,12 @@ func (m *playerModel) saveNoticeText() string {
 		}
 		return m.text("Spotify authorization did not complete; nothing was saved.",
 			"La autorización de Spotify no se completó; no se guardó nada.")
+	case saveNoticeNeedsPlaylist:
+		if m.saveTo.noticeName != "" {
+			return fmt.Sprintf(m.text("Could not remove: %s.", "No se pudo quitar: %s."), m.saveTo.noticeName)
+		}
+		return m.text("Open one of your playlists with Enter to remove tracks.",
+			"Abrí una de tus listas con Enter para quitar canciones.")
 	}
 	return ""
 }

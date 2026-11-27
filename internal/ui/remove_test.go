@@ -139,6 +139,45 @@ func TestRemoveActionAvailability(t *testing.T) {
 // TestRemoveConfirmsWithTrackAndPlaylist follows the confirmation: the prompt
 // names the track and the playlist, Enter confirms, Esc cancels and the rest of
 // the workspace keeps working.
+func TestRemoveExplainsWhyTheKeyCannotAct(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		want  string
+		setup func(t *testing.T) tea.Model
+	}{
+		{
+			name: "sin lista abierta",
+			want: "Open one of your playlists with Enter to remove tracks.",
+			setup: func(t *testing.T) tea.Model {
+				api := newSaveFake(libraryPlaylistsFixture())
+				m, _, _ := savePlayer(t, preferences{}, saveTrackState(), api)
+				return m
+			},
+		},
+		{
+			name: "sin permiso de escritura",
+			want: "Could not remove: no write permission.",
+			setup: func(t *testing.T) tea.Model {
+				readOnly := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(3)}
+				m, _, _ := savePlayer(t, preferences{}, saveTrackState(), readOnly)
+				return m
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := tc.setup(t)
+			model, cmd := m.Update(playerViewKey("x"))
+			m = model
+			if cmd != nil {
+				t.Fatal("the remove key scheduled work without a removable row")
+			}
+			if view := ansi.Strip(m.View()); !strings.Contains(view, tc.want) {
+				t.Fatalf("the key did not explain itself, want %q:\n%s", tc.want, view)
+			}
+		})
+	}
+}
+
 func TestRemoveConfirmsWithTrackAndPlaylist(t *testing.T) {
 	api := newSaveFake(libraryPlaylistsFixture())
 	m, out, _ := removeWorkspace(t, preferences{}, saveTrackState(), api)
