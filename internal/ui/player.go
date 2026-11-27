@@ -1933,14 +1933,16 @@ func (m *playerModel) playerBoxState(width int) string {
 	repeat := "↻ " + m.repeatMode()
 	volume := playerVolume(m.state.Volume)
 	volumeWord := fmt.Sprintf(m.text("Volume %d%%", "Volumen %d%%"), volume)
-	// De la forma más holgada a la más corta: primero se pierden los espacios y
-	// después la palabra del estado. La etiqueta del volumen sobrevive siempre:
-	// la caja solo se dibuja desde 40 columnas, donde “Volume N%” ya cabe, así
-	// que no hay forma de porcentaje suelto.
+	// De la forma más holgada a la más corta: primero se pierden los espacios,
+	// después la palabra del estado y al final la etiqueta del volumen. El
+	// porcentaje suelto sigue siendo alcanzable —en español «Volumen 37%» no cabe
+	// en la banda mínima—, porque el valor del volumen nunca debe desaparecer.
 	options := []string{
 		glyph + " " + word + "  ▸  " + shuffle + "  ▸  " + repeat + "  ▸  " + volumeWord,
 		glyph + " " + word + " ▸ " + shuffle + " ▸ " + repeat + " ▸ " + volumeWord,
 		glyph + " ▸ " + shuffle + " ▸ " + repeat + " ▸ " + volumeWord,
+		glyph + " ▸ " + shuffle + " ▸ " + repeat + fmt.Sprintf(" ▸ %d%%", volume),
+		glyph + fmt.Sprintf(" ▸ %d%%", volume),
 	}
 	for _, line := range options {
 		if lipgloss.Width(line) <= width {
@@ -2578,11 +2580,11 @@ func (m *playerModel) librarySwitcher(width int) string {
 	return playerSpread(left, change, width)
 }
 
-// sidebarRows lists a sidebar that no band draws any more: it is only used by
-// the tests as the source of the heading, the playlist rows and the state rows
-// (la prueba de vocabulario y la del acento del cursor). El comentario anterior
-// (“sidebar of the stacked layout”) era falso: la banda compacta usa
-// libraryRows sin título.
+// sidebarRows lista una barra lateral que ninguna banda dibuja ya: solo la usan
+// las pruebas, como fuente del título, de las filas de listas y de las filas de
+// estado. La banda compacta no la usa: dibuja su selector con librarySwitcher, y
+// libraryRows alimenta únicamente la caja de biblioteca de las bandas amplia y
+// media.
 func (m *playerModel) sidebarRows(styles playerStyles, width int) []playerRow {
 	rows := []playerRow{{text: m.text("LIBRARY", "BIBLIOTECA"), style: styles.label}}
 	return append(rows, m.libraryRows(styles, width)...)

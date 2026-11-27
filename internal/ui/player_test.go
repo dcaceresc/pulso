@@ -2431,28 +2431,72 @@ func TestPlayerViewEdgeSizes(t *testing.T) {
 	}
 }
 
-// TestPlayerViewVolumeLabelFitsTheBox pins the shortest state line the player
-// box can draw: at 40 and 41 columns the volume keeps its label and its
-// percentage, because the percentage-only form was unreachable and is gone.
-func TestPlayerViewVolumeLabelFitsTheBox(t *testing.T) {
-	for _, size := range []struct{ width, height int }{{40, 12}, {41, 12}} {
-		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
-			m, _ := playerViewModel(t, size.width, size.height, playerState{
-				Connected: true, Status: "playing", Volume: 37, OptionsKnown: true,
+// TestPlayerViewVolumeSurvivesEveryBand fija la regla de S2 en las dos lenguas:
+// el valor del volumen nunca desaparece de la línea de estado. En español la
+// forma con etiqueta no cabe a 40 ni 41 columnas («Volumen 37%»), así que el
+// porcentaje suelto sigue siendo alcanzable y no puede borrarse del degradado.
+func TestPlayerViewVolumeSurvivesEveryBand(t *testing.T) {
+	for _, language := range []string{"en", "es"} {
+		for _, size := range []struct{ width, height int }{
+			{140, 40}, {120, 34}, {100, 30}, {80, 24}, {79, 23}, {43, 12}, {42, 12}, {41, 12}, {40, 12},
+		} {
+			t.Run(fmt.Sprintf("%s/%dx%d", language, size.width, size.height), func(t *testing.T) {
+				m, _, _ := libraryNewPlayer(t, size.width, size.height, preferences{Language: language}, playerState{
+					Connected: true, Status: "playing", Volume: 37, OptionsKnown: true,
+				}, &libraryFake{playlists: libraryPlaylistsFixture()}, nil, "")
+				rows := playerViewRows(t, m, size.width, size.height)
+				line := ""
+				for _, row := range rows {
+					if strings.Contains(row, "├─") {
+						line = ansi.Strip(row)
+						break
+					}
+				}
+				if line == "" {
+					t.Fatalf("the %dx%d view drew no player box", size.width, size.height)
+				}
+				if !strings.Contains(line, "37%") {
+					t.Fatalf("the state line lost the volume value at %dx%d in %s:\n%s", size.width, size.height, language, line)
+				}
 			})
-			view := playerViewText(t, m, "Volume 37%")
-			if strings.Contains(view, "▸ 37%") && !strings.Contains(view, "Volume 37%") {
-				t.Fatalf("the state line dropped the volume label:\n%s", view)
-			}
-			if !strings.Contains(ansi.Strip(m.View()), "Volume 37%") {
-				t.Fatalf("the state line lost the volume at %d columns:\n%s", size.width, m.View())
-			}
-		})
+		}
 	}
 }
 
-// TestPlayerViewFooterPresence pins where the footer still has rows: every band
-// down to the minimum one keeps them, and the sizes without room keep none.
+// TestPlayerViewPromotesAnySessionSentence fija que la promoción no depende del
+// texto: una frase de sesión sin glifo inicial se ve entera, una sola vez y sin
+// copia recortada dentro de la zona.
+func TestPlayerViewPromotesAnySessionSentence(t *testing.T) {
+	m := playerZoneModel(t, "es").(*playerModel)
+	m.saveTo.phase = saveConfirming
+	m.saveTo.action = saveActionRemove
+	m.saveTo.removeTrackName = "Bohemian Rhapsody (Remastered 2011)"
+	m.saveTo.target = libraryPlaylist{Name: "Clásicos del Rock Chileno & Latinoamericano"}
+	prompt := m.removePrompt()
+	for _, size := range []struct{ width, height int }{{140, 40}, {120, 34}} {
+		rows := playerViewRows(t, m, size.width, size.height)
+		count, cut := 0, 0
+		head := prompt
+		if len([]rune(head)) > 12 {
+			head = string([]rune(head)[:12])
+		}
+		for _, row := range rows {
+			plain := ansi.Strip(row)
+			if strings.Contains(plain, prompt) {
+				count++
+			} else if strings.Contains(plain, head) {
+				cut++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("the %dx%d view shows the confirmation %d times, want 1", size.width, size.height, count)
+		}
+		if cut != 0 {
+			t.Fatalf("the %dx%d view kept a truncated confirmation inside a zone", size.width, size.height)
+		}
+	}
+}
+
 func TestPlayerViewFooterPresence(t *testing.T) {
 	m := playerZoneModel(t, "en")
 	for _, tt := range []struct {
