@@ -42,8 +42,8 @@ func TestRemoveActionAvailability(t *testing.T) {
 		m, out, _ := savePlayer(t, preferences{}, saveTrackState(), readOnly)
 		m, cmd := libraryOpenFirst(t, m)
 		m = librarySettle(t, m, cmd)
-		if view := ansi.Strip(m.View()); strings.Contains(view, "x remove") {
-			t.Fatalf("a read-only catalog advertised removing:\n%s", view)
+		if m.(*playerModel).removeAvailable() {
+			t.Fatal("a read-only catalog offered the removal action")
 		}
 		m, cmd = m.Update(playerViewKey("x"))
 		if cmd != nil {
@@ -64,8 +64,8 @@ func TestRemoveActionAvailability(t *testing.T) {
 			return spotify.PlaylistItemsPage{Tracks: libraryTracksFor(uri), Total: 3}, nil
 		}
 		m, out, _ := removeWorkspace(t, preferences{}, saveTrackState(), api)
-		if view := ansi.Strip(m.View()); strings.Contains(view, "x remove") {
-			t.Fatalf("a row without a snapshot advertised removing:\n%s", view)
+		if m.(*playerModel).removeAvailable() {
+			t.Fatal("a row without a snapshot offered the removal action")
 		}
 		m, cmd := m.Update(playerViewKey("x"))
 		if cmd != nil {
@@ -106,8 +106,8 @@ func TestRemoveActionAvailability(t *testing.T) {
 		m, _ = m.Update(playerViewKey("tren"))
 		m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		m = librarySettle(t, m, cmd)
-		if view := ansi.Strip(m.View()); strings.Contains(view, "x remove") {
-			t.Fatalf("search results advertised removing:\n%s", view)
+		if m.(*playerModel).removeAvailable() {
+			t.Fatal("search results offered the removal action")
 		}
 		m, cmd = m.Update(playerViewKey("x"))
 		if cmd != nil {
@@ -182,13 +182,13 @@ func TestRemoveConfirmsWithTrackAndPlaylist(t *testing.T) {
 	api := newSaveFake(libraryPlaylistsFixture())
 	m, out, _ := removeWorkspace(t, preferences{}, saveTrackState(), api)
 	m, _ = m.Update(playerViewKey("j"))
-	playerViewText(t, m, ">2 Estrechez de Corazón", "x remove")
+	playerViewText(t, m, ">2 Estrechez de Corazón")
 	m, cmd := m.Update(playerViewKey("x"))
 	if cmd != nil {
 		t.Fatal("asking to remove scheduled work")
 	}
 	view := playerViewText(t, m, "Remove from playlist · Rock Chileno",
-		"Remove Estrechez de Corazón from Rock Chileno?", "Enter remove", "Esc cancel")
+		"Remove Estrechez de Corazón from Rock Chileno?")
 	if strings.Contains(view, "Removed") {
 		t.Fatalf("the prompt claimed a result:\n%s", view)
 	}
@@ -219,7 +219,7 @@ func TestRemoveConfirmsWithTrackAndPlaylist(t *testing.T) {
 	localized, _ = localized.Update(playerViewKey("j"))
 	localized, _ = localized.Update(playerViewKey("x"))
 	playerViewText(t, localized, "Quitar de la lista · Rock Chileno",
-		"¿Quitar Estrechez de Corazón de Rock Chileno?", "Enter quitar", "Esc cancelar")
+		"¿Quitar Estrechez de Corazón de Rock Chileno?")
 
 	t.Run("la confirmación no depende de la reproducción", func(t *testing.T) {
 		api := newSaveFake(libraryPlaylistsFixture())
@@ -390,7 +390,7 @@ func TestRemoveStaleSnapshotReadsAgainAndAsks(t *testing.T) {
 		t.Fatalf("listing reads = %v, want the first page again", tracks)
 	}
 	// La pregunta sigue ahí y hay que confirmarla otra vez.
-	playerViewText(t, m, "Remove Estrechez de Corazón from Rock Chileno?", "Enter remove")
+	playerViewText(t, m, "Remove Estrechez de Corazón from Rock Chileno?")
 
 	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -524,16 +524,16 @@ func TestRemoveFailuresAreQuietAndLocalized(t *testing.T) {
 	for _, tt := range []struct {
 		name, language string
 		failure        error
-		want, hint     string
+		want           string
 	}{
 		{"lista ajena", "en", spotify.ErrPlaylistNotEditable,
-			"Could not remove Estrechez de Corazón from Rock Chileno: this account cannot change that playlist.", "Enter play"},
+			"Could not remove Estrechez de Corazón from Rock Chileno: this account cannot change that playlist."},
 		{"fallo sin clasificar", "en", fmt.Errorf("%s: %w", secret, spotify.ErrSpotifyCatalog),
-			"Could not remove Estrechez de Corazón from Rock Chileno.", "Enter play"},
+			"Could not remove Estrechez de Corazón from Rock Chileno."},
 		{"lista ajena en español", "es", spotify.ErrPlaylistNotEditable,
-			"No se pudo quitar Estrechez de Corazón de Rock Chileno: esta cuenta no puede cambiar esa lista.", "Enter reproducir"},
+			"No se pudo quitar Estrechez de Corazón de Rock Chileno: esta cuenta no puede cambiar esa lista."},
 		{"fallo en español", "es", fmt.Errorf("%s: %w", secret, spotify.ErrSpotifyCatalog),
-			"No se pudo quitar Estrechez de Corazón de Rock Chileno.", "Enter reproducir"},
+			"No se pudo quitar Estrechez de Corazón de Rock Chileno."},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			api := newSaveFake(libraryPlaylistsFixture())
@@ -543,7 +543,7 @@ func TestRemoveFailuresAreQuietAndLocalized(t *testing.T) {
 			m, _ = m.Update(playerViewKey("x"))
 			m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			m = librarySettle(t, m, cmd)
-			view := playerViewText(t, m, tt.want, tt.hint)
+			view := playerViewText(t, m, tt.want)
 			if strings.Contains(view, secret) {
 				t.Fatalf("the response body reached the view:\n%s", view)
 			}
@@ -639,19 +639,20 @@ func TestRemoveKeepsPreExistingKeys(t *testing.T) {
 		{"reproducir", tea.KeyMsg{Type: tea.KeySpace}, saveTrackState(), []playerCommand{{Name: "play"}}},
 		{"pausar", tea.KeyMsg{Type: tea.KeySpace}, playing, []playerCommand{{Name: "pause"}}},
 		{"siguiente", playerViewKey("n"), saveTrackState(), []playerCommand{{Name: "skip_next"}}},
-		{"anterior", playerViewKey("p"), saveTrackState(), []playerCommand{{Name: "skip_prev"}}},
+		{"anterior", playerViewKey("b"), saveTrackState(), []playerCommand{{Name: "skip_prev"}}},
 		{"más volumen", playerViewKey("+"), saveTrackState(), []playerCommand{{Name: "set_volume", Volume: 55}}},
 		{"menos volumen", playerViewKey("-"), saveTrackState(), []playerCommand{{Name: "set_volume", Volume: 45}}},
-		{"aleatorio", playerViewKey("s"), saveTrackState(), []playerCommand{{Name: "set_shuffle", Shuffle: true}, {Name: "get_state"}}},
+		{"aleatorio de la lista", playerViewKey("s"), saveTrackState(), []playerCommand{{Name: "play_playlist_shuffle", URI: "spotify:playlist:rock"}}},
 		{"repetición", playerViewKey("r"), saveTrackState(), []playerCommand{{Name: "set_repeat", Repeat: "context"}, {Name: "get_state"}}},
-		{"mezclar lista", playerViewKey("S"), saveTrackState(), []playerCommand{{Name: "play_playlist_shuffle", URI: "spotify:playlist:rock"}}},
 		{"reproducir la fila", tea.KeyMsg{Type: tea.KeyEnter}, saveTrackState(), []playerCommand{{Name: "play", URI: "spotify:track:one"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			api := newSaveFake(libraryPlaylistsFixture())
 			m, out, _ := removeWorkspace(t, preferences{}, tt.state, api)
 			// La fila marcada puede quitarse: la tecla nueva no cambia ninguna otra.
-			playerViewText(t, m, "x remove")
+			if !m.(*playerModel).removeAvailable() {
+				t.Fatal("the highlighted row lost the removal action")
+			}
 			if _, cmd := m.Update(tt.key); cmd != nil {
 				t.Fatal("the key scheduled work instead of a playback command")
 			}
@@ -698,9 +699,9 @@ func TestRemoveKeepsPreExistingKeys(t *testing.T) {
 // TestHelpListsRemoveAction keeps the help screen honest about the new key.
 func TestHelpListsRemoveAction(t *testing.T) {
 	m, _ := playerViewModel(t, 120, 40, saveTrackState())
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF1})
+	m, _ = m.Update(playerViewKey("?"))
 	playerViewText(t, m, "remove the highlighted track from the open playlist")
 	es := NewPlayerModelWithPreferences(context.Background(), nil, nil, 120, 40, preferences{Language: "es"}, nil, "", nil)
-	es, _ = es.Update(tea.KeyMsg{Type: tea.KeyF1})
+	es, _ = es.Update(playerViewKey("?"))
 	playerViewText(t, es, "quitar la pista marcada de la lista abierta")
 }

@@ -7,80 +7,79 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// helpEntry is one keyboard binding on the help screen: the key as it is
-// pressed and the localized action it performs.
+// helpEntry es un enlace de teclado de la ayuda: la tecla tal como se pulsa y la
+// acción localizada que ejecuta.
 type helpEntry struct {
 	key   string
 	label string
 }
 
-// helpSection groups the bindings by what they act on.
+// helpSection agrupa los enlaces por aquello sobre lo que actúan.
 type helpSection struct {
 	title   string
 	entries []helpEntry
 }
 
-// helpSections lists every control once, grouped as Navigation, Playback,
-// Library, Search, Appearance and Exit. The footer draws from the same
-// bindings, so a key cannot be advertised there and be missing here.
+// helpSections enumera cada control una vez, zona por zona: el transporte y la
+// salida globales, las tres letras de zona y las teclas de cada zona. `?` es la
+// única referencia de teclas: el pie ya no anuncia ninguna.
 func (m *playerModel) helpSections() []helpSection {
 	return []helpSection{
-		{m.text("Navigation", "Navegación"), []helpEntry{
-			{"Tab", m.text("next panel", "siguiente panel")},
-			{"Shift+Tab", m.text("previous panel", "panel anterior")},
-			{"↑↓/jk", m.text("move the cursor", "mover el cursor")},
-			{"Enter", m.text("open or play", "abrir o reproducir")},
-		}},
-		{m.text("Playback", "Reproducción"), []helpEntry{
+		{m.text("Global", "Global"), []helpEntry{
+			{"q / Ctrl+C", m.text("quit", "salir")},
 			{"Space", m.text("play or pause", "reproducir o pausar")},
 			{"←→", m.text("seek 10 s", "salto de 10 s")},
-			{"n/p", m.text("next or previous track", "pista siguiente o anterior")},
-			{"s", m.text("shuffle on or off", "aleatorio activado o apagado")},
-			{"r", m.text("repeat off, all, one", "repetir apagado, todo, una")},
-			{"a", m.text("save the playing track to a playlist", "guardar la pista en una lista")},
+			{"n / b", m.text("next or previous track", "pista siguiente o anterior")},
 			{"+/-", m.text("volume", "volumen")},
+			{"s", m.text("shuffle playback", "aleatorio de la reproducción")},
+			{"r", m.text("repeat off, all, one", "repetir apagado, todo, una")},
+			{"F2 / F3", m.text("language or theme", "idioma o tema")},
+			{"?", m.text("help", "ayuda")},
+			{"Esc", m.text("back to the table or cancel", "volver a la tabla o cancelar")},
+		}},
+		{m.text("Zones", "Zonas"), []helpEntry{
+			{"l", m.text("library", "biblioteca")},
+			{"/", m.text("search: q s r + - are text", "búsqueda: q s r + - son texto")},
+			{"c", m.text("queue", "cola")},
 		}},
 		{m.text("Library", "Biblioteca"), []helpEntry{
-			{"l", m.text("focus the library", "enfocar la biblioteca")},
-			{"Enter", m.text("open the playlist", "abrir la lista")},
-			{"p", m.text("play the playlist", "reproducir la lista")},
-			{"S", m.text("shuffle the selected or open playlist", "reproducir al azar la lista seleccionada o abierta")},
+			{"↑↓/jk", m.text("move the cursor", "mover el cursor")},
+			{"Enter", m.text("open the playlist or play it", "abrir la lista o reproducirla")},
+			{"s", m.text("shuffle the selected playlist", "reproducir la lista al azar")},
+		}},
+		{m.text("Table", "Tabla"), []helpEntry{
+			{"↑↓/jk", m.text("move the cursor", "mover el cursor")},
+			{"Enter", m.text("play the row", "reproducir la fila")},
+			{"a", m.text("save the playing track to a playlist", "guardar la pista en una lista")},
 			{"x", m.text("remove the highlighted track from the open playlist", "quitar la pista marcada de la lista abierta")},
 		}},
 		{m.text("Search", "Búsqueda"), []helpEntry{
-			{"/", m.text("search", "buscar")},
 			{"Enter", m.text("search", "buscar")},
 			{"Backspace", m.text("delete", "borrar")},
 			{"Esc", m.text("leave the field", "salir del campo")},
 		}},
-		{m.text("Appearance", "Apariencia"), []helpEntry{
-			{"F1", m.text("help", "ayuda")},
-			{"F2", m.text("language", "idioma")},
-			{"F3", m.text("theme", "tema")},
-		}},
-		{m.text("Exit", "Salir"), []helpEntry{
-			{"Esc", m.text("back, then quit", "volver, luego salir")},
-			{"q", m.text("quit", "salir")},
-			{"Ctrl+C", m.text("quit", "salir")},
-		}},
 	}
 }
 
-// handleHelpKey closes the help view on its own keys. Every other key is
-// swallowed, so the panel underneath never acts by accident.
-func (m *playerModel) handleHelpKey(key tea.KeyMsg) {
+// handleHelpKey cierra la ayuda con sus propias teclas y sale con las globales.
+// Cualquier otra tecla se descarta, así el panel de debajo nunca actúa por
+// accidente.
+func (m *playerModel) handleHelpKey(key tea.KeyMsg) tea.Cmd {
 	if key.Paste || key.Alt {
-		return
+		return nil
 	}
 	switch {
-	case key.Type == tea.KeyF1, key.Type == tea.KeyEsc, key.String() == "?", key.String() == "q":
+	case key.Type == tea.KeyCtrlC, key.String() == "q":
+		return m.quitApp()
+	case key.Type == tea.KeyEsc, key.String() == "?":
 		m.help = false
 	}
+	return nil
 }
 
-// helpView is the full-screen help screen. It replaces the workspace, keeps the
-// same single-width glyph discipline as the rest of the chrome, and never
-// renders past the window.
+// helpView es la ayuda a pantalla completa. Reemplaza el espacio de trabajo,
+// mantiene la disciplina de glifos de un solo ancho del resto del cromo y nunca
+// dibuja más allá de la ventana.
 func (m *playerModel) helpView() string {
 	styles := m.styles()
 	sections := m.helpSections()
@@ -93,7 +92,7 @@ func (m *playerModel) helpView() string {
 	rows := []string{
 		playerRenderRow(playerRow{
 			text: playerSpread(m.text("Pulso · Help", "Pulso · Ayuda"),
-				m.text("F1/?/Esc/q: close", "F1/?/Esc/q: cerrar"), m.width),
+				m.text("Esc/? close", "Esc/?: cerrar"), m.width),
 			style: styles.banner,
 		}, m.width),
 	}

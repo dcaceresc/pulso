@@ -203,11 +203,11 @@ func librarySettle(t *testing.T, m tea.Model, cmd tea.Cmd) tea.Model {
 	return m
 }
 
+// libraryFocusSidebar alcanza la biblioteca con su propia letra de zona: `Tab`
+// ya no mueve el foco.
 func libraryFocusSidebar(t *testing.T, m tea.Model) tea.Model {
 	t.Helper()
-	for range 3 {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	}
+	m, _ = m.Update(playerViewKey("l"))
 	return m
 }
 
@@ -322,8 +322,8 @@ func TestLibraryRestrictedPlaylist(t *testing.T) {
 		p    preferences
 		want []string
 	}{
-		{"english", preferences{}, []string{"unavailable", "p:"}},
-		{"spanish", preferences{Language: "es"}, []string{"no disponible", "p:"}},
+		{"english", preferences{}, []string{"unavailable", "Enter: play the playlist"}},
+		{"spanish", preferences{Language: "es"}, []string{"no disponible", "Enter: reproducir la lista"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			source := &libraryFake{playlists: libraryPlaylistsFixture(), items: func(context.Context, string, int) (spotify.PlaylistItemsPage, error) {
@@ -338,8 +338,8 @@ func TestLibraryRestrictedPlaylist(t *testing.T) {
 					t.Fatalf("missing %q for a restricted playlist:\n%s", want, view)
 				}
 			}
-			// The table still plays the playlist by URI.
-			m, _ = m.Update(playerViewKey("p"))
+			// La lista restringida se reproduce con Enter, la única tecla que queda.
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			select {
 			case got := <-out:
 				if want := (playerCommand{Name: "play", URI: "spotify:playlist:rock", SessionID: 11}); got != want {
@@ -358,21 +358,18 @@ func TestLibraryPlaysPlaylistAndTrackForSession(t *testing.T) {
 	}}
 	m, out, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true, SessionID: 21}, source, nil, "")
 
-	// p on the sidebar plays the playlist itself.
+	// Enter en la biblioteca abre la lista seleccionada.
 	m = libraryFocusSidebar(t, m)
-	m, _ = m.Update(playerViewKey("p"))
-	select {
-	case got := <-out:
-		if want := (playerCommand{Name: "play", URI: "spotify:playlist:rock", SessionID: 21}); got != want {
-			t.Fatalf("got %+v, want %+v", got, want)
-		}
-	default:
-		t.Fatal("p on the sidebar did not play the playlist")
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = librarySettle(t, m, cmd)
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "Tren al Sur") {
+		t.Fatalf("Enter on the sidebar did not open the playlist:\n%s", view)
+	}
+	if len(out) != 0 {
+		t.Fatal("opening a playlist sent a playback command")
 	}
 
 	// Enter on a track plays that track for the session on screen.
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = librarySettle(t, m, cmd)
 	m, _ = m.Update(playerViewKey("j"))
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	select {
@@ -385,7 +382,10 @@ func TestLibraryPlaysPlaylistAndTrackForSession(t *testing.T) {
 	}
 }
 
-func TestPlaylistShuffleShortcutAndExistingBindings(t *testing.T) {
+// TestShuffleIsScopedByZone fija el único significado de `s`: en la biblioteca
+// mezcla la lista seleccionada o abierta y fuera de ella alterna el aleatorio de
+// la reproducción. `S` ya no existe y `p` tampoco.
+func TestShuffleIsScopedByZone(t *testing.T) {
 	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: func(context.Context, string, int) (spotify.PlaylistItemsPage, error) {
 		return spotify.PlaylistItemsPage{}, errPlaylistUnavailable
 	}}
@@ -410,17 +410,20 @@ func TestPlaylistShuffleShortcutAndExistingBindings(t *testing.T) {
 		default:
 		}
 	}
+	// Fuera de la biblioteca `s` es el aleatorio de la reproducción.
+	check("s", playerCommand{Name: "set_shuffle", Shuffle: true}, playerCommand{Name: "get_state"})
+	// En la biblioteca `s` mezcla la lista seleccionada.
+	m, _ = m.Update(playerViewKey("l"))
+	check("s", playerCommand{Name: "play_playlist_shuffle", URI: "spotify:playlist:rock"})
+	// `S` ya no es un enlace y `p` tampoco.
 	check("S")
-	m = libraryFocusSidebar(t, m)
-	check("S", playerCommand{Name: "play_playlist_shuffle", URI: "spotify:playlist:rock"})
-	check("p", playerCommand{Name: "play", URI: "spotify:playlist:rock"})
-
+	check("p")
+	// Con la lista abierta y el foco en la tabla, `s` sigue siendo la lista.
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = librarySettle(t, m, cmd)
-	check("S", playerCommand{Name: "play_playlist_shuffle", URI: "spotify:playlist:rock"})
-	check("p", playerCommand{Name: "play", URI: "spotify:playlist:rock"})
-	m.(*playerModel).search.active = true
-	check("S")
+	check("s", playerCommand{Name: "play_playlist_shuffle", URI: "spotify:playlist:rock"})
+	// La tabla con la cola a la vista vuelve al aleatorio de la reproducción.
+	check("c")
 	check("s", playerCommand{Name: "set_shuffle", Shuffle: true}, playerCommand{Name: "get_state"})
 }
 
@@ -437,9 +440,9 @@ func TestLibrarySendsNothingWhenDisconnected(t *testing.T) {
 	}}
 	m, out, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{SessionID: 4}, source, nil, "")
 	m = libraryFocusSidebar(t, m)
-	m, _ = m.Update(playerViewKey("p"))
+	m, _ = m.Update(playerViewKey("s"))
 	if len(out) != 0 {
-		t.Fatal("p sent a command while disconnected")
+		t.Fatal("s sent a command while disconnected")
 	}
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = librarySettle(t, m, cmd)

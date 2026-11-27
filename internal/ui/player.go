@@ -18,16 +18,16 @@ import (
 	"github.com/dcaceresc/pulso/internal/spotify"
 )
 
-// playerPanel is one focusable region of the workspace. Tab and Shift+Tab
-// walk these in order and wrap.
+// playerPanel es una zona enfocable del espacio de trabajo. Cada zona tiene su
+// propia letra —`l` biblioteca, `/` búsqueda, `c` cola— y `Esc` vuelve a la
+// tabla: no hay ciclo de foco. La caja del reproductor no es una zona, así que
+// sus teclas de transporte valen desde cualquier zona.
 type playerPanel uint8
 
 const (
 	playerFocusSidebar playerPanel = iota
 	playerFocusTable
 	playerFocusSearch
-	playerFocusPlaying
-	playerFocusCount
 )
 
 const (
@@ -452,11 +452,10 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case playerTickMsg:
 		return m, m.tick()
 	case tea.KeyMsg:
-		// The help view swallows every key but its own: the panel underneath
-		// never acts by accident.
+		// La ayuda se queda con toda tecla, salvo las de salir: `?` y `Esc` la
+		// cierran y las globales de salida siguen funcionando.
 		if m.help {
-			m.handleHelpKey(msg)
-			return m, nil
+			return m, m.handleHelpKey(msg)
 		}
 		if msg.Type == tea.KeyF2 {
 			m.changePreferences(true)
@@ -475,13 +474,10 @@ func (m *playerModel) text(english, spanish string) string {
 	return m.preferences.Text(english, spanish)
 }
 
+// handleKey aplica el modelo de una tecla y una acción: primero lo global —
+// salir, ayuda, preferencias y transporte—, después las letras de zona y al
+// final las teclas de la zona enfocada.
 func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
-	// F1 opens the help view even inside the text field; `?` is text there and
-	// opens it from every other panel.
-	if key.Type == tea.KeyF1 {
-		m.help = true
-		return nil
-	}
 	switch key.Type {
 	case tea.KeyF2:
 		return m.changePreferences(true)
@@ -491,11 +487,16 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	if key.Paste || key.Alt {
 		return nil
 	}
-	// A focused text field owns every printable key; `q`, `s`, `r`, `+` and
-	// `-` are text there instead of shortcuts.
+	// Un campo de texto enfocado se queda con toda tecla imprimible: `q`, `s`,
+	// `r`, `+`, `-` y `?` son texto ahí y nunca un atajo.
 	if m.focus == playerFocusSearch {
 		return m.handleSearchKey(key)
 	}
+	// Ctrl+C sale siempre y `q` sale cuando ningún campo de texto tiene el foco.
+	if key.Type == tea.KeyCtrlC || key.String() == "q" {
+		return m.quitApp()
+	}
+	// `?` es la única ayuda y la única referencia de teclas.
 	if key.String() == "?" {
 		m.help = true
 		return nil
@@ -504,35 +505,24 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	if cmd, handled := m.saveKey(key); handled {
 		return cmd
 	}
-	// Esc from any panel leaves shown search results first; the next one quits.
-	if key.Type == tea.KeyEsc && m.search.active {
-		m.search.close()
-		m.focus = playerFocusTable
+	// Esc nunca sale: vuelve a la tabla o cancela lo enfocado.
+	if key.Type == tea.KeyEsc {
+		m.backToTable()
 		return nil
-	}
-	// Otherwise Esc from any panel that is not the search input quits.
-	if key.Type == tea.KeyEsc || key.Type == tea.KeyCtrlC || key.String() == "q" {
-		m.quit = true
-		m.cancel()
-		return tea.Quit
 	}
 	if m.ctx.Err() != nil {
 		return nil
 	}
-	switch key.Type {
-	case tea.KeyTab:
-		m.focus = playerStep(m.focus, 1)
-		return nil
-	case tea.KeyShiftTab:
-		m.focus = playerStep(m.focus, -1)
-		return nil
-	}
+	// Una letra por zona: la biblioteca, la búsqueda y la cola de la tabla.
 	switch key.String() {
+	case "l":
+		m.focus = playerFocusSidebar
+		return nil
 	case "/":
 		m.focus = playerFocusSearch
 		return nil
-	case "l":
-		m.focus = playerFocusSidebar
+	case "c":
+		m.showQueue()
 		return nil
 	case "a":
 		return m.openSave()
@@ -543,8 +533,8 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 		}
 		return m.openRemove()
 	}
-	// Shuffle, repeat and the bar's own seek keys come next; s and r reach
-	// Soloist from every panel, while the arrows stay with the playing bar.
+	// El transporte es global: salto, aleatorio y repetición valen desde
+	// cualquier zona; después va el cursor de la zona y al final la fila.
 	if m.handlePlayingKey(key) {
 		return nil
 	}
@@ -566,7 +556,7 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 		}
 	case "n":
 		command.Name = "skip_next"
-	case "p":
+	case "b":
 		command.Name = "skip_prev"
 	case "+", "-":
 		step := 5
@@ -583,22 +573,25 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// handlePlayingKey owns shuffle and repeat from every panel, and the seek
-// arrows from the playing bar, which is the only place they are advertised.
-// It reports whether the key belonged to those bindings.
+// handlePlayingKey owns las teclas globales del transporte —las flechas de
+// salto, `s` y `r`—, que valen desde cualquier zona porque la caja del
+// reproductor no es una zona. `s` está acotada por zona: en la biblioteca mezcla
+// la lista seleccionada o abierta y en cualquier otra zona alterna el aleatorio
+// de la reproducción. Informa si la tecla pertenecía a esos enlaces.
 func (m *playerModel) handlePlayingKey(key tea.KeyMsg) bool {
 	var command playerCommand
 	switch {
 	case key.Type == tea.KeyLeft, key.Type == tea.KeyRight:
-		if m.focus != playerFocusPlaying {
-			return false
-		}
 		delta := int64(playerSeekStepMS)
 		if key.Type == tea.KeyLeft {
 			delta = -delta
 		}
 		command = playerCommand{Name: "seek", PositionMS: playerSeekTarget(m.playhead(), delta, m.state.Track.DurationMS)}
 	case key.String() == "s":
+		if uri := m.playlistShuffleURI(); uri != "" {
+			m.playPlaylistShuffle(uri)
+			return true
+		}
 		command = playerCommand{Name: "set_shuffle", Shuffle: !m.shuffleWanted()}
 	case key.String() == "r":
 		command = playerCommand{Name: "set_repeat", Repeat: playerNextRepeat(m.repeatWanted())}
@@ -627,6 +620,17 @@ func (m *playerModel) handlePlayingKey(key tea.KeyMsg) bool {
 	return true
 }
 
+// playPlaylistShuffle mezcla la lista que nombra la zona enfocada y olvida el
+// aleatorio pendiente: la confirmación llega con el estado de Soloist.
+func (m *playerModel) playPlaylistShuffle(uri string) {
+	if m.commands == nil || !m.state.Connected {
+		return
+	}
+	if m.send(playerCommand{Name: soloist.PlayPlaylistShuffle, URI: uri}) {
+		m.wantShuffle = nil
+	}
+}
+
 // send binds a command to the session on screen and reports whether it fit
 // through the bounded command channel. There is no retry: the bar shows busy.
 func (m *playerModel) send(command playerCommand) bool {
@@ -642,8 +646,9 @@ func (m *playerModel) send(command playerCommand) bool {
 	return false
 }
 
-// handleSearchKey edits the query buffer. Enter submits a non-empty query and
-// leaves the field for the table; Esc blurs it, and closes shown results.
+// handleSearchKey edita el buffer de búsqueda. Enter envía una consulta no
+// vacía y deja el campo por la tabla; Esc lo desenfoca y cierra los resultados
+// mostrados. Tab ya no mueve el foco: las zonas se alcanzan con su propia letra.
 func (m *playerModel) handleSearchKey(key tea.KeyMsg) tea.Cmd {
 	switch key.Type {
 	case tea.KeyEsc:
@@ -651,20 +656,9 @@ func (m *playerModel) handleSearchKey(key tea.KeyMsg) tea.Cmd {
 		m.focus = playerFocusTable
 		return nil
 	case tea.KeyEnter:
-		if cmd := m.submitSearch(); cmd != nil {
-			return cmd
-		}
-		return nil
-	case tea.KeyTab:
-		m.focus = playerFocusPlaying
-		return nil
-	case tea.KeyShiftTab:
-		m.focus = playerFocusTable
-		return nil
+		return m.submitSearch()
 	case tea.KeyCtrlC:
-		m.quit = true
-		m.cancel()
-		return tea.Quit
+		return m.quitApp()
 	}
 	m.query = catalogEdit(m.query, key)
 	return nil
@@ -716,20 +710,13 @@ func (m *playerModel) moveSelection(key tea.KeyMsg) (bool, tea.Cmd) {
 	return false, nil
 }
 
-// activateSelection handles Enter and the library's own play key. It reports
-// whether the key belonged to the library panels.
+// activateSelection interpreta Enter en la biblioteca y en la tabla, e informa
+// si la tecla pertenecía a esos paneles.
 func (m *playerModel) activateSelection(key tea.KeyMsg) (tea.Cmd, bool) {
 	if key.Paste {
 		return nil, false
 	}
 	switch {
-	case key.String() == "S":
-		if uri := m.playlistShuffleURI(); uri != "" && m.state.Connected && m.commands != nil {
-			if m.send(playerCommand{Name: soloist.PlayPlaylistShuffle, URI: uri}) {
-				m.wantShuffle = nil
-			}
-		}
-		return nil, true
 	case key.Type == tea.KeyEnter && m.focus == playerFocusSidebar:
 		return m.activatePlaylist(), true
 	case key.Type == tea.KeyEnter && m.focus == playerFocusTable && m.search.active:
@@ -747,6 +734,12 @@ func (m *playerModel) activateSelection(key tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case key.Type == tea.KeyEnter && m.focus == playerFocusTable && m.library.open():
+		// La lista restringida se reproduce con el mismo Enter que abriría su
+		// contenido: no hay filas que reproducir y es la única acción que queda.
+		if m.library.notice == libraryNoticeUnavailable {
+			m.playURI(m.library.playlist.URI)
+			return nil, true
+		}
 		if m.library.notice == libraryNoticeLoadFailed && !m.library.loadedTracks {
 			return m.library.fetchTracks(0), true
 		}
@@ -754,18 +747,13 @@ func (m *playerModel) activateSelection(key tea.KeyMsg) (tea.Cmd, bool) {
 			m.playURI(track.URI)
 		}
 		return nil, true
-	case key.String() == "p" && m.focus == playerFocusSidebar:
-		if playlist, ok := m.library.selectedPlaylist(); ok {
-			m.playURI(playlist.URI)
-			return nil, true
-		}
-	case key.String() == "p" && m.focus == playerFocusTable && m.library.open() && m.library.restricted:
-		m.playURI(m.library.playlist.URI)
-		return nil, true
 	}
 	return nil, false
 }
 
+// playlistShuffleURI nombra la lista que `s` mezcla en la zona enfocada: la
+// seleccionada en la biblioteca o la abierta en la tabla. Fuera de la
+// biblioteca devuelve vacío y `s` alterna el aleatorio de la reproducción.
 func (m *playerModel) playlistShuffleURI() string {
 	var uri string
 	switch {
@@ -782,7 +770,9 @@ func (m *playerModel) playlistShuffleURI() string {
 	return ""
 }
 
-// activatePlaylist opens the sidebar selection or starts authorization.
+// activatePlaylist abre la lista seleccionada en la biblioteca o inicia la
+// autorización. Una lista que ya se sabe restringida se reproduce con el mismo
+// Enter: sus filas nunca van a llegar.
 func (m *playerModel) activatePlaylist() tea.Cmd {
 	library := m.library
 	switch {
@@ -798,6 +788,10 @@ func (m *playerModel) activatePlaylist() tea.Cmd {
 	case library.notice == libraryNoticeLoadFailed && !library.loadedPlaylists:
 		return library.fetchPlaylists(0)
 	case len(library.playlists) == 0:
+		return nil
+	}
+	if playlist, ok := library.selectedPlaylist(); ok && library.restricted && library.open() && playlist.URI == library.playlist.URI {
+		m.playURI(playlist.URI)
 		return nil
 	}
 	m.focus = playerFocusTable
@@ -1354,11 +1348,6 @@ func (m *playerModel) clampSelections() {
 	m.search.clamp()
 }
 
-func playerStep(value playerPanel, delta int) playerPanel {
-	count := int(playerFocusCount)
-	return playerPanel((int(value) + delta + count) % count)
-}
-
 // playerIndex keeps a selection inside a list; empty lists keep index 0.
 func playerIndex(index, count int) int {
 	if count <= 0 {
@@ -1588,8 +1577,8 @@ func (m *playerModel) markUnauthorized() string {
 }
 
 func (m *playerModel) markRestricted() string {
-	return playerMarked(playerMarkFailure, m.text("Playlist contents unavailable. p: play the playlist.",
-		"Contenido de la lista no disponible. p: reproducir la lista."))
+	return playerMarked(playerMarkFailure, m.text("Playlist contents unavailable. Enter: play the playlist.",
+		"Contenido de la lista no disponible. Enter: reproducir la lista."))
 }
 
 type playerRow struct {
@@ -1679,34 +1668,35 @@ func (m *playerModel) View() string {
 	}
 	rule := styles.muted.Render(strings.Repeat("─", width))
 
-	play, status := m.playerBoxRows(width, styles), m.statusRows(width, styles)
+	play, status := m.playerBoxRows(width, styles), m.statusRows()
 	// Las frases de estado que no caben en su caja ocupan filas reservadas a
 	// todo el ancho, directamente sobre el reproductor.
 	overflow := playerSentenceRows(m.playerOverflowRows(styles), width)
 	// El reparto cede en este orden: la caja del reproductor, la fila de
-	// contexto, las frases de estado, las filas de la tabla y por último el pie.
-	// Las reglas también ceden antes que el cuerpo mínimo.
+	// contexto, las frases de estado, las filas de la tabla y por último el pie
+	// retirado, que solo deja en blanco la fila que ocupaba. Las reglas también
+	// ceden antes que el cuerpo mínimo.
 	rules := 3
-	room := height - 2 - len(play) - len(status) - len(overflow) - rules
+	reserve := m.footerRoom(width, len(status))
+	room := height - 2 - len(play) - len(status) - len(overflow) - rules - reserve
 	for room < playerBodyMinimum(band) && (rules > 0 || len(status) > 0) {
 		if rules > 0 {
 			rules--
 		} else {
 			status = status[:len(status)-1]
 		}
-		room = height - 2 - len(play) - len(status) - len(overflow) - rules
+		room = height - 2 - len(play) - len(status) - len(overflow) - rules - reserve
 	}
-	// En la banda mínima la tabla entra antes que las pistas del pie: si sus
-	// filas dejan la tabla sin encabezado, el pie cede. El aviso de la sesión
-	// nunca cede, y si tampoco así alcanza (el caso de 40×12), el cuerpo se
-	// queda con su fila de contexto.
+	// En la banda mínima la tabla entra antes que el aviso de la sesión: si sus
+	// filas dejan la tabla sin encabezado, el aviso cede. Si tampoco así alcanza
+	// (el caso de 40×12), el cuerpo se queda con su fila de contexto.
 	noticeRows := 0
 	if m.playerNoticeText() != "" {
 		noticeRows = 1
 	}
 	for band == playerBandMinimum && room < playerMinimumTableBody && len(status) > noticeRows {
 		status = status[:len(status)-1]
-		room = height - 2 - len(play) - len(status) - len(overflow) - rules
+		room = height - 2 - len(play) - len(status) - len(overflow) - rules - reserve
 	}
 	room = max(0, room)
 	body, _ := m.bodyRows(width, styles, room)
@@ -2017,9 +2007,6 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 	interior := playerBoxInterior(width, m.height)
 	inner := width - 2
 	edge := styles.muted
-	if m.focus == playerFocusPlaying {
-		edge = styles.accent
-	}
 	rows := make([]string, 0, interior+2)
 
 	state := m.playerBoxState(max(1, inner-4))
@@ -2114,8 +2101,8 @@ func (m *playerModel) repeatMode() string {
 	}
 }
 
-// playerNoticeText es el aviso de la sesión que encabeza el pie: una sola fila
-// que nunca cede, porque el pie cede antes que el aviso.
+// playerNoticeText es el aviso de la sesión: la única fila que queda bajo la caja
+// del reproductor, y la última que cede antes de quedarse sin sitio.
 func (m *playerModel) playerNoticeText() string {
 	notice := playerText(m.state.Notice)
 	if text := m.saveNoticeText(); text != "" {
@@ -2140,157 +2127,66 @@ func (m *playerModel) playerNoticeText() string {
 	return notice
 }
 
-func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
-	var rows []playerRow
+// statusRows es la única fila que queda bajo la caja del reproductor: el aviso
+// de la sesión. La línea de pistas del pie se retiró en E3 y `?` es la única
+// referencia de teclas.
+func (m *playerModel) statusRows() []playerRow {
 	if notice := m.playerNoticeText(); notice != "" {
-		rows = append(rows, playerRow{text: notice})
+		return []playerRow{{text: notice}}
 	}
-	hints := m.hintRows(width)
-	if budget := m.hintBudget(width, len(rows)); len(hints) > budget {
-		hints = hints[:budget]
-	}
-	for _, hint := range hints {
-		rows = append(rows, playerRow{text: hint, style: styles.muted})
-	}
-	return rows
+	return nil
 }
 
-// hintBudget keeps the footer inside the window: the frame, the playing bar,
-// any notice row and one content row come first. One footer row is always kept
-// so the keys stay discoverable.
-func (m *playerModel) hintBudget(width, noticeRows int) int {
-	// El pie solo aparece cuando el cuerpo ya tiene sus filas mínimas: en las
-	// ventanas bajas cede entero antes que la tabla, así el marco de 40×12 no
-	// cambia respecto de la línea base.
+// footerRoom es la fila que ocupaba el pie retirado, en blanco: la geometría de
+// las bandas no cambia al quitar la línea de pistas. Solo se reserva donde el
+// pie existía, así el marco de 40×12 queda como estaba.
+func (m *playerModel) footerRoom(width, noticeRows int) int {
 	fixed := 2 + playerBoxHeight(width, m.height) + noticeRows + 1 + playerMinBodyRoom
-	return max(0, m.height-fixed)
+	if m.height-fixed <= 0 {
+		return 0
+	}
+	return 1
 }
 
-// playerHint is one footer binding: the key as it is pressed and the localized
-// action it performs. Labels stay one word so a pair parses as `Key label`.
-type playerHint struct {
-	key   string
-	label string
+// quitApp sale de la aplicación: `q` sin campo de texto y `Ctrl+C` siempre.
+func (m *playerModel) quitApp() tea.Cmd {
+	m.quit = true
+	m.cancel()
+	return tea.Quit
 }
 
-// playerHintLines wraps bindings into sqlterm's flat footer shape: one leading
-// space, `Key label` pairs, two spaces between pairs and one trailing space.
-// Narrow windows wrap onto another row of the same shape instead of falling
-// back to shortened labels.
-func playerHintLines(hints []playerHint, width int) []string {
-	if width <= 0 || len(hints) == 0 {
-		return nil
+// backToTable es el único trabajo de Esc: vuelve a la tabla y, si la tabla
+// muestra resultados, los cancela y devuelve la lista que había debajo. Nunca
+// sale de la aplicación y nunca cierra la lista abierta; para eso está `c`.
+func (m *playerModel) backToTable() {
+	if m.search.active {
+		m.search.close()
 	}
-	lines := make([]string, 0, len(hints))
-	line := ""
-	flush := func() {
-		if line != "" {
-			lines = append(lines, line+" ")
-			line = ""
-		}
-	}
-	for _, hint := range hints {
-		item := hint.key + " " + hint.label
-		if line == "" {
-			line = " " + item
-			continue
-		}
-		// A pair that cannot fit even alone stays on its own row and is
-		// truncated by the row renderer, never split across rows.
-		if lipgloss.Width(line)+2+lipgloss.Width(item)+1 <= width {
-			line += "  " + item
-			continue
-		}
-		flush()
-		line = " " + item
-	}
-	flush()
-	return lines
+	m.focus = playerFocusTable
 }
 
-// hintPairs follows the focused panel and never advertises a key that does
-// nothing there. Shuffle and repeat work from every panel but the text field,
-// so only the playing bar advertises the seek arrows.
-func (m *playerModel) hintPairs() []playerHint {
-	if m.focus == playerFocusSearch {
-		return []playerHint{
-			{"Enter", m.text("search", "buscar")},
-			{"Esc", m.text("leave", "salir")},
-			{"Backspace", m.text("delete", "borrar")},
-			{"F1", m.text("help", "ayuda")},
-			{"F2", m.text("language", "idioma")},
-			{"F3", m.text("theme", "tema")},
-		}
-	}
-	// El selector de lista sustituye al pie mientras está abierto.
-	if m.saveTo.phase != saveIdle {
-		hints := make([]playerHint, 0, 4)
-		switch m.saveTo.phase {
-		case saveChoosing:
-			hints = append(hints,
-				playerHint{"↑↓/jk", m.text("playlist", "lista")},
-				playerHint{"Enter", m.text("save", "guardar")})
-		case saveConfirming:
-			hints = append(hints, playerHint{"Enter", m.text("remove", "quitar")})
-		case saveScopeOffered:
-			hints = append(hints, playerHint{"Enter", m.text("authorize", "autorizar")})
-		}
-		return append(hints,
-			playerHint{"Esc", m.text("cancel", "cancelar")},
-			playerHint{"F1", m.text("help", "ayuda")})
-	}
-	hints := []playerHint{{"Tab", m.text("focus", "panel")}}
-	switch m.focus {
-	case playerFocusSidebar:
-		hints = append(hints,
-			playerHint{"↑↓/jk", m.text("library", "biblioteca")},
-			playerHint{"Enter", m.text("open", "abrir")},
-			playerHint{"Space", m.text("play/pause", "pausa")},
-			playerHint{"s", m.text("shuffle", "aleatorio")},
-			playerHint{"r", m.text("repeat", "repetir")},
-			playerHint{"+/-", m.text("volume", "volumen")},
-			playerHint{"/", m.text("search", "buscar")})
-	case playerFocusPlaying:
-		hints = append(hints,
-			playerHint{"Space", m.text("play/pause", "pausa")},
-			playerHint{"←→", m.text("seek", "salto")},
-			playerHint{"n/p", m.text("track", "pista")},
-			playerHint{"s", m.text("shuffle", "aleatorio")},
-			playerHint{"r", m.text("repeat", "repetir")},
-			playerHint{"+/-", m.text("volume", "volumen")},
-			playerHint{"/", m.text("search", "buscar")},
-			playerHint{"l", m.text("library", "biblioteca")})
-	default:
-		hints = append(hints,
-			playerHint{"↑↓/jk", m.text("move", "mover")},
-			playerHint{"Enter", m.text("play", "reproducir")},
-			playerHint{"Space", m.text("play/pause", "pausa")},
-			playerHint{"s", m.text("shuffle", "aleatorio")},
-			playerHint{"r", m.text("repeat", "repetir")},
-			playerHint{"+/-", m.text("volume", "volumen")},
-			playerHint{"/", m.text("search", "buscar")},
-			playerHint{"l", m.text("library", "biblioteca")})
-	}
-	if m.saveAvailable() {
-		hints = append(hints, playerHint{"a", m.text("save", "guardar")})
-	}
-	if m.removeAvailable() {
-		hints = append(hints, playerHint{"x", m.text("remove", "quitar")})
-	}
-	if m.playlistShuffleURI() != "" {
-		hints = append(hints, playerHint{"S", m.text("shuffle-list", "mezclar-lista")})
-	}
-	return append(hints,
-		playerHint{"F1", m.text("help", "ayuda")},
-		playerHint{"F2", m.text("language", "idioma")},
-		playerHint{"F3", m.text("theme", "tema")},
-		playerHint{"q", m.text("quit", "salir")},
-		playerHint{"Esc", m.text("back/quit", "volver/salir")})
+// showQueue devuelve la tabla a la cola: cierra la búsqueda mostrada y la lista
+// abierta, que es lo único que decide qué dibuja la tabla.
+func (m *playerModel) showQueue() {
+	m.search.close()
+	m.library.closePlaylist()
+	m.focus = playerFocusTable
 }
 
-// hintRows is the footer: the focused panel's pairs in the shared flat format.
-func (m *playerModel) hintRows(width int) []string {
-	return playerHintLines(m.hintPairs(), width)
+// closePlaylist devuelve la tabla a la cola: olvida la lista abierta con sus
+// filas y cancela la página que estuviera en camino. El aviso de la propia
+// biblioteca, que llega antes de abrir nada, se conserva.
+func (l *libraryState) closePlaylist() {
+	if l == nil {
+		return
+	}
+	l.stopWork()
+	if l.loadedTracks {
+		l.notice, l.err = libraryNoticeNone, nil
+	}
+	l.playlist, l.tracks = libraryPlaylist{}, nil
+	l.trackTotal, l.trackMore, l.trackOffset = 0, false, 0
+	l.tableSelected, l.loadingTracks, l.loadedTracks, l.restricted = 0, false, false, false
 }
 
 func (m *playerModel) bodyRows(width int, styles playerStyles, room int) ([]playerRow, []playerRow) {
@@ -2569,12 +2465,12 @@ func (m *playerModel) librarySelection() string {
 }
 
 // librarySwitcher is the stacked one-line sidebar: it names the current
-// selection and the key that changes it.
+// selection and the zone key that changes it.
 func (m *playerModel) librarySwitcher(width int) string {
 	left := m.text("LIBRARY: ", "BIBLIOTECA: ") + m.librarySelection()
-	change := m.text("Tab: library", "Tab: biblioteca")
+	change := m.text("l library", "l biblioteca")
 	if width < playerSwitcherKey {
-		change = "Tab"
+		change = "l"
 	}
 	return playerSpread(left, change, width)
 }
@@ -2811,7 +2707,9 @@ func (m *playerModel) libraryTableRows(width int, styles playerStyles, room int)
 	library := m.library
 	switch {
 	case library.notice == libraryNoticeUnavailable:
-		return []playerRow{{text: m.markRestricted(), style: styles.failure}}
+		// La frase nombra `Enter` y no cabe en todas las cajas: se promueve como
+		// cualquier otra frase de estado.
+		return []playerRow{{text: m.markRestricted(), style: styles.failure, state: true}}
 	case library.notice == libraryNoticeLoadFailed:
 		return []playerRow{{text: m.markError(), style: styles.failure}}
 	case !library.loadedTracks || (library.loadingTracks && len(library.tracks) == 0):

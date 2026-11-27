@@ -144,9 +144,6 @@ func TestSaveActionAvailability(t *testing.T) {
 	t.Run("catálogo de solo lectura", func(t *testing.T) {
 		readOnly := &libraryFake{playlists: libraryPlaylistsFixture()}
 		m, out, _ := savePlayer(t, preferences{}, saveTrackState(), readOnly)
-		if view := ansi.Strip(m.View()); strings.Contains(view, "a save") {
-			t.Fatalf("a read-only catalog advertised saving:\n%s", view)
-		}
 		m, cmd := m.Update(playerViewKey("a"))
 		if cmd != nil {
 			t.Fatal("a read-only catalog scheduled save work")
@@ -232,7 +229,6 @@ func TestSaveActionAvailability(t *testing.T) {
 	t.Run("con escritura", func(t *testing.T) {
 		api := newSaveFake(libraryPlaylistsFixture())
 		m, out, _ := savePlayer(t, preferences{}, saveTrackState(), api)
-		playerViewText(t, m, "a save")
 		m, cmd := m.Update(playerViewKey("a"))
 		if cmd != nil {
 			t.Fatal("opening the chooser scheduled work")
@@ -290,7 +286,7 @@ func TestSaveChooserConfirmsOnlyAfterSpotifyAccepts(t *testing.T) {
 	es := newSaveFake(libraryPlaylistsFixture())
 	localized, _, _ := savePlayer(t, preferences{Language: "es"}, saveTrackState(), es)
 	localized, _ = localized.Update(playerViewKey("a"))
-	playerViewText(t, localized, "Guardar en lista · Rock Chileno", "Enter guardar")
+	playerViewText(t, localized, "Guardar en lista · Rock Chileno")
 	localized, cmd = localized.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	localized = librarySettle(t, localized, cmd)
 	playerViewText(t, localized, "Guardada en Rock Chileno.")
@@ -320,9 +316,16 @@ func TestSaveChooserCancels(t *testing.T) {
 	if len(out) != 0 {
 		t.Fatal("cancelling sent a playback command")
 	}
+	// Esc ya no sale: el segundo Esc vuelve a la tabla y nada más.
 	m, quit := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if _, ok := playerViewRun(t, quit).(tea.QuitMsg); !ok {
-		t.Fatal("Esc no longer quit after the chooser closed")
+	if quit != nil {
+		t.Fatal("Esc after the chooser closed returned a command")
+	}
+	if m.View() == "" {
+		t.Fatal("Esc after the chooser closed quit the workspace")
+	}
+	if got := m.(*playerModel).focus; got != playerFocusTable {
+		t.Fatalf("Esc left the focus on %v", got)
 	}
 }
 
@@ -523,7 +526,8 @@ func TestSaveFailuresAreQuietAndLocalized(t *testing.T) {
 				t.Fatalf("the chooser stayed open after a failure:\n%s", view)
 			}
 			// El aviso no bloquea: la pista y sus controles siguen ahí.
-			playerViewText(t, m, "Song", tt.hint)
+			playerViewText(t, m, "Song", "├─")
+			playerViewNoFooter(t, m)
 			if len(out) != 0 {
 				t.Fatal("a failed save touched playback")
 			}
@@ -642,7 +646,7 @@ func TestSaveWritableCatalogKeepsExistingCommands(t *testing.T) {
 		{"reproducir", tea.KeyMsg{Type: tea.KeySpace}, saveTrackState(), []playerCommand{{Name: "play"}}},
 		{"pausar", tea.KeyMsg{Type: tea.KeySpace}, playing, []playerCommand{{Name: "pause"}}},
 		{"siguiente", playerViewKey("n"), saveTrackState(), []playerCommand{{Name: "skip_next"}}},
-		{"anterior", playerViewKey("p"), saveTrackState(), []playerCommand{{Name: "skip_prev"}}},
+		{"anterior", playerViewKey("b"), saveTrackState(), []playerCommand{{Name: "skip_prev"}}},
 		{"más volumen", playerViewKey("+"), saveTrackState(), []playerCommand{{Name: "set_volume", Volume: 55}}},
 		{"menos volumen", playerViewKey("-"), saveTrackState(), []playerCommand{{Name: "set_volume", Volume: 45}}},
 		{"aleatorio", playerViewKey("s"), saveTrackState(), []playerCommand{{Name: "set_shuffle", Shuffle: true}, {Name: "get_state"}}},
@@ -687,19 +691,20 @@ func TestSaveWritableCatalogKeepsExistingRouting(t *testing.T) {
 	if view := ansi.Strip(m.View()); strings.Contains(view, "Save to playlist") {
 		t.Fatalf("typing a opened the chooser:\n%s", view)
 	}
-	// Tab sigue recorriendo los paneles.
+	// Tab ya no mueve el foco: la zona se alcanza con su propia letra.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if got := m.(*playerModel).focus; got != playerFocusPlaying {
+	if got := m.(*playerModel).focus; got != playerFocusSearch {
 		t.Fatalf("Tab moved the focus to %v", got)
 	}
-	// "l" sigue enfocando la biblioteca.
+	// "l" sigue enfocando la biblioteca, pero no desde el campo de texto.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m, _ = m.Update(playerViewKey("l"))
 	if got := m.(*playerModel).focus; got != playerFocusSidebar {
 		t.Fatalf("l moved the focus to %v", got)
 	}
 	// "?" sigue abriendo la ayuda, y q sigue saliendo.
 	m, _ = m.Update(playerViewKey("?"))
-	playerViewText(t, m, "Navigation")
+	playerViewText(t, m, "Pulso · Help", "save the playing track to a playlist")
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m, quit := m.Update(playerViewKey("q"))
 	if _, ok := playerViewRun(t, quit).(tea.QuitMsg); !ok {
@@ -713,9 +718,9 @@ func TestSaveWritableCatalogKeepsExistingRouting(t *testing.T) {
 // TestHelpListsSaveAction keeps the help screen honest about the new key.
 func TestHelpListsSaveAction(t *testing.T) {
 	m, _ := playerViewModel(t, 120, 40, saveTrackState())
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyF1})
+	m, _ = m.Update(playerViewKey("?"))
 	playerViewText(t, m, "save the playing track to a playlist")
 	es := NewPlayerModelWithPreferences(context.Background(), nil, nil, 120, 40, preferences{Language: "es"}, nil, "", nil)
-	es, _ = es.Update(tea.KeyMsg{Type: tea.KeyF1})
+	es, _ = es.Update(playerViewKey("?"))
 	playerViewText(t, es, "guardar la pista en una lista")
 }
