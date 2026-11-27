@@ -72,6 +72,12 @@ func preferencesPath() (string, error) {
 	return filepath.Join(dir, "pulso", "preferences.json"), nil
 }
 
+// PreferencesPath expone la ruta resuelta para que otros comandos, como la
+// desinstalación, la informen sin duplicar la resolución.
+func PreferencesPath() (string, error) {
+	return preferencesPath()
+}
+
 func Load() Preferences {
 	path, err := preferencesPath()
 	if err != nil {

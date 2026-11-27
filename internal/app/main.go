@@ -18,20 +18,25 @@ const usage = `Pulso — Spotify in the terminal
 Usage:
   pulso                          Open the Soloist setup wizard
   pulso doctor [--data-dir PATH]  Report local Soloist status
+  pulso uninstall                Delete Pulso and Soloist files (asks first)
   pulso --help                   Show this help
 `
 
 type commandDeps struct {
-	setup func(io.Writer) error
-	find  func() (string, error)
-	probe func(context.Context, string, []string, io.Writer, io.Writer) error
+	setup     func(io.Writer) error
+	uninstall func(io.Reader, io.Writer, io.Writer) int
+	find      func() (string, error)
+	probe     func(context.Context, string, []string, io.Writer, io.Writer) error
 }
 
 // Main runs the pulso command with args and returns its exit code.
 func Main(args []string, stdout, stderr io.Writer) int {
 	return run(args, stdout, stderr, commandDeps{
 		setup: runSetup,
-		find:  findSoloist,
+		uninstall: func(stdin io.Reader, stdout, stderr io.Writer) int {
+			return runUninstall(stdin, stdout, stderr, newUninstallDeps())
+		},
+		find: findSoloist,
 		probe: func(ctx context.Context, path string, args []string, stdout, stderr io.Writer) error {
 			cmd := exec.CommandContext(ctx, path, args...)
 			cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -51,6 +56,9 @@ func run(args []string, stdout, stderr io.Writer, deps commandDeps) int {
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		fmt.Fprint(stdout, usage)
 		return 0
+	}
+	if len(args) == 1 && args[0] == "uninstall" {
+		return deps.uninstall(os.Stdin, stdout, stderr)
 	}
 	if args[0] != "doctor" || (len(args) != 1 && (len(args) != 3 || args[1] != "--data-dir" || args[2] == "")) {
 		fmt.Fprintln(stderr, "Invalid arguments. Run pulso --help.")

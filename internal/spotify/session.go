@@ -49,6 +49,12 @@ func spotifySessionPath() (string, error) {
 	return filepath.Join(dir, "pulso", "spotify-session.json"), nil
 }
 
+// SessionPath expone la ruta resuelta para que la desinstalación pueda
+// informarla y borrarla sin repetir la resolución.
+func SessionPath() (string, error) {
+	return spotifySessionPath()
+}
+
 // loadSpotifySessionAt reads one bounded, regular file. Anything unexpected
 // leaves the caller with "no session" so the interactive flow can run.
 func loadSpotifySessionAt(path string) (spotifySession, bool) {

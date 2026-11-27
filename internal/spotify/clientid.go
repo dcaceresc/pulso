@@ -38,6 +38,12 @@ func clientIDPath() (string, error) {
 	return filepath.Join(dir, "pulso", "client-id"), nil
 }
 
+// ClientIDPath expone la ruta resuelta para que la desinstalación pueda
+// informarla y borrarla sin repetir la resolución.
+func ClientIDPath() (string, error) {
+	return clientIDPath()
+}
+
 func loadClientIDAt(path string) string {
 	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() || info.Size() > clientIDLimit {
 		return ""
