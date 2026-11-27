@@ -1693,8 +1693,8 @@ func (m *playerModel) profileText() string {
 	return m.text("@user", "@usuario")
 }
 
-// playerBoxInterior es la altura interior de la caja para este ancho.
-func playerBoxInterior(width int) int {
+// playerBoxBand elige la altura interior por ancho: la banda de la matriz.
+func playerBoxBand(width int) int {
 	switch {
 	case width >= playerWideWidth:
 		return playerBoxWide
@@ -1704,12 +1704,80 @@ func playerBoxInterior(width int) int {
 	return playerBoxMinimum
 }
 
+// playerBoxInterior recorta la banda cuando la ventana es baja: la caja deja
+// sitio al encabezado, una fila de cuerpo y una fila de estado antes de crecer.
+func playerBoxInterior(width, height int) int {
+	interior := playerBoxBand(width)
+	if limit := height - 2 - 1 - playerMinBodyRoom - 1 - 2; interior > limit {
+		interior = max(3, limit)
+	}
+	return interior
+}
+
 // playerBoxHeight cuenta el borde superior, el interior y el inferior.
-func playerBoxHeight(width int) int {
+func playerBoxHeight(width, height int) int {
 	if width < playerBoxMinRoom {
 		return 0
 	}
-	return playerBoxInterior(width) + 2
+	return playerBoxInterior(width, height) + 2
+}
+
+// playerBoxLayout reparte las filas interiores de la caja. Las filas que no
+// caben quedan en -1 y no se dibujan.
+type playerBoxLayout struct {
+	progress int
+	context  int
+}
+
+func playerBoxLayoutFor(interior int) playerBoxLayout {
+	switch {
+	case interior >= playerBoxWide:
+		return playerBoxLayout{progress: 6, context: 8}
+	case interior >= playerBoxCompact:
+		return playerBoxLayout{progress: 5, context: 7}
+	case interior >= playerBoxMinimum:
+		return playerBoxLayout{progress: 4, context: 5}
+	case interior == 5:
+		return playerBoxLayout{progress: 4, context: -1}
+	case interior == 4:
+		return playerBoxLayout{progress: 3, context: -1}
+	}
+	return playerBoxLayout{progress: 2, context: -1}
+}
+
+// Lo que la caja puede afirmar de la sesión: una pista real, una carga en
+// curso o una sesión caída. Es una sola decisión para la línea de estado y para
+// el interior, así no muestran cosas distintas.
+const (
+	playerBoxLive = iota
+	playerBoxLoading
+	playerBoxDisconnected
+)
+
+func (m *playerModel) playerBoxCondition() int {
+	switch {
+	case !m.loaded:
+		return playerBoxLoading
+	case !m.state.Connected:
+		return playerBoxDisconnected
+	}
+	return playerBoxLive
+}
+
+// playerBoxText devuelve el título, el artista y el álbum que corresponden al
+// estado actual. Un título guardado no sobrevive a una desconexión.
+func (m *playerModel) playerBoxText() (title, artist, album string) {
+	switch m.playerBoxCondition() {
+	case playerBoxLoading:
+		return m.text("Loading", "Cargando"), "", ""
+	case playerBoxDisconnected:
+		return m.text("Disconnected", "Sin conexión"), "", ""
+	}
+	title = playerText(m.state.Track.Title)
+	if title == "" {
+		title = m.text("Nothing playing", "No hay nada en reproducción")
+	}
+	return title, playerText(m.state.Track.Artist), playerText(m.state.Track.Album)
 }
 
 // playerEllipsis recorta con puntos suspensivos, que es lo único que cabe en
@@ -1733,13 +1801,15 @@ func playerEllipsis(text string, width int) string {
 func (m *playerModel) playerBoxState(width int) string {
 	glyph := "⏸"
 	word := m.text("Paused", "En pausa")
-	switch {
-	case !m.loaded:
+	switch m.playerBoxCondition() {
+	case playerBoxLoading:
 		word = m.text("Loading", "Cargando")
-	case !m.state.Connected:
+	case playerBoxDisconnected:
 		word = m.text("Disconnected", "Sin conexión")
-	case strings.EqualFold(strings.TrimSpace(m.state.Status), "playing"):
-		glyph, word = "▶", m.text("Playing", "Reproduciendo")
+	default:
+		if strings.EqualFold(strings.TrimSpace(m.state.Status), "playing") {
+			glyph, word = "▶", m.text("Playing", "Reproduciendo")
+		}
 	}
 	shuffle := "⇄ " + m.shuffleMode()
 	repeat := "↻ " + m.repeatMode()
@@ -1763,8 +1833,8 @@ func (m *playerModel) playerBoxState(width int) string {
 }
 
 // playerBoxArt devuelve el bloque de iniciales de la carátula: dos letras del
-// título mientras no haya imagen que dibujar. Cada cadena es una fila de
-// playerArtWidth celdas.
+// título mientras no haya imagen que dibujar. playerArtRows es la fuente de la
+// altura y cada cadena mide playerArtWidth celdas.
 func (m *playerModel) playerBoxArt() []string {
 	initials := "♪"
 	if title := playerText(m.state.Track.Title); title != "" {
@@ -1789,13 +1859,21 @@ func (m *playerModel) playerBoxArt() []string {
 	pad := max(0, inner-lipgloss.Width(initials))
 	left := pad / 2
 	middle := strings.Repeat(" ", left) + initials + strings.Repeat(" ", pad-left)
-	return []string{
-		"┌" + strings.Repeat("─", inner) + "┐",
-		"│" + strings.Repeat(" ", inner) + "│",
-		"│" + middle + "│",
-		"│" + strings.Repeat(" ", inner) + "│",
-		"└" + strings.Repeat("─", inner) + "┘",
+	blank := "│" + strings.Repeat(" ", inner) + "│"
+	rows := make([]string, 0, playerArtRows)
+	for row := 0; row < playerArtRows; row++ {
+		switch {
+		case row == 0:
+			rows = append(rows, "┌"+strings.Repeat("─", inner)+"┐")
+		case row == playerArtRows-1:
+			rows = append(rows, "└"+strings.Repeat("─", inner)+"┘")
+		case row == playerArtRows/2:
+			rows = append(rows, "│"+middle+"│")
+		default:
+			rows = append(rows, blank)
+		}
 	}
+	return rows
 }
 
 // playerBoxContext es la última línea interior: la lista de la reproducción y,
@@ -1817,7 +1895,7 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 	if width < playerBoxMinRoom {
 		return nil
 	}
-	interior := playerBoxInterior(width)
+	interior := playerBoxInterior(width, m.height)
 	inner := width - 2
 	edge := styles.muted
 	if m.focus == playerFocusPlaying {
@@ -1830,7 +1908,7 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 	border += strings.Repeat("─", max(0, inner-lipgloss.Width(border)))
 	rows = append(rows, edge.Render("├")+styles.label.Render(playerFit(border, inner))+edge.Render("┤"))
 
-	hasArt := interior >= playerArtRows+3 && width >= playerBoxGutter
+	hasArt := interior >= playerArtRows+3 && width >= playerBoxGutter && m.playerBoxCondition() == playerBoxLive
 	art := []string{}
 	if hasArt {
 		art = m.playerBoxArt()
@@ -1841,38 +1919,30 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 	}
 	textWidth := max(1, inner-lipgloss.Width(left)-2)
 
-	title := playerText(m.state.Track.Title)
-	if title == "" {
-		title = m.text("Nothing playing", "No hay nada en reproducción")
-		if !m.loaded {
-			title = m.text("Loading", "Cargando")
-		} else if !m.state.Connected {
-			title = m.text("Disconnected", "Sin conexión")
-		}
+	title, artist, album := m.playerBoxText()
+	layout := playerBoxLayoutFor(interior)
+	duration := int64(0)
+	if m.playerBoxCondition() == playerBoxLive {
+		duration = m.state.Track.DurationMS
 	}
-	artist := playerText(m.state.Track.Artist)
-	album := playerText(m.state.Track.Album)
-	progressRow, contextRow := 5, 7
-	if interior >= playerBoxWide {
-		progressRow, contextRow = 6, 8
-	}
-	if interior <= playerBoxMinimum {
-		progressRow, contextRow = 4, 5
-	}
-	progress := playerProgress(m.playhead(), m.state.Track.DurationMS, textWidth)
+	progress := playerProgress(m.playhead(), duration, textWidth)
 
+	// Las filas se reparten por prioridad: el título y el tiempo sobreviven a
+	// cualquier altura; el artista y el álbum solo cuando hay sitio para ellos.
+	showArtist := interior >= 4
+	showAlbum := interior >= 5
 	for row := 0; row < interior; row++ {
 		text, style := "", lipgloss.Style{}
-		switch row {
-		case 1:
+		switch {
+		case row == 1:
 			text, style = title, styles.accent
-		case 2:
+		case row == 2 && showArtist:
 			text, style = artist, styles.muted
-		case 3:
+		case row == 3 && showAlbum:
 			text, style = album, styles.muted
-		case progressRow:
+		case row == layout.progress:
 			text, style = progress, styles.muted
-		case contextRow:
+		case row == layout.context:
 			text, style = m.playerBoxContext(), styles.muted
 		}
 		line := left
@@ -1951,7 +2021,7 @@ func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
 		rows = append(rows, playerRow{text: notice})
 	}
 	hints := m.hintRows(width)
-	if budget := m.hintBudget(width, styles, len(rows)); len(hints) > budget {
+	if budget := m.hintBudget(width, len(rows)); len(hints) > budget {
 		hints = hints[:budget]
 	}
 	for _, hint := range hints {
@@ -1963,10 +2033,10 @@ func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
 // hintBudget keeps the footer inside the window: the frame, the playing bar,
 // any notice row and one content row come first. One footer row is always kept
 // so the keys stay discoverable.
-func (m *playerModel) hintBudget(width int, styles playerStyles, noticeRows int) int {
+func (m *playerModel) hintBudget(width, noticeRows int) int {
 	// El cuerpo conserva sus filas: cuando la ventana no da para todo, el pie
 	// cede antes que la tabla y puede quedarse sin ninguna fila.
-	fixed := 2 + playerBoxHeight(width) + noticeRows + playerMinBodyRoom
+	fixed := 2 + playerBoxHeight(width, m.height) + noticeRows + playerMinBodyRoom
 	return max(0, m.height-fixed)
 }
 

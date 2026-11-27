@@ -1538,8 +1538,8 @@ func playerViewFooterPairs(t *testing.T, m *playerModel, width int) map[string]s
 func TestPlayerViewFooterPairFormat(t *testing.T) {
 	for _, size := range []struct {
 		width, height int
-		footer        bool
-	}{{120, 40, true}, {100, 30, true}, {80, 24, true}, {40, 12, false}} {
+		footer        string
+	}{{120, 40, "full"}, {100, 30, "full"}, {80, 24, "full"}, {40, 12, "partial"}} {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
 			m, _ := playerViewModel(t, size.width, size.height, playerState{Connected: true, Status: "paused"})
 			player := m.(*playerModel)
@@ -1602,18 +1602,22 @@ func TestPlayerViewFooterPairFormat(t *testing.T) {
 				}
 			}
 
-			// El pie cede sus filas al contenido: a 40x12 ya no cabe y la caja se
-			// queda sola al pie de la vista.
+			// El pie cede sus filas al contenido: a 40x12 queda una sola fila con
+			// las primeras parejas y la caja conserva sus dos bordes.
 			view := strings.Join(playerViewRows(t, m, size.width, size.height), "\n")
-			if !size.footer {
-				for _, want := range []string{"├─", "└"} {
+			if size.footer == "partial" {
+				for _, want := range []string{"├─", "Tab focus"} {
 					if !strings.Contains(view, want) {
 						t.Fatalf("missing %q in the %dx%d frame:\n%s", want, size.width, size.height, view)
 					}
 				}
-				for _, gone := range []string{"Tab focus", "F1 help", "q quit"} {
+				bottom := "└" + strings.Repeat("─", size.width-2) + "┘"
+				if !strings.Contains(view, bottom) {
+					t.Fatalf("the %dx%d box lost its bottom border:\n%s", size.width, size.height, view)
+				}
+				for _, gone := range []string{"F2 language", "F3 theme"} {
 					if strings.Contains(view, gone) {
-						t.Fatalf("the %dx%d frame kept the footer pair %q:\n%s", size.width, size.height, gone, view)
+						t.Fatalf("the %dx%d frame kept the unaffordable pair %q:\n%s", size.width, size.height, gone, view)
 					}
 				}
 				return
@@ -1848,4 +1852,49 @@ func TestPlayerViewDeviceLocalized(t *testing.T) {
 	m := NewPlayerModelWithPreferences(ctx, states, nil, 120, 40, preferences{Language: "es"}, nil, "", nil)
 	m, _ = m.Update(playerViewRun(t, m.Init()))
 	playerViewText(t, m, "Dispositivo Desk", "Volumen 37%")
+}
+
+// TestPlayerBoxMarksDisconnectedOverStaleTrack fija que la caja no muestre la
+// pista guardada cuando la sesión se desconecta: el estado manda sobre el
+// título viejo, y con una pista obsoleta tampoco se pinta el bloque de iniciales.
+func TestPlayerBoxMarksDisconnectedOverStaleTrack(t *testing.T) {
+	m, _ := playerViewModel(t, 120, 40, playerState{
+		Connected: false,
+		Track: playerTrack{
+			Title: "Estrechez de Corazón", Artist: "Los Prisioneros",
+			Album: "La Cultura de la Basura", DurationMS: 381000,
+		},
+	})
+	view := strings.Join(playerViewRows(t, m, 120, 40), "\n")
+	for _, gone := range []string{"Estrechez de Corazón", "Los Prisioneros", "La Cultura de la Basura"} {
+		if strings.Contains(view, gone) {
+			t.Fatalf("disconnected box kept the stale track %q:\n%s", gone, view)
+		}
+	}
+	playerViewText(t, m, "Disconnected")
+}
+
+// TestPlayerBoxFitsShortWideViewport fija que una ventana ancha y baja conserve
+// la caja completa: la altura interior cede antes de que el borde inferior se
+// pierda.
+func TestPlayerBoxFitsShortWideViewport(t *testing.T) {
+	m, _ := playerViewModel(t, 120, 40, playerState{
+		Connected: true, Status: "playing", Volume: 85, PositionMS: 62000,
+		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros", DurationMS: 381000},
+	})
+	for _, size := range []struct{ width, height int }{{120, 14}, {120, 12}, {120, 10}, {60, 10}} {
+		rows := playerViewRows(t, m, size.width, size.height)
+		view := strings.Join(rows, "\n")
+		for _, want := range []string{"├─", "Estrechez de Corazón"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("missing %q at %dx%d:\n%s", want, size.width, size.height, view)
+			}
+		}
+		// El bloque de iniciales también dibuja un `└`: el borde que importa es
+		// el de la caja completa.
+		bottom := "└" + strings.Repeat("─", size.width-2) + "┘"
+		if !strings.Contains(view, bottom) {
+			t.Fatalf("the %dx%d box lost its bottom border:\n%s", size.width, size.height, view)
+		}
+	}
 }
