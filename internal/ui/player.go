@@ -1933,14 +1933,14 @@ func (m *playerModel) playerBoxState(width int) string {
 	repeat := "↻ " + m.repeatMode()
 	volume := playerVolume(m.state.Volume)
 	volumeWord := fmt.Sprintf(m.text("Volume %d%%", "Volumen %d%%"), volume)
-	// De la forma más holgada a la más corta: primero se pierden los espacios,
-	// después la palabra del estado y por último la etiqueta del volumen.
+	// De la forma más holgada a la más corta: primero se pierden los espacios y
+	// después la palabra del estado. La etiqueta del volumen sobrevive siempre:
+	// la caja solo se dibuja desde 40 columnas, donde “Volume N%” ya cabe, así
+	// que no hay forma de porcentaje suelto.
 	options := []string{
 		glyph + " " + word + "  ▸  " + shuffle + "  ▸  " + repeat + "  ▸  " + volumeWord,
 		glyph + " " + word + " ▸ " + shuffle + " ▸ " + repeat + " ▸ " + volumeWord,
 		glyph + " ▸ " + shuffle + " ▸ " + repeat + " ▸ " + volumeWord,
-		glyph + " ▸ " + shuffle + " ▸ " + repeat + fmt.Sprintf(" ▸ %d%%", volume),
-		glyph + fmt.Sprintf(" ▸ %d%%", volume),
 	}
 	for _, line := range options {
 		if lipgloss.Width(line) <= width {
@@ -2361,25 +2361,27 @@ func (m *playerModel) zoneRows(width int, styles playerStyles, room int, queue b
 }
 
 // playerZoneState separa las frases de estado de una zona: las que caben se
-// quedan dentro y las que no se promueven a la fila a todo el ancho. La caja
-// conserva solo la marca corta de la frase promovida.
+// quedan dentro y las que no se promueven a la fila a todo el ancho. La
+// decisión lee la marca de estado de la fila, nunca su texto: cualquier frase de
+// sesión que no quepa se promueve, empiece con el glifo que empiece. La caja
+// conserva la marca corta de las frases que la traen.
 func playerZoneState(rows []playerRow, interior int) ([]playerRow, []playerRow) {
 	kept := make([]playerRow, 0, len(rows))
 	var overflow []playerRow
 	for _, row := range rows {
-		mark := playerStateMark(row.text)
-		if !row.state || mark == "" || lipgloss.Width(row.text) <= interior {
+		if !row.state || lipgloss.Width(row.text) <= interior {
 			kept = append(kept, row)
 			continue
 		}
 		overflow = append(overflow, row)
-		kept = append(kept, playerRow{text: mark, style: row.style, state: true})
+		kept = append(kept, playerRow{text: playerStateMark(row.text), style: row.style, state: true})
 	}
 	return kept, overflow
 }
 
 // playerStateMark es la marca con la que empieza una frase de estado, o nada
-// cuando la fila no trae una.
+// cuando la fila no trae una. Solo decora la fila que queda en la zona: no
+// decide si la frase se promueve.
 func playerStateMark(text string) string {
 	for _, mark := range []string{playerMarkLoading, playerMarkEmpty, playerMarkFailure, playerMarkNotice} {
 		if strings.HasPrefix(text, mark+" ") {
@@ -2576,8 +2578,11 @@ func (m *playerModel) librarySwitcher(width int) string {
 	return playerSpread(left, change, width)
 }
 
-// sidebarRows lists the sidebar of the stacked layout: the heading and then
-// the playlists with their state rows, so the panel is never blank.
+// sidebarRows lists a sidebar that no band draws any more: it is only used by
+// the tests as the source of the heading, the playlist rows and the state rows
+// (la prueba de vocabulario y la del acento del cursor). El comentario anterior
+// (“sidebar of the stacked layout”) era falso: la banda compacta usa
+// libraryRows sin título.
 func (m *playerModel) sidebarRows(styles playerStyles, width int) []playerRow {
 	rows := []playerRow{{text: m.text("LIBRARY", "BIBLIOTECA"), style: styles.label}}
 	return append(rows, m.libraryRows(styles, width)...)

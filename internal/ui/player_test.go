@@ -2357,3 +2357,173 @@ func TestPlayerViewBandBoundaries(t *testing.T) {
 		})
 	}
 }
+
+// TestPlayerViewBandMatrix pins the resolved band, the exact row width and the
+// table header at every size of the approved matrix.
+func TestPlayerViewBandMatrix(t *testing.T) {
+	m := playerZoneModel(t, "en")
+	for _, tt := range []struct {
+		width, height int
+		band          int
+		table         bool
+	}{
+		{140, 40, playerBandWide, true},
+		{120, 34, playerBandWide, true},
+		{120, 29, playerBandMedium, true},
+		{100, 30, playerBandMedium, true},
+		{100, 25, playerBandCompact, true},
+		{80, 24, playerBandCompact, true},
+		{80, 19, playerBandMinimum, true},
+		{79, 24, playerBandMinimum, true},
+		{40, 12, playerBandMinimum, false},
+		{39, 11, playerBandInsufficient, false},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", tt.width, tt.height), func(t *testing.T) {
+			if got := playerBand(tt.width, tt.height); got != tt.band {
+				t.Fatalf("band at %dx%d = %d, want %d", tt.width, tt.height, got, tt.band)
+			}
+			rows := playerViewRows(t, m, tt.width, tt.height)
+			view := strings.Join(rows, "\n")
+			for i, row := range rows {
+				if got := lipgloss.Width(row); got != tt.width {
+					t.Fatalf("row %d measures %d cells, want %d: %q", i, got, tt.width, row)
+				}
+			}
+			header := false
+			for _, row := range rows {
+				if strings.Contains(row, "#") && strings.Contains(row, "Title") {
+					header = true
+				}
+			}
+			if header != tt.table {
+				t.Fatalf("table header = %v at %dx%d, want %v:\n%s", header, tt.width, tt.height, tt.table, view)
+			}
+		})
+	}
+}
+
+// TestPlayerViewEdgeSizes walks the sizes around and below the matrix: none may
+// panic, none may overflow, and every window with room renders rows.
+func TestPlayerViewEdgeSizes(t *testing.T) {
+	m := playerZoneModel(t, "en")
+	for _, size := range []struct{ width, height int }{
+		{1, 1}, {0, 0}, {0, 10}, {10, 0}, {1, 12}, {2, 2}, {2, 40}, {3, 3},
+		{40, 1}, {39, 12}, {40, 11}, {41, 12}, {120, 1},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			// playerViewRows falla si una fila desborda o si sobran filas.
+			rows := playerViewRows(t, m, size.width, size.height)
+			if size.width < 1 || size.height < 1 {
+				if len(rows) != 0 {
+					t.Fatalf("an empty window rendered %d rows", len(rows))
+				}
+				return
+			}
+			if len(rows) == 0 {
+				t.Fatal("a window with room rendered no rows")
+			}
+			for i, row := range rows {
+				if got := lipgloss.Width(row); got != size.width {
+					t.Fatalf("row %d measures %d cells, want %d: %q", i, got, size.width, row)
+				}
+			}
+		})
+	}
+}
+
+// TestPlayerViewVolumeLabelFitsTheBox pins the shortest state line the player
+// box can draw: at 40 and 41 columns the volume keeps its label and its
+// percentage, because the percentage-only form was unreachable and is gone.
+func TestPlayerViewVolumeLabelFitsTheBox(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{40, 12}, {41, 12}} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			m, _ := playerViewModel(t, size.width, size.height, playerState{
+				Connected: true, Status: "playing", Volume: 37, OptionsKnown: true,
+			})
+			view := playerViewText(t, m, "Volume 37%")
+			if strings.Contains(view, "▸ 37%") && !strings.Contains(view, "Volume 37%") {
+				t.Fatalf("the state line dropped the volume label:\n%s", view)
+			}
+			if !strings.Contains(ansi.Strip(m.View()), "Volume 37%") {
+				t.Fatalf("the state line lost the volume at %d columns:\n%s", size.width, m.View())
+			}
+		})
+	}
+}
+
+// TestPlayerViewFooterPresence pins where the footer still has rows: every band
+// down to the minimum one keeps them, and the sizes without room keep none.
+func TestPlayerViewFooterPresence(t *testing.T) {
+	m := playerZoneModel(t, "en")
+	for _, tt := range []struct {
+		width, height int
+		hints         bool
+	}{
+		{140, 40, true}, {120, 34, true}, {100, 30, true}, {80, 24, true}, {79, 23, true},
+		{40, 12, false}, {39, 11, false},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", tt.width, tt.height), func(t *testing.T) {
+			view := strings.Join(playerViewRows(t, m, tt.width, tt.height), "\n")
+			for _, want := range []string{"Tab focus", "q quit"} {
+				if got := strings.Contains(view, want); got != tt.hints {
+					t.Fatalf("%q present = %v at %dx%d, want %v:\n%s", want, got, tt.width, tt.height, tt.hints, view)
+				}
+			}
+		})
+	}
+}
+
+// TestPlayerViewRemoveConfirmationKeepsItsText pins the promotion defect: the
+// confirmation is session state, so a prompt that does not fit the table box is
+// drawn whole on the full-width row and the box keeps no cut copy.
+func TestPlayerViewRemoveConfirmationKeepsItsText(t *testing.T) {
+	const track = "Bohemian Rhapsody (Remastered 2011)"
+	const playlist = "Clásicos del Rock Chileno & Latinoamericano"
+	for _, size := range []struct{ width, height int }{{140, 40}, {120, 34}} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			model := playerZoneModel(t, "en").(*playerModel)
+			model.saveTo.phase = saveConfirming
+			model.saveTo.removeTrackName = track
+			model.saveTo.target = libraryPlaylist{Name: playlist, URI: "spotify:playlist:clasicos"}
+			prompt := model.removePrompt()
+			library, table, _ := playerZoneWidths(size.width, playerBand(size.width, size.height) == playerBandWide)
+			if lipgloss.Width(prompt) <= table-2 {
+				t.Fatalf("the prompt (%d cells) fits the table box (%d cells): the test proves nothing",
+					lipgloss.Width(prompt), table-2)
+			}
+			rows := playerViewRows(t, model, size.width, size.height)
+			view := strings.Join(rows, "\n")
+			at := playerViewPromotedRow(t, rows, size.width, prompt)
+			box := -1
+			for i, row := range rows {
+				if strings.HasPrefix(row, "├─") {
+					box = i
+					break
+				}
+			}
+			if box < 0 || at != box-1 {
+				t.Fatalf("the confirmation is not directly above the player box:\n%s", view)
+			}
+			// Dentro de las zonas no queda una copia recortada del aviso.
+			top, bottom := -1, -1
+			for i, row := range rows {
+				if top < 0 && strings.Contains(row, "┌─ LIBRARY") {
+					top = i
+				}
+				if top >= 0 && i > top && strings.HasPrefix(row, "└") {
+					bottom = i
+					break
+				}
+			}
+			if top < 0 || bottom < 0 {
+				t.Fatalf("the zones are missing at %dx%d:\n%s", size.width, size.height, view)
+			}
+			for _, row := range rows[top : bottom+1] {
+				if strings.Contains(row, "Bohemian") {
+					t.Fatalf("the table box kept a cut copy of the confirmation:\n%s", view)
+				}
+			}
+			_ = library
+		})
+	}
+}
