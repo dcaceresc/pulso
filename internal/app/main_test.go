@@ -39,6 +39,7 @@ func TestCommandHelp(t *testing.T) {
 Usage:
   pulso                          Open the Soloist setup wizard
   pulso doctor [--data-dir PATH]  Report local Soloist status
+  pulso uninstall                Delete Pulso and Soloist files (asks first)
   pulso --help                   Show this help
 `
 	for _, flag := range []string{"--help", "-h"} {
@@ -47,6 +48,34 @@ Usage:
 		if code != 0 || stdout.String() != want || stderr.Len() != 0 {
 			t.Fatalf("%s: exit=%d stdout=%q stderr=%q", flag, code, &stdout, &stderr)
 		}
+	}
+	for _, line := range []string{
+		"  pulso                          Open the Soloist setup wizard",
+		"  pulso doctor [--data-dir PATH]  Report local Soloist status",
+		"  pulso uninstall                Delete Pulso and Soloist files (asks first)",
+		"  pulso --help                   Show this help",
+	} {
+		if !strings.Contains(want, line) {
+			t.Fatalf("help text lost %q", line)
+		}
+	}
+}
+
+func TestUninstallCommandDispatch(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	calls := 0
+	code := run([]string{"uninstall"}, &stdout, &stderr, commandDeps{
+		uninstall: func(stdin io.Reader, output, diagnostic io.Writer) int {
+			calls++
+			if stdin == nil {
+				t.Fatal("uninstall received no input stream")
+			}
+			io.WriteString(output, "plan\n")
+			return 7
+		},
+	})
+	if code != 7 || stdout.String() != "plan\n" || stderr.Len() != 0 || calls != 1 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q calls=%d", code, &stdout, &stderr, calls)
 	}
 }
 

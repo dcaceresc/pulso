@@ -57,6 +57,34 @@ func Inspect(ctx context.Context, dir string) (Status, error) {
 	return authState(ctx, endpoint)
 }
 
+// Running informa si un daemon de Soloist responde en el directorio de datos y,
+// cuando lo anuncia, el PID de su proceso. Un runtime inalcanzable cuenta como
+// detenido: no hay nada que cerrar antes de desinstalar.
+func Running(ctx context.Context, dir string) (int, bool, error) {
+	status, err := Inspect(ctx, dir)
+	if err != nil {
+		return 0, false, nil
+	}
+	if status != StatusReady && status != StatusAwaitPairing {
+		return 0, false, nil
+	}
+	return readPID(dir), true, nil
+}
+
+// readPID lee el marcador de PID que deja el daemon; cero si no lo anuncia.
+func readPID(dir string) int {
+	for _, name := range []string{"pid", "soloist.pid"} {
+		text, ok, err := readMarker(filepath.Join(dir, name))
+		if err != nil || !ok {
+			continue
+		}
+		if pid, err := strconv.Atoi(text); err == nil && pid > 0 {
+			return pid
+		}
+	}
+	return 0
+}
+
 // runtimeEndpoint lee los marcadores ws.addr y ws.port del daemon. Un endpoint
 // vacío sin error significa que no hay ningún daemon en ejecución.
 func runtimeEndpoint(dir string) (string, error) {

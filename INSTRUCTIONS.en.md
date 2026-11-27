@@ -159,3 +159,23 @@ odd            feature document and its log
 ```
 
 Contributor and agent rules live in [AGENTS.md](AGENTS.md).
+
+## Uninstalling
+
+`pulso uninstall` deletes what Pulso and Soloist keep in your user account. It first prints the absolute path of every target and then waits for a typed confirmation: you must type exactly `uninstall`. A bare Enter or any other word answers "Cancelled; nothing was deleted." and exits 1 without deleting anything.
+
+When Soloist is running the command never deletes on its own: it says so and asks `Close it and continue? [y/N]`. Only `y` or `Y` asks the daemon to stop and waits for it to exit; if it is still alive after the wait, the command aborts without deleting anything. It never sends `SIGKILL`; on Windows it uses the platform's process termination.
+
+It removes the Soloist binary Pulso downloaded (`bin/soloist` or `bin/soloist.exe`), the Client ID, the Spotify session, the preferences and Soloist's data and cache directories, which hold the pairing and its cache.
+
+Each target is reported as `Removed`, `Absent` or `Failed` with the error. A target that is already gone is not a problem: running the command twice finishes well. If one deletion fails, it is reported and the command continues with the rest, but the exit code is 1; it is 0 only when every target was removed or absent.
+
+The pairing with Spotify and the Web API authorization cannot be recovered: after uninstalling you have to repeat both, with the Soloist key and with the Client ID. The command does not delete the Pulso binary either: it prints its path so you can delete it yourself, because `go install` owns it.
+
+```sh
+bin="$(go env GOBIN)"; [ -n "$bin" ] || bin="$(go env GOPATH)/bin"
+rm "$bin/pulso"
+```
+
+On Windows the binary is `pulso.exe` in the same folder. If a path does not belong to Pulso or Soloist, is your home directory, the system root or the directory you are working in, the command refuses to delete and exits without touching anything.
+
