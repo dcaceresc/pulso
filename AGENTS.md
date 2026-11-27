@@ -19,6 +19,82 @@
 - Incluye las pruebas y la documentación de cada funcionalidad en su mismo commit.
 - Conserva los cambios ajenos y no los mezcles con el trabajo solicitado.
 
+## Convenciones de commits
+
+Todos los commits deben seguir la especificación [Conventional Commits](https://www.conventionalcommits.org/).
+
+### Reglas obligatorias
+
+- Escribir el título y la descripción del commit en español.
+- Mantener los tipos de Conventional Commits en inglés.
+- Utilizar verbos en infinitivo: agregar, corregir, actualizar, eliminar, refactorizar, etc.
+- Mantener el título conciso, descriptivo y sin punto final.
+- Incluir obligatoriamente un cuerpo descriptivo separado del título por una línea en blanco.
+- Explicar qué se modificó y por qué se realizó el cambio.
+- Evitar descripciones genéricas o ambiguas.
+- Mantener cada commit enfocado en un único propósito.
+- Utilizar un alcance (`scope`) cuando corresponda.
+
+### Formato
+
+```text
+<tipo>(<alcance>): <título en español>
+
+<descripción detallada en español>
+```
+
+### Tipos permitidos
+
+- `feat`: nueva funcionalidad.
+- `fix`: corrección de errores.
+- `refactor`: reestructuración de código sin modificar su comportamiento.
+- `docs`: cambios en la documentación.
+- `style`: cambios de formato sin afectar la lógica.
+- `test`: incorporación o modificación de pruebas.
+- `perf`: mejoras de rendimiento.
+- `build`: cambios en dependencias o compilación.
+- `ci`: cambios en integración y despliegue continuo.
+- `chore`: tareas de mantenimiento.
+- `revert`: reversión de cambios anteriores.
+
+### Ejemplos
+
+```text
+feat(auth): agregar autenticación mediante Keycloak
+
+Implementar la validación de tokens y la verificación de roles
+y permisos para restringir el acceso a los endpoints protegidos.
+```
+
+```text
+fix(api): corregir la validación de solicitudes
+
+Ajustar la validación de los campos obligatorios para evitar
+errores al procesar solicitudes incompletas.
+```
+
+```text
+refactor(database): simplificar las consultas de usuarios
+
+Eliminar consultas redundantes y centralizar la lógica de acceso
+a datos para mejorar la mantenibilidad.
+```
+
+### Cambios incompatibles
+
+Cuando un cambio rompa la compatibilidad existente, utilizar `!` en el encabezado e incluir el pie `BREAKING CHANGE:` con una explicación en español.
+
+```text
+feat(api)!: modificar el contrato de usuarios
+
+Actualizar la estructura de respuesta para unificar el formato
+de los endpoints de usuarios.
+
+BREAKING CHANGE: se modifica la estructura de respuesta del endpoint.
+```
+
+No generar commits que incumplan estas convenciones.
+
 ## Estructura del repositorio
 
 - `cmd/pulso`: punto de entrada; solo llama a `app.Main`.

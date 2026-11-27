@@ -150,8 +150,12 @@ func TestPlayerViewResponsiveAndSafeMetadata(t *testing.T) {
 			if strings.ContainsAny(view, "\r\t\x00\x07\x1b") || strings.Contains(m.View(), "UNTRUSTED") || strings.Contains(m.View(), "\x1b[31m") {
 				t.Fatalf("metadata injected controls: %q", m.View())
 			}
-			if size.width >= 30 {
+			if size.width >= 40 {
 				playerViewText(t, m, "Pulso", "playing", "Good news", "Title", "Volume 37%")
+			} else if size.width >= 30 {
+				// Por debajo de 40 columnas la línea de estado pierde la palabra
+				// y conserva el porcentaje.
+				playerViewText(t, m, "Pulso", "playing", "Good news", "Title", "37%")
 			}
 			if size.width >= 60 {
 				playerViewText(t, m, "Artist")
@@ -189,14 +193,14 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 		}, nil},
 		{80, 24, []string{
 			"Pulso", "LIBRARY:", "Nothing here yet", "#", "Title", "Artist", "Duration",
-			"Estrechez de Corazón", "Volume 37%", "Esc back/quit",
-		}, []string{"│"}},
+			"Estrechez de Corazón", "Volume 37%", "Esc back/quit", "├─", "└",
+		}, nil},
 		{60, 20, []string{
 			"Pulso", "LIBRARY:", "Nothing here yet", "#", "Title", "Artist", "Duration",
 			"Estrechez de Corazón", "Volume 37%",
 		}, nil},
-		{40, 12, []string{"Pulso", "▶", "Volume 37%", "#", "Title", "Dur."}, nil},
-		{20, 8, []string{"Pulso", "Volume 37%"}, nil},
+		{40, 12, []string{"Pulso", "▶", "Volume 37%", "Estrechez de Corazón", "├─", "└"}, nil},
+		{20, 8, []string{"Pulso", "37%", "├─"}, nil},
 		{1, 1, nil, nil},
 	} {
 		t.Run(fmt.Sprintf("%dx%d", tt.width, tt.height), func(t *testing.T) {
@@ -1254,23 +1258,42 @@ func TestPlayerViewPolishBounds(t *testing.T) {
 }
 
 // TestPlayerViewNarrowColumns keeps the breakpoint rule: below 60 columns the
-// table keeps the number, the title and a short duration, and the bar keeps the
-// title plus volume.
+// table keeps the number, the title and a short duration, and the player box
+// keeps the title, the state line and its borders.
 func TestPlayerViewNarrowColumns(t *testing.T) {
 	m, _ := playerViewModel(t, 120, 40, playerState{
 		Connected: true, Status: "playing", Volume: 42, PositionMS: 1000,
 		Track: playerTrack{Title: "Song", Artist: "Artist", DurationMS: 200000},
 		Queue: []playerTrack{{Title: "Queued", Artist: "Queued Artist", DurationMS: 100000}},
 	})
-	narrow := strings.Join(playerViewRows(t, m, 40, 12), "\n")
-	for _, want := range []string{"#", "Title", "Dur.", "Song", "Volume 42%"} {
-		if !strings.Contains(narrow, want) {
-			t.Fatalf("missing %q at 40x12:\n%s", want, narrow)
+	// A 40x12 la tabla no tiene filas: el pie es de la caja del reproductor.
+	box := strings.Join(playerViewRows(t, m, 40, 12), "\n")
+	for _, want := range []string{"Song", "Volume 42%", "├─", "│", "└"} {
+		if !strings.Contains(box, want) {
+			t.Fatalf("missing %q at 40x12:\n%s", want, box)
 		}
 	}
+	narrow := strings.Join(playerViewRows(t, m, 50, 24), "\n")
+	for _, want := range []string{"#", "Title", "Dur.", "Queued"} {
+		if !strings.Contains(narrow, want) {
+			t.Fatalf("missing %q at 50x24:\n%s", want, narrow)
+		}
+	}
+	// La caja escribe el artista dentro de su texto: la regla de columnas se
+	// comprueba en la cabecera de la tabla estrecha.
+	header := ""
+	for _, row := range strings.Split(narrow, "\n") {
+		if strings.Contains(row, "#") && strings.Contains(row, "Title") {
+			header = row
+			break
+		}
+	}
+	if header == "" {
+		t.Fatalf("the narrow table lost its header:\n%s", narrow)
+	}
 	for _, gone := range []string{"Artist", "Duration"} {
-		if strings.Contains(narrow, gone) {
-			t.Fatalf("narrow layout kept %q:\n%s", gone, narrow)
+		if strings.Contains(header, gone) {
+			t.Fatalf("narrow layout kept %q in the table header:\n%s", gone, narrow)
 		}
 	}
 	wide := strings.Join(playerViewRows(t, m, 60, 20), "\n")
@@ -1286,6 +1309,7 @@ func TestPlayerViewNarrowColumns(t *testing.T) {
 func TestPlayerViewLibrarySwitcher(t *testing.T) {
 	source := &libraryFake{playlists: libraryPlaylistsFixture()}
 	m, _, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{Connected: true}, source, nil, "")
+	// A 20x8 no queda fila de contenido: manda la caja del reproductor.
 	for _, tt := range []struct {
 		width, height int
 		want          []string
@@ -1293,7 +1317,7 @@ func TestPlayerViewLibrarySwitcher(t *testing.T) {
 		{80, 24, []string{"LIBRARY: Rock Chileno", "Tab: library"}},
 		{60, 20, []string{"LIBRARY: Rock Chileno", "Tab: library"}},
 		{40, 12, []string{"LIBRARY: Rock Chileno", "Tab"}},
-		{20, 8, []string{"LIBRARY:"}},
+		{20, 8, []string{"Pulso", "├─"}},
 	} {
 		view := strings.Join(playerViewRows(t, m, tt.width, tt.height), "\n")
 		for _, want := range tt.want {
@@ -1301,8 +1325,15 @@ func TestPlayerViewLibrarySwitcher(t *testing.T) {
 				t.Fatalf("missing %q in the switcher at %dx%d:\n%s", want, tt.width, tt.height, view)
 			}
 		}
-		if strings.Contains(view, "│") {
-			t.Fatalf("the stacked layout kept the column rule:\n%s", view)
+		// La caja dibuja sus propios bordes: el separador prohibido es el de
+		// columnas, que quedaría fuera de ella.
+		for _, row := range strings.Split(view, "\n") {
+			if strings.HasPrefix(row, "├") {
+				break
+			}
+			if strings.Contains(row, "│") {
+				t.Fatalf("the stacked layout kept the column rule:\n%s", view)
+			}
 		}
 	}
 	// Changing the selection renames the switcher.
@@ -1505,7 +1536,10 @@ func playerViewFooterPairs(t *testing.T, m *playerModel, width int) map[string]s
 // `Key label` pairs built from the focused panel's own keys, wrapping to more
 // rows of the same shape instead of falling back to short labels.
 func TestPlayerViewFooterPairFormat(t *testing.T) {
-	for _, size := range []struct{ width, height int }{{120, 40}, {100, 30}, {80, 24}, {40, 12}} {
+	for _, size := range []struct {
+		width, height int
+		footer        string
+	}{{120, 40, "full"}, {100, 30, "full"}, {80, 24, "full"}, {40, 12, "absent"}} {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
 			m, _ := playerViewModel(t, size.width, size.height, playerState{Connected: true, Status: "paused"})
 			player := m.(*playerModel)
@@ -1568,8 +1602,26 @@ func TestPlayerViewFooterPairFormat(t *testing.T) {
 				}
 			}
 
-			// The rendered frame keeps the footer and never overflows.
+			// El pie cede sus filas al contenido: a 40x12 no queda ninguna fila de
+			// pie y la caja conserva sus dos bordes.
 			view := strings.Join(playerViewRows(t, m, size.width, size.height), "\n")
+			if size.footer == "absent" {
+				for _, want := range []string{"├─"} {
+					if !strings.Contains(view, want) {
+						t.Fatalf("missing %q in the %dx%d frame:\n%s", want, size.width, size.height, view)
+					}
+				}
+				bottom := "└" + strings.Repeat("─", size.width-2) + "┘"
+				if !strings.Contains(view, bottom) {
+					t.Fatalf("the %dx%d box lost its bottom border:\n%s", size.width, size.height, view)
+				}
+				for _, gone := range []string{"Tab focus", "F1 help", "q quit"} {
+					if strings.Contains(view, gone) {
+						t.Fatalf("the %dx%d frame kept the footer pair %q:\n%s", size.width, size.height, gone, view)
+					}
+				}
+				return
+			}
 			for _, want := range []string{"Tab focus", "F1 help", "q quit"} {
 				if !strings.Contains(view, want) {
 					t.Fatalf("missing %q in the %dx%d frame:\n%s", want, size.width, size.height, view)
@@ -1800,4 +1852,49 @@ func TestPlayerViewDeviceLocalized(t *testing.T) {
 	m := NewPlayerModelWithPreferences(ctx, states, nil, 120, 40, preferences{Language: "es"}, nil, "", nil)
 	m, _ = m.Update(playerViewRun(t, m.Init()))
 	playerViewText(t, m, "Dispositivo Desk", "Volumen 37%")
+}
+
+// TestPlayerBoxMarksDisconnectedOverStaleTrack fija que la caja no muestre la
+// pista guardada cuando la sesión se desconecta: el estado manda sobre el
+// título viejo, y con una pista obsoleta tampoco se pinta el bloque de iniciales.
+func TestPlayerBoxMarksDisconnectedOverStaleTrack(t *testing.T) {
+	m, _ := playerViewModel(t, 120, 40, playerState{
+		Connected: false,
+		Track: playerTrack{
+			Title: "Estrechez de Corazón", Artist: "Los Prisioneros",
+			Album: "La Cultura de la Basura", DurationMS: 381000,
+		},
+	})
+	view := strings.Join(playerViewRows(t, m, 120, 40), "\n")
+	for _, gone := range []string{"Estrechez de Corazón", "Los Prisioneros", "La Cultura de la Basura"} {
+		if strings.Contains(view, gone) {
+			t.Fatalf("disconnected box kept the stale track %q:\n%s", gone, view)
+		}
+	}
+	playerViewText(t, m, "Disconnected")
+}
+
+// TestPlayerBoxFitsShortWideViewport fija que una ventana ancha y baja conserve
+// la caja completa: la altura interior cede antes de que el borde inferior se
+// pierda.
+func TestPlayerBoxFitsShortWideViewport(t *testing.T) {
+	m, _ := playerViewModel(t, 120, 40, playerState{
+		Connected: true, Status: "playing", Volume: 85, PositionMS: 62000,
+		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros", DurationMS: 381000},
+	})
+	for _, size := range []struct{ width, height int }{{120, 14}, {120, 12}, {120, 10}, {60, 10}} {
+		rows := playerViewRows(t, m, size.width, size.height)
+		view := strings.Join(rows, "\n")
+		for _, want := range []string{"├─", "Estrechez de Corazón"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("missing %q at %dx%d:\n%s", want, size.width, size.height, view)
+			}
+		}
+		// El bloque de iniciales también dibuja un `└`: el borde que importa es
+		// el de la caja completa.
+		bottom := "└" + strings.Repeat("─", size.width-2) + "┘"
+		if !strings.Contains(view, bottom) {
+			t.Fatalf("the %dx%d box lost its bottom border:\n%s", size.width, size.height, view)
+		}
+	}
 }
