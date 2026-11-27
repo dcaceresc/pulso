@@ -8,10 +8,10 @@ import (
 )
 
 // Track es una fila reproducible de una página de lista o de búsqueda.
-// Snapshot es el snapshot de la página de elementos que produjo la fila: una
-// retirada lo nombra para no borrar sobre una lista que cambió. Solo la lectura
-// que arma la tabla de una lista abierta lo completa; una búsqueda lo deja vacío
-// y por eso no se puede quitar desde ahí.
+// Snapshot es el snapshot de la lista de la que se leyó la fila: una retirada lo
+// nombra para no borrar sobre una lista que cambió. Solo la lectura que arma la
+// tabla de una lista abierta lo completa; una búsqueda lo deja vacío y por eso no
+// se puede quitar desde ahí.
 type Track struct {
 	Name, Artist string
 	DurationMS   int64
@@ -32,15 +32,8 @@ type librarySpotifyPage[T any] struct {
 	Total int `json:"total"`
 }
 
-// playlistItemsSpotifyPage añade el snapshot que Spotify marca en cada página
-// de elementos de una lista.
-type playlistItemsSpotifyPage[T any] struct {
-	librarySpotifyPage[T]
-	SnapshotID string `json:"snapshot_id"`
-}
-
 // PlaylistItemsPage es una página de pistas de una lista junto con el snapshot
-// de la lectura que la produjo: la retirada de una aparición concreta nombra ese
+// de la lista que se leyó: la retirada de una aparición concreta nombra ese
 // snapshot para no borrar sobre una lista que cambió.
 type PlaylistItemsPage struct {
 	Tracks   []Track
@@ -90,15 +83,16 @@ func (c *Catalog) TrackPage(ctx context.Context, uri string, offset int) ([]Trac
 	return page.Tracks, page.Total, page.More, err
 }
 
-// PlaylistItems lee una página de elementos de una lista con el snapshot que la
-// API devolvió para ella. La ruta, la página y el filtro de pistas son los mismos
-// que usa TrackPage; solo añade el snapshot que una retirada posterior necesita.
+// PlaylistItems lee una página de elementos de una lista y el snapshot de esa
+// lista. La ruta, la página y el filtro de pistas son los mismos que usa
+// TrackPage; el snapshot se lee aparte, del objeto de la lista, porque la página
+// de elementos no lo trae.
 func (c *Catalog) PlaylistItems(ctx context.Context, uri string, offset int) (PlaylistItemsPage, error) {
 	id := spotifyURIID(uri, "playlist")
 	if id == "" {
 		return PlaylistItemsPage{}, errors.New("Invalid Spotify playlist URI")
 	}
-	var page playlistItemsSpotifyPage[struct {
+	var page librarySpotifyPage[struct {
 		Item *librarySpotifyTrack `json:"item"`
 	}]
 	if err := c.get(ctx, "/v1/playlists/"+id+"/items", url.Values{}, offset, &page, true); err != nil {
@@ -110,7 +104,21 @@ func (c *Catalog) PlaylistItems(ctx context.Context, uri string, offset int) (Pl
 			tracks = appendLibraryTrack(tracks, entry.Item)
 		}
 	}
-	return PlaylistItemsPage{Tracks: tracks, Total: page.Total, More: page.more(offset), Snapshot: page.SnapshotID}, nil
+	return PlaylistItemsPage{Tracks: tracks, Total: page.Total, More: page.more(offset), Snapshot: c.playlistSnapshot(ctx, id)}, nil
+}
+
+// playlistSnapshot lee el snapshot de la lista en su propio objeto con una
+// consulta estrecha. Un fallo aquí no impide mostrar las pistas: deja el
+// snapshot vacío y, con él, la retirada no disponible en vez de inventar una
+// versión de la lista.
+func (c *Catalog) playlistSnapshot(ctx context.Context, id string) string {
+	var response struct {
+		SnapshotID string `json:"snapshot_id"`
+	}
+	if err := c.request(ctx, "/v1/playlists/"+id+"?fields=snapshot_id", &response, false); err != nil {
+		return ""
+	}
+	return spotifySnapshotValue(response.SnapshotID)
 }
 
 // SearchPage reads one page of track search results. An empty query is not a

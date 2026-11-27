@@ -670,6 +670,12 @@ func TestLibraryUsesTheAuthorizedCatalog(t *testing.T) {
 			return libraryFixtureResponse(200, `{"total":1,"items":[{"name":"Rock","owner":{"display_name":"ana"},"uri":"spotify:playlist:rock","tracks":{"total":1}}],"next":null}`), nil
 		case "/v1/playlists/rock/items":
 			return libraryFixtureResponse(200, `{"total":1,"items":[{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"}],"duration_ms":336000,"uri":"spotify:track:one"}}],"next":null}`), nil
+		case "/v1/playlists/rock":
+			// El snapshot vive en la lista, no en su página de elementos.
+			if got := r.URL.RawQuery; got != "fields=snapshot_id" {
+				t.Fatalf("snapshot query = %q, want fields=snapshot_id", got)
+			}
+			return libraryFixtureResponse(200, `{"snapshot_id":"snapshot-rock"}`), nil
 		case "/v1/me":
 			// El catálogo autorizado también alimenta la etiqueta de cuenta.
 			return libraryFixtureResponse(200, `{"display_name":"ana"}`), nil

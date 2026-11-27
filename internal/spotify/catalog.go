@@ -208,7 +208,7 @@ func (c *Catalog) RemoveFromPlaylist(ctx context.Context, playlistURI, trackURI,
 	}
 	// El snapshot nombra una versión exacta de la lista: vacío o con espacios
 	// que Spotify nunca devuelve no hay petición.
-	if trimmed := strings.TrimSpace(snapshot); trimmed == "" || trimmed != snapshot {
+	if spotifySnapshotValue(snapshot) == "" {
 		return errSpotifySnapshot
 	}
 	// La misma ruta vigente de elementos, con el cuerpo documentado para quitar:
@@ -335,6 +335,18 @@ func spotifyWriteForbidden(body io.Reader) error {
 		}
 	}
 	return ErrSpotifyWriteScope
+}
+
+// spotifySnapshotValue devuelve el snapshot cuando es un valor que Spotify pudo
+// haber escrito, y vacío cuando no: solo un texto no vacío y sin espacios
+// sobrantes nombra una versión de la lista. Es la misma regla que usan la
+// lectura y la retirada, así que un snapshot ausente nunca se fabrica ni se
+// envía.
+func spotifySnapshotValue(snapshot string) string {
+	if trimmed := strings.TrimSpace(snapshot); trimmed == "" || trimmed != snapshot {
+		return ""
+	}
+	return snapshot
 }
 
 // ReleaseSession impide que el catálogo reemplazado guarde su token viejo.

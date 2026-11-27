@@ -31,22 +31,132 @@ func TestLibrarySourcePlaylistPage(t *testing.T) {
 }
 
 func TestLibrarySourceTrackPage(t *testing.T) {
+	var requests []string
 	c := spotifyFixtureCatalog(func(r *http.Request) (*http.Response, error) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/playlists/mine/items" {
-			t.Fatalf("unexpected request %s", r.URL.String())
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		switch r.URL.Path {
+		case "/v1/playlists/mine/items":
+			if r.URL.Query().Get("limit") != "10" || r.URL.Query().Get("offset") != "10" {
+				t.Fatalf("unexpected pagination %s", r.URL.RawQuery)
+			}
+			return spotifyFixtureResponse(200, `{"total":42,"items":[null,{"item":null},`+
+				`{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"},{"name":""}],"duration_ms":336000,"uri":"spotify:track:one"}},`+
+				`{"item":{"name":"Blocked","uri":"spotify:track:two","is_playable":false}},`+
+				`{"item":{"name":"No URI","duration_ms":1000}}],"next":null}`), nil
+		case "/v1/playlists/mine":
+			if r.URL.RawQuery != "fields=snapshot_id" {
+				t.Fatalf("unexpected snapshot query %q", r.URL.RawQuery)
+			}
+			return spotifyFixtureResponse(200, `{"snapshot_id":"snapshot-page"}`), nil
 		}
-		if r.URL.Query().Get("limit") != "10" || r.URL.Query().Get("offset") != "10" {
-			t.Fatalf("unexpected pagination %s", r.URL.RawQuery)
-		}
-		return spotifyFixtureResponse(200, `{"total":42,"items":[null,{"item":null},`+
-			`{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"},{"name":""}],"duration_ms":336000,"uri":"spotify:track:one"}},`+
-			`{"item":{"name":"Blocked","uri":"spotify:track:two","is_playable":false}},`+
-			`{"item":{"name":"No URI","duration_ms":1000}}],"next":null}`), nil
+		t.Fatalf("unexpected request %s", r.URL.String())
+		return nil, nil
 	})
 	tracks, total, more, err := c.TrackPage(context.Background(), "spotify:playlist:mine", 10)
 	want := []Track{{Name: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000, URI: "spotify:track:one"}}
 	if err != nil || more || total != 42 || !reflect.DeepEqual(tracks, want) {
 		t.Fatalf("track page = %#v, %d, %v, %v", tracks, total, more, err)
+	}
+}
+
+// TestLibrarySourcePlaylistItemsSnapshot prueba la lectura que alimenta una
+// retirada: la misma ruta y la misma paginación que TrackPage para la página de
+// elementos, y el snapshot leído del objeto de la lista, porque Spotify no lo
+// devuelve en la página de elementos.
+func TestLibrarySourcePlaylistItemsSnapshot(t *testing.T) {
+	var requests []string
+	c := spotifyFixtureCatalog(func(r *http.Request) (*http.Response, error) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		if r.Header.Get("Authorization") != "Bearer fixture-access" {
+			t.Fatalf("unexpected authorization on %s", r.URL.String())
+		}
+		switch r.URL.Path {
+		case "/v1/playlists/mine/items":
+			if r.URL.Query().Get("limit") != "10" || r.URL.Query().Get("offset") != "10" {
+				t.Fatalf("unexpected pagination %s", r.URL.RawQuery)
+			}
+			// La página de elementos real no trae snapshot.
+			return spotifyFixtureResponse(200, `{"total":42,"items":[null,{"item":null},`+
+				`{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"}],"duration_ms":336000,"uri":"spotify:track:one"}},`+
+				`{"item":{"name":"Blocked","uri":"spotify:track:two","is_playable":false}}],"next":"https://invalid.example/never"}`), nil
+		case "/v1/playlists/mine":
+			if r.URL.RawQuery != "fields=snapshot_id" {
+				t.Fatalf("unexpected snapshot query %q", r.URL.RawQuery)
+			}
+			return spotifyFixtureResponse(200, `{"snapshot_id":"snapshot-page"}`), nil
+		}
+		t.Fatalf("unexpected request %s", r.URL.String())
+		return nil, nil
+	})
+	page, err := c.PlaylistItems(context.Background(), "spotify:playlist:mine", 10)
+	want := PlaylistItemsPage{
+		Tracks:   []Track{{Name: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000, URI: "spotify:track:one"}},
+		Total:    42,
+		More:     true,
+		Snapshot: "snapshot-page",
+	}
+	wantRequests := []string{
+		"GET /v1/playlists/mine/items?limit=10&offset=10",
+		"GET /v1/playlists/mine?fields=snapshot_id",
+	}
+	if err != nil || !reflect.DeepEqual(page, want) || !reflect.DeepEqual(requests, wantRequests) {
+		t.Fatalf("playlist items = %#v, %v; requests=%v", page, err, requests)
+	}
+}
+
+// TestLibrarySourcePlaylistItemsNeverFabricatesSnapshot deja la retirada sin
+// snapshot cuando Spotify no lo devuelve: un campo ausente, un valor vacío o
+// una respuesta truncada no producen una versión de la lista.
+func TestLibrarySourcePlaylistItemsNeverFabricatesSnapshot(t *testing.T) {
+	for _, tt := range []struct{ name, body string }{
+		{"campo ausente", `{}`},
+		{"snapshot vacío", `{"snapshot_id":""}`},
+		{"respuesta truncada", `{"snapshot_id":"snapshot-pa`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := spotifyFixtureCatalog(func(r *http.Request) (*http.Response, error) {
+				switch r.URL.Path {
+				case "/v1/playlists/mine":
+					return spotifyFixtureResponse(200, tt.body), nil
+				case "/v1/playlists/mine/items":
+					return spotifyFixtureResponse(200, `{"total":1,"items":[`+
+						`{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"}],"duration_ms":336000,"uri":"spotify:track:one"}}],"next":null}`), nil
+				}
+				t.Fatalf("unexpected request %s", r.URL.String())
+				return nil, nil
+			})
+			page, err := c.PlaylistItems(context.Background(), "spotify:playlist:mine", 0)
+			want := []Track{{Name: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000, URI: "spotify:track:one"}}
+			if err != nil || page.Snapshot != "" || !reflect.DeepEqual(page.Tracks, want) || page.Total != 1 || page.More {
+				t.Fatalf("playlist items without snapshot = %#v, %v", page, err)
+			}
+		})
+	}
+}
+
+// TestLibrarySourcePlaylistItemsSnapshotFailureIsNotFatal conserva las pistas
+// cuando la lectura del snapshot falla: sin snapshot no hay retirada, pero la
+// lista se sigue mostrando y el texto de Spotify no sale de aquí.
+func TestLibrarySourcePlaylistItemsSnapshotFailureIsNotFatal(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			c := spotifyFixtureCatalog(func(r *http.Request) (*http.Response, error) {
+				switch r.URL.Path {
+				case "/v1/playlists/mine":
+					return spotifyFixtureResponse(status, `{"message":"private fixture body"}`), nil
+				case "/v1/playlists/mine/items":
+					return spotifyFixtureResponse(200, `{"total":1,"items":[`+
+						`{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"}],"duration_ms":336000,"uri":"spotify:track:one"}}],"next":null}`), nil
+				}
+				t.Fatalf("unexpected request %s", r.URL.String())
+				return nil, nil
+			})
+			page, err := c.PlaylistItems(context.Background(), "spotify:playlist:mine", 0)
+			want := []Track{{Name: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000, URI: "spotify:track:one"}}
+			if err != nil || page.Snapshot != "" || !reflect.DeepEqual(page.Tracks, want) {
+				t.Fatalf("playlist items with a failed snapshot = %#v, %v", page, err)
+			}
+		})
 	}
 }
 
@@ -114,12 +224,14 @@ func TestLibrarySourceSearchFailures(t *testing.T) {
 }
 
 func TestLibrarySourceTrackPageForbidden(t *testing.T) {
+	calls := 0
 	c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
+		calls++
 		return spotifyFixtureResponse(403, `{"message":"private fixture body"}`), nil
 	})
 	tracks, total, more, err := c.TrackPage(context.Background(), "spotify:playlist:shared", 0)
-	if !errors.Is(err, ErrPlaylistUnavailable) || strings.Contains(err.Error(), "private fixture body") || more || total != 0 || tracks != nil {
-		t.Fatalf("forbidden playlist = %#v, %d, %v, %v", tracks, total, more, err)
+	if !errors.Is(err, ErrPlaylistUnavailable) || strings.Contains(err.Error(), "private fixture body") || more || total != 0 || tracks != nil || calls != 1 {
+		t.Fatalf("forbidden playlist = %#v, %d, %v, %v; calls=%d", tracks, total, more, err, calls)
 	}
 }
 
@@ -164,47 +276,21 @@ func TestLibrarySourceRejectsInvalidPlaylist(t *testing.T) {
 	}
 }
 
-// TestLibrarySourcePlaylistItemsSnapshot prueba la lectura que alimenta una
-// retirada: la misma ruta y la misma paginación que TrackPage, con el snapshot
-// que Spotify devuelve para esa página.
-func TestLibrarySourcePlaylistItemsSnapshot(t *testing.T) {
-	calls := 0
-	c := spotifyFixtureCatalog(func(r *http.Request) (*http.Response, error) {
-		calls++
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/playlists/mine/items" || r.Header.Get("Authorization") != "Bearer fixture-access" {
-			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
-		}
-		if r.URL.Query().Get("limit") != "10" || r.URL.Query().Get("offset") != "10" {
-			t.Fatalf("unexpected pagination %s", r.URL.RawQuery)
-		}
-		return spotifyFixtureResponse(200, `{"total":42,"snapshot_id":"snapshot-page","items":[null,{"item":null},`+
-			`{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"}],"duration_ms":336000,"uri":"spotify:track:one"}},`+
-			`{"item":{"name":"Blocked","uri":"spotify:track:two","is_playable":false}}],"next":"https://invalid.example/never"}`), nil
-	})
-	page, err := c.PlaylistItems(context.Background(), "spotify:playlist:mine", 10)
-	want := PlaylistItemsPage{
-		Tracks:   []Track{{Name: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000, URI: "spotify:track:one"}},
-		Total:    42,
-		More:     true,
-		Snapshot: "snapshot-page",
-	}
-	if err != nil || !reflect.DeepEqual(page, want) || calls != 1 {
-		t.Fatalf("playlist items = %#v, %v; calls=%d", page, err, calls)
-	}
-}
-
 // TestLibrarySourcePlaylistItemsKeepsRestrictedSignal conserva la señal de
-// lista restringida que ya usa TrackPage, sin texto de Spotify.
+// lista restringida que ya usa TrackPage, sin texto de Spotify y sin pedir el
+// snapshot de una lista cuyos elementos no se pueden leer.
 func TestLibrarySourcePlaylistItemsKeepsRestrictedSignal(t *testing.T) {
+	calls := 0
 	c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
+		calls++
 		return spotifyFixtureResponse(403, `{"message":"private fixture body"}`), nil
 	})
 	page, err := c.PlaylistItems(context.Background(), "spotify:playlist:shared", 0)
 	if !errors.Is(err, ErrPlaylistUnavailable) || strings.Contains(err.Error(), "private fixture body") {
 		t.Fatalf("restricted playlist items = %#v, %v", page, err)
 	}
-	if page.Tracks != nil || page.Total != 0 || page.More || page.Snapshot != "" {
-		t.Fatalf("restricted playlist items kept data: %#v", page)
+	if page.Tracks != nil || page.Total != 0 || page.More || page.Snapshot != "" || calls != 1 {
+		t.Fatalf("restricted playlist items kept data: %#v; calls=%d", page, calls)
 	}
 }
 
@@ -227,16 +313,33 @@ func TestLibrarySourcePlaylistItemsRejectsInvalidPlaylist(t *testing.T) {
 	}
 }
 
-// TestLibrarySourceTrackPageIgnoresTheSnapshot prueba que la lectura que ya
-// existía conserva sus datos y su paginación aunque Spotify mande el snapshot.
-func TestLibrarySourceTrackPageIgnoresTheSnapshot(t *testing.T) {
-	c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
-		return spotifyFixtureResponse(200, `{"total":7,"snapshot_id":"snapshot-page","items":[`+
-			`{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"}],"duration_ms":336000,"uri":"spotify:track:one"}}],"next":null}`), nil
+// TestLibrarySourceTrackPageKeepsItemsPathAndPaging conserva la lectura que ya
+// existía: misma ruta de elementos, misma paginación y las pistas visibles
+// aunque la lectura del snapshot falle.
+func TestLibrarySourceTrackPageKeepsItemsPathAndPaging(t *testing.T) {
+	var requests []string
+	c := spotifyFixtureCatalog(func(r *http.Request) (*http.Response, error) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		switch r.URL.Path {
+		case "/v1/playlists/mine/items":
+			if r.URL.Query().Get("limit") != "10" || r.URL.Query().Get("offset") != "0" {
+				t.Fatalf("unexpected pagination %s", r.URL.RawQuery)
+			}
+			return spotifyFixtureResponse(200, `{"total":7,"items":[`+
+				`{"item":{"name":"Tren al Sur","artists":[{"name":"Los Prisioneros"}],"duration_ms":336000,"uri":"spotify:track:one"}}],"next":null}`), nil
+		case "/v1/playlists/mine":
+			return spotifyFixtureResponse(500, "arbitrary fixture body"), nil
+		}
+		t.Fatalf("unexpected request %s", r.URL.String())
+		return nil, nil
 	})
 	tracks, total, more, err := c.TrackPage(context.Background(), "spotify:playlist:mine", 0)
 	want := []Track{{Name: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000, URI: "spotify:track:one"}}
-	if err != nil || more || total != 7 || !reflect.DeepEqual(tracks, want) {
-		t.Fatalf("track page = %#v, %d, %v, %v", tracks, total, more, err)
+	wantRequests := []string{
+		"GET /v1/playlists/mine/items?limit=10&offset=0",
+		"GET /v1/playlists/mine?fields=snapshot_id",
+	}
+	if err != nil || more || total != 7 || !reflect.DeepEqual(tracks, want) || !reflect.DeepEqual(requests, wantRequests) {
+		t.Fatalf("track page = %#v, %d, %v, %v; requests=%v", tracks, total, more, err, requests)
 	}
 }
