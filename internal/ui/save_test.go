@@ -33,6 +33,9 @@ type saveFake struct {
 	grant  func(showURL func(string)) (spotify.PlaylistWriter, error)
 	links  []string
 	grants int
+
+	account  string
+	released bool
 }
 
 func newSaveFake(playlists func(context.Context, int) ([]libraryPlaylist, int, bool, error)) *saveFake {
@@ -71,6 +74,16 @@ func (f *saveFake) saved() []saveCall {
 	defer f.mu.Unlock()
 	return append([]saveCall(nil), f.calls...)
 }
+
+// Profile responde como la cuenta de este catálogo y deja ver cuál la sirve.
+func (f *saveFake) Profile(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.account, nil
+}
+
+// ReleaseSession marca que este catálogo dejó de guardar la sesión aprobada.
+func (f *saveFake) ReleaseSession() { f.released = true }
 
 func (f *saveFake) approval() (links []string, grants int) {
 	f.mu.Lock()
@@ -334,6 +347,67 @@ func TestSaveAsksForWritePermissionThenRetriesOnce(t *testing.T) {
 	playerViewText(t, m, "Saved to Jazz.")
 	if len(out) != 0 {
 		t.Fatal("recovering the permission touched playback")
+	}
+}
+
+// TestSaveApprovalKeepsTheTrackAndAdoptsTheCatalog proves the approval cycle
+// fixes the confirmed track and leaves the whole workspace on the new catalog.
+func TestSaveApprovalKeepsTheTrackAndAdoptsTheCatalog(t *testing.T) {
+	upgraded := newSaveFake(libraryPlaylistsFixture())
+	upgraded.account = "Approved account"
+	api := newSaveFake(libraryPlaylistsFixture())
+	api.add = func(int, string, string) (string, error) { return "", spotify.ErrSpotifyWriteScope }
+	api.grant = func(showURL func(string)) (spotify.PlaylistWriter, error) {
+		showURL(saveFixtureLink)
+		return upgraded, nil
+	}
+	m, _, _ := savePlayer(t, preferences{}, saveTrackState(), api)
+	m, _ = m.Update(playerViewKey("a"))
+	m, _ = m.Update(playerViewKey("j"))
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = librarySettle(t, m, cmd)
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd = m.Update(playerViewRun(t, cmd))
+	// La reproducción avanza mientras la persona aprueba en el navegador.
+	m.(*playerModel).pending = true
+	m, _ = m.Update(playerViewState{ok: true, state: playerState{Connected: true, SessionID: 5, Track: playerTrack{URI: "spotify:track:two"}}})
+	m = librarySettle(t, m, cmd)
+	if got := upgraded.saved(); len(got) != 1 || got[0] != (saveCall{playlistURI: "spotify:playlist:jazz", trackURI: "spotify:track:one"}) {
+		t.Fatalf("retried save = %+v, want the confirmed track for Jazz", got)
+	}
+	// La lista y la cuenta ya leen con la sesión aprobada.
+	playerViewText(t, m, "Saved to Jazz.", "@Approved account")
+	if !api.released {
+		t.Fatal("the replaced catalog kept saving the session")
+	}
+	m, cmd = libraryOpenFirst(t, m)
+	m = librarySettle(t, m, cmd)
+	if _, tracks, _ := upgraded.requests(); len(tracks) == 0 {
+		t.Fatal("the library kept reading with the replaced catalog")
+	}
+}
+
+// TestSaveNoticeGivesWayToLaterSoloistNotices proves a save result stays until
+// the person reads it and never hides a later playback or connection notice.
+func TestSaveNoticeGivesWayToLaterSoloistNotices(t *testing.T) {
+	api := newSaveFake(libraryPlaylistsFixture())
+	m, _, _ := savePlayer(t, preferences{}, saveTrackState(), api)
+	m, _ = m.Update(playerViewKey("a"))
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = librarySettle(t, m, cmd)
+	playerViewText(t, m, "Saved to Rock Chileno.")
+	player := m.(*playerModel)
+	// Un estado sin aviso no borra el resultado antes de que se lea.
+	player.pending = true
+	m, _ = m.Update(playerViewState{state: saveTrackState(), ok: true})
+	playerViewText(t, m, "Saved to Rock Chileno.")
+	// Un aviso posterior de Soloist vuelve a mostrarse, aunque la conexión caiga.
+	later := saveTrackState()
+	later.Connected, later.Notice = false, "Soloist reported a playback error."
+	player.pending = true
+	m, _ = m.Update(playerViewState{state: later, ok: true})
+	if view := playerViewText(t, m, "Soloist reported a playback error.", "Disconnected"); strings.Contains(view, "Saved to") {
+		t.Fatalf("the save notice hid a later notice:\n%s", view)
 	}
 }
 

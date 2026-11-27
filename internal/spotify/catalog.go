@@ -241,6 +241,13 @@ func spotifyWriteForbidden(body io.Reader) error {
 	return ErrPlaylistNotEditable
 }
 
+// ReleaseSession impide que el catálogo reemplazado guarde su token viejo.
+func (c *Catalog) ReleaseSession() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.persist = nil
+}
+
 func spotifyURIID(uri, kind string) string {
 	id, ok := strings.CutPrefix(uri, "spotify:"+kind+":")
 	if !ok || !spotifyID.MatchString(id) {

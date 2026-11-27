@@ -334,6 +334,24 @@ func TestSpotifyReauthorizeWritesRequestsWriteScopes(t *testing.T) {
 	}
 }
 
+func TestSpotifyReleaseSessionKeepsTheApprovedSession(t *testing.T) {
+	path := spotifySessionTestPath(t)
+	stale := NewCatalog(newSpotifyHTTPClient(spotifyFixtureTransport(func(*http.Request) (*http.Response, error) {
+		return spotifyFixtureResponse(200, `{"access_token":"stale-access","refresh_token":"stale-refresh","token_type":"Bearer","expires_in":3600}`), nil
+	})), "fixture-client", "read-access", "read-refresh", time.Now().Add(-time.Minute), path)
+	// La aprobación nueva guarda su sesión de escritura en el mismo archivo.
+	if err := saveSpotifySessionAt(path, spotifySession{access: "write-access", refresh: "write-refresh", expires: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	stale.ReleaseSession()
+	if _, err := stale.accessToken(context.Background()); err != nil {
+		t.Fatalf("refresh after release = %v", err)
+	}
+	if stored, ok := loadSpotifySessionAt(path); !ok || stored.access != "write-access" || stored.refresh != "write-refresh" {
+		t.Fatalf("stored session = %+v, %v", stored, ok)
+	}
+}
+
 func TestSpotifyReauthorizeWritesDeclined(t *testing.T) {
 	path := spotifySessionTestPath(t)
 	if err := saveSpotifySessionAt(path, spotifySession{access: "stale-access", refresh: "stale-refresh", expires: time.Now().Add(time.Hour)}); err != nil {

@@ -86,9 +86,11 @@ type savePanel struct {
 	generation uint64
 	// retried records that the single retry after an approval was already used.
 	retried bool
-	work    context.Context
-	cancel  context.CancelFunc
-	events  <-chan saveAuthMsg
+	// trackURI es la pista confirmada con Enter: el reintento la conserva.
+	trackURI string
+	work     context.Context
+	cancel   context.CancelFunc
+	events   <-chan saveAuthMsg
 
 	notice     saveNotice
 	noticeName string
@@ -354,6 +356,10 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ended = true
 			m.cancel()
 			break
+		}
+		// Un aviso nuevo de Soloist no queda escondido por el último guardado.
+		if playerText(msg.state.Notice) != playerText(m.state.Notice) {
+			m.saveTo.notice = saveNoticeNone
 		}
 		m.state = msg.state
 		// Sin una pista en reproducción el selector se queda sin qué guardar.
@@ -827,6 +833,7 @@ func (m *playerModel) confirmSave() tea.Cmd {
 			return nil
 		}
 		m.saveTo.target = playlist
+		m.saveTo.trackURI = m.state.Track.URI
 		return m.requestSave(m.saveTo.writer, playlist)
 	case saveScopeOffered:
 		return m.reauthorizeWrites()
@@ -837,7 +844,7 @@ func (m *playerModel) confirmSave() tea.Cmd {
 // requestSave asks Spotify to append the playing track to the chosen playlist.
 // Nothing reads as saved until the answer arrives.
 func (m *playerModel) requestSave(writer spotify.PlaylistWriter, playlist libraryPlaylist) tea.Cmd {
-	trackURI := m.state.Track.URI
+	trackURI := m.saveTo.trackURI
 	if writer == nil || m.ctx.Err() != nil || !soloist.IsTrackURI(trackURI) {
 		return nil
 	}
@@ -963,12 +970,29 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 			m.saveTo.noticeName = m.saveTargetName()
 			return nil
 		}
-		// El catálogo aprobado reemplaza al anterior y el guardado se reintenta
-		// una sola vez.
-		m.saveTo.writer, m.saveTo.retried = msg.writer, true
-		return m.requestSave(msg.writer, m.saveTo.target)
+		return m.installApproved(msg.writer)
 	}
 	return nil
+}
+
+// installApproved adopta el catálogo aprobado: la lista y la cuenta lo usan, el
+// reemplazado deja de guardar la sesión y el guardado confirmado se reintenta.
+func (m *playerModel) installApproved(writer spotify.PlaylistWriter) tea.Cmd {
+	for _, replaced := range []any{m.saveTo.writer, m.library.source} {
+		if releaser, ok := replaced.(interface{ ReleaseSession() }); ok {
+			releaser.ReleaseSession()
+		}
+	}
+	m.saveTo.writer, m.saveTo.retried = writer, true
+	retry := m.requestSave(writer, m.saveTo.target)
+	api, ok := writer.(CatalogAPI)
+	if !ok {
+		return retry
+	}
+	if source := librarySourceOf(api); source != nil {
+		m.library.source, m.search.source, m.library.started = source, source, true
+	}
+	return playerCommands(m.installProfile(api), retry)
 }
 
 // saveTitle names the action and the playlist that would receive the track, so
