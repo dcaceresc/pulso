@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +56,7 @@ type uninstallDeps struct {
 	cwd         func() (string, error)
 	home        func() (string, error)
 	running     func(context.Context, string) (int, bool, error)
+	image       func(int) string
 	terminate   func(int) error
 	alive       func(int) bool
 	remove      func(string) error
@@ -69,6 +71,7 @@ func newUninstallDeps() uninstallDeps {
 		cwd:         os.Getwd,
 		home:        os.UserHomeDir,
 		running:     soloist.Running,
+		image:       soloistProcessImage,
 		terminate:   terminateSoloistProcess,
 		alive:       soloistProcessAlive,
 		remove:      os.RemoveAll,
@@ -190,6 +193,12 @@ func runUninstall(stdin io.Reader, stdout, stderr io.Writer, deps uninstallDeps)
 			fmt.Fprintf(stderr, "%v\nNothing was deleted.\n", errDaemonPID)
 			return 1
 		}
+		// Un marcador de PID puede nombrar cualquier proceso: solo se termina
+		// cuando su imagen es Soloist, y sin comprobar su vida en caso contrario.
+		if image := deps.image(pid); !isSoloistImage(image) {
+			fmt.Fprintf(stderr, "Refusing to stop process %d: its image is %s, not Soloist.\nNothing was deleted.\n", pid, describeProcessImage(image))
+			return 1
+		}
 		if err := deps.terminate(pid); err != nil {
 			fmt.Fprintf(stderr, "Could not stop Soloist: %v\nNothing was deleted.\n", err)
 			return 1
@@ -240,6 +249,21 @@ func readLine(reader *bufio.Reader, want string) bool {
 	return strings.TrimSpace(line) == want
 }
 
+// isSoloistImage informa si el nombre de imagen corresponde a Soloist, sin
+// distinguir mayúsculas ni la extensión .exe. Un nombre desconocido nunca lo
+// es, así que la terminación no procede.
+func isSoloistImage(image string) bool {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(image)), ".exe") == "soloist"
+}
+
+// describeProcessImage nombra la imagen para el mensaje de aborto.
+func describeProcessImage(image string) string {
+	if strings.TrimSpace(image) == "" {
+		return "unknown"
+	}
+	return strconv.Quote(image)
+}
+
 // guardUninstallTarget rechaza rutas que nunca se deben borrar: vacías, la raíz
 // del sistema, el hogar, el directorio actual o cualquier ruta que no pertenezca
 // a la carpeta `pulso` o `soloist` que el programa ya conoce.
@@ -248,6 +272,12 @@ func guardUninstallTarget(path, home, cwd string) error {
 		return errors.New("the path is empty or not absolute")
 	}
 	clean := filepath.Clean(path)
+	if home != "" {
+		home = filepath.Clean(home)
+	}
+	if cwd != "" {
+		cwd = filepath.Clean(cwd)
+	}
 	if clean == string(filepath.Separator) || clean == filepath.VolumeName(clean)+string(filepath.Separator) {
 		return errors.New("the path is the filesystem root")
 	}

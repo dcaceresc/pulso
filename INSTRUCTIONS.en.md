@@ -164,7 +164,7 @@ Contributor and agent rules live in [AGENTS.md](AGENTS.md).
 
 `pulso uninstall` deletes what Pulso and Soloist keep in your user account. It first prints the absolute path of every target and then waits for a typed confirmation: you must type exactly `uninstall`. A bare Enter or any other word answers "Cancelled; nothing was deleted." and exits 1 without deleting anything.
 
-When Soloist is running the command never deletes on its own: it says so and asks `Close it and continue? [y/N]`. Only `y` or `Y` asks the daemon to stop and waits for it to exit; if it is still alive after the wait, the command aborts without deleting anything. It never sends `SIGKILL`; on Windows it uses the platform's process termination.
+When Soloist is running the command never deletes on its own: it says so and asks `Close it and continue? [y/N]`. Only `y` or `Y` checks that the pid in the marker really is Soloist and, when it is, asks the daemon to stop and waits for it to exit; if it is still alive after the wait, the command aborts without deleting anything. When it cannot confirm that process is Soloist it sends no signal at all and aborts. It never sends `SIGKILL`; on Windows it uses the platform's process termination.
 
 It removes the Soloist binary Pulso downloaded (`bin/soloist` or `bin/soloist.exe`), the Client ID, the Spotify session, the preferences and Soloist's data and cache directories, which hold the pairing and its cache.
 

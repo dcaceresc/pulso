@@ -164,7 +164,7 @@ Las reglas para agentes y colaboradores están en [AGENTS.md](AGENTS.md).
 
 `pulso uninstall` borra lo que Pulso y Soloist guardan en tu usuario. Primero imprime la ruta absoluta de cada objetivo y después espera una confirmación escrita: hay que escribir exactamente `uninstall`. Un Enter vacío o cualquier otra palabra responde «Cancelled; nothing was deleted.» y sale con código 1 sin borrar nada.
 
-Si Soloist está corriendo, el comando no borra nada por su cuenta: lo informa y pregunta `Close it and continue? [y/N]`. Solo con `y` o `Y` pide al demonio que termine y espera a que salga; si sigue vivo al agotarse la espera, aborta sin borrar nada. Nunca envía `SIGKILL`; en Windows usa la terminación del sistema.
+Si Soloist está corriendo, el comando no borra nada por su cuenta: lo informa y pregunta `Close it and continue? [y/N]`. Solo con `y` o `Y` comprueba que el proceso del marcador sea realmente Soloist y, si lo es, le pide que termine y espera a que salga; si sigue vivo al agotarse la espera, aborta sin borrar nada. Si no puede confirmar que ese proceso es Soloist, no le envía ninguna señal y aborta. Nunca envía `SIGKILL`; en Windows usa la terminación del sistema.
 
 Se borra el binario de Soloist que descargó Pulso (`bin/soloist` o `bin/soloist.exe`), el Client ID, la sesión de Spotify, las preferencias y los directorios de datos y de caché de Soloist, donde viven el emparejamiento y su caché.
 

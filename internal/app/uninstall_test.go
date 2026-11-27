@@ -86,6 +86,7 @@ func (c uninstallCase) deps() uninstallDeps {
 		cwd:         func() (string, error) { return filepath.Join(c.root, "work", "repo"), nil },
 		home:        func() (string, error) { return c.root, nil },
 		running:     func(context.Context, string) (int, bool, error) { return 0, false, nil },
+		image:       func(int) string { return "soloist" },
 		terminate:   func(int) error { return nil },
 		alive:       func(int) bool { return false },
 		remove:      os.RemoveAll,
@@ -210,6 +211,65 @@ func TestUninstallDeclinedDaemonQuestionDeletesNothing(t *testing.T) {
 	}
 }
 
+// Un marcador de PID solo se termina cuando la imagen es Soloist; cualquier
+// otra imagen, incluida la desconocida, aborta sin señalar ni borrar nada.
+func TestUninstallRefusesToStopUnverifiedProcess(t *testing.T) {
+	for _, image := range []string{"bash", "unknown", "", "soloist-helper"} {
+		t.Run(image, func(t *testing.T) {
+			fixture := newUninstallCase(t)
+			fixture.create(t)
+			deps := fixture.deps()
+			terminated, checked := 0, 0
+			deps.running = func(context.Context, string) (int, bool, error) { return 4242, true, nil }
+			deps.image = func(int) string { return image }
+			deps.terminate = func(int) error { terminated++; return nil }
+			deps.alive = func(int) bool { checked++; return true }
+			code, _, stderr := runUninstallFixture(t, deps, "uninstall\ny\n")
+			if code != 1 {
+				t.Fatalf("exit = %d, want 1", code)
+			}
+			if terminated != 0 || checked != 0 {
+				t.Fatalf("terminate calls = %d, liveness checks = %d; want 0 and 0", terminated, checked)
+			}
+			if !strings.Contains(stderr, "4242") || !strings.Contains(stderr, "Nothing was deleted.") {
+				t.Fatalf("stderr = %q, want the pid and nothing deleted", stderr)
+			}
+			assertPresent(t, fixture.paths...)
+		})
+	}
+}
+
+// El nombre de la imagen se compara sin mayúsculas y sin la extensión .exe.
+func TestUninstallStopsVerifiedSoloistImages(t *testing.T) {
+	for _, image := range []string{"soloist", "SOLOIST.exe"} {
+		t.Run(image, func(t *testing.T) {
+			fixture := newUninstallCase(t)
+			fixture.create(t)
+			deps := fixture.deps()
+			stopped, terminated := false, 0
+			deps.running = func(context.Context, string) (int, bool, error) { return 4242, true, nil }
+			deps.image = func(int) string { return image }
+			deps.terminate = func(pid int) error {
+				if pid != 4242 {
+					t.Fatalf("terminated pid %d, want 4242", pid)
+				}
+				terminated++
+				stopped = true
+				return nil
+			}
+			deps.alive = func(int) bool { return !stopped }
+			code, stdout, stderr := runUninstallFixture(t, deps, "uninstall\ny\n")
+			if code != 0 || stderr != "" {
+				t.Fatalf("exit = %d, stderr = %q, stdout = %q", code, stderr, stdout)
+			}
+			if terminated != 1 {
+				t.Fatalf("terminator called %d times", terminated)
+			}
+			assertGone(t, fixture.paths...)
+		})
+	}
+}
+
 func TestUninstallStopsRunningDaemonThenDeletes(t *testing.T) {
 	fixture := newUninstallCase(t)
 	fixture.create(t)
@@ -297,9 +357,42 @@ func TestUninstallRefusesUnsafeTargets(t *testing.T) {
 	}
 }
 
+// La confirmación escrita se comprueba con los resolutores reales de rutas:
+// ninguna respuesta distinta de la palabra exacta borra algo.
+func TestUninstallConfirmationGateUsesRealPaths(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "APPDATA", "LOCALAPPDATA", "HOME"} {
+		t.Setenv(name, filepath.Join(root, name))
+	}
+	t.Setenv("STATE_DIRECTORY", "")
+	removals := 0
+	for _, input := range []string{"", "\n", "yes\n", "UNINSTALL\n", "uninstall please\n", "y\n"} {
+		t.Run(strings.TrimSpace(input), func(t *testing.T) {
+			removals = 0
+			deps := newUninstallDeps()
+			deps.home = func() (string, error) { return filepath.Join(root, "HOME"), nil }
+			deps.cwd = func() (string, error) { return filepath.Join(root, "work", "repo"), nil }
+			deps.running = func(context.Context, string) (int, bool, error) { return 0, false, nil }
+			deps.terminate = func(int) error { return nil }
+			deps.alive = func(int) bool { return false }
+			deps.remove = func(string) error { removals++; return nil }
+			code, stdout, stderr := runUninstallFixture(t, deps, input)
+			if code != 1 || stderr != "" || removals != 0 {
+				t.Fatalf("exit = %d, removals = %d, stderr = %q, stdout = %q", code, removals, stderr, stdout)
+			}
+			if !strings.Contains(stdout, "Cancelled; nothing was deleted.") {
+				t.Fatalf("stdout = %q", stdout)
+			}
+		})
+	}
+}
+
+// Un enlace simbólico se elimina como enlace: su destino queda intacto.
 func TestUninstallRemovesSymlinkWithoutFollowingIt(t *testing.T) {
 	fixture := newUninstallCase(t)
-	fixture.create(t)
+	if err := os.MkdirAll(filepath.Join(fixture.root, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	outside := filepath.Join(fixture.root, "outside")
 	if err := os.MkdirAll(outside, 0o700); err != nil {
 		t.Fatal(err)
@@ -308,19 +401,16 @@ func TestUninstallRemovesSymlinkWithoutFollowingIt(t *testing.T) {
 	if err := os.WriteFile(keep, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(fixture.root, "data", "soloist")
-	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	link := fixture.data
 	if err := os.Symlink(outside, link); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
+		t.Fatalf("symlink: %v", err)
 	}
 	deps := fixture.deps()
 	deps.plan = func() (uninstallPlan, error) {
 		return uninstallPlan{dataDir: link, targets: []uninstallTarget{{path: link, kind: "Soloist data directory"}}}, nil
 	}
 	code, stdout, stderr := runUninstallFixture(t, deps, "uninstall\n")
-	if code != 0 || stderr != "" {
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "Removed "+link) {
 		t.Fatalf("exit = %d, stderr = %q, stdout = %q", code, stderr, stdout)
 	}
 	if _, err := os.Lstat(link); !os.IsNotExist(err) {
@@ -328,6 +418,35 @@ func TestUninstallRemovesSymlinkWithoutFollowingIt(t *testing.T) {
 	}
 	if _, err := os.Lstat(keep); err != nil {
 		t.Fatalf("symlink target changed: %v", err)
+	}
+}
+
+// La guarda normaliza el nombre del objetivo: acepta un separador final y las
+// mayúsculas, y rechaza el hogar, un recorrido ascendente, el directorio de
+// trabajo y un nombre ajeno.
+func TestGuardUninstallTargetNormalisation(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	cwd := filepath.Join(home, "work", "repo")
+	for _, tc := range []struct {
+		name    string
+		path    string
+		home    string
+		wantErr bool
+	}{
+		{name: "trailing separator", path: filepath.Join(home, ".config", "pulso") + string(filepath.Separator), home: home},
+		{name: "upper-case PULSO", path: filepath.Join(home, ".config", "PULSO"), home: home},
+		{name: "home with trailing separator", path: home + string(filepath.Separator), home: home + string(filepath.Separator), wantErr: true},
+		{name: "parent traversal", path: filepath.Join(home, ".config", "pulso", "..", ".."), home: home, wantErr: true},
+		{name: "working directory ancestor", path: filepath.Join(home, "work"), home: home, wantErr: true},
+		{name: "foreign name", path: filepath.Join(root, "Descargas"), home: home, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := guardUninstallTarget(tc.path, tc.home, cwd)
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("guard(%q) = %v, wantErr = %v", tc.path, err, tc.wantErr)
+			}
+		})
 	}
 }
 
