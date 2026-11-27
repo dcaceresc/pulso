@@ -31,14 +31,46 @@ const (
 )
 
 const (
-	playerWideWidth   = 100 // Three columns start here.
-	playerWideHeight  = 30
-	playerNarrowWidth = 60 // Below this the table and bar keep only their essential columns.
-	playerShortTable  = 20 // Below this the table keeps only its title column.
-	playerSwitcherKey = 40 // Below this the library switcher uses the short key label.
-	playerMinBodyRoom = 4  // Content wins over separator rules in short windows.
+	playerWideWidth   = 100 // La caja del reproductor usa su banda alta desde este ancho.
+	playerNarrowWidth = 60  // Below this the table and bar keep only their essential columns.
+	playerShortTable  = 20  // Below this the table keeps only its title column.
+	playerSwitcherKey = 40  // Below this the library switcher uses the short key label.
+	playerMinBodyRoom = 4   // Content wins over separator rules in short windows.
 	playerSeekStepMS  = 10_000
 	playerTickEvery   = time.Second
+)
+
+// Las bandas de la matriz de tamaños. La primera que cumple manda: la mínima
+// recoge además las ventanas cuyo alto no alcanza para la banda de su ancho.
+const (
+	playerBandInsufficient = iota // Solo el mensaje de tamaño.
+	playerBandMinimum             // Fila de contexto y reproductor.
+	playerBandCompact             // Selector de biblioteca y tabla.
+	playerBandMedium              // Biblioteca y tabla.
+	playerBandWide                // Biblioteca, tabla y cola con su contexto.
+)
+
+// Las condiciones de la matriz, con sus dos extremos: un ancho de la banda
+// anterior sin su alto cae en la mínima en vez de heredar la banda de abajo.
+const (
+	playerMinWidth      = 40 // Por debajo de este ancho solo cabe el mensaje.
+	playerMinHeight     = 12
+	playerCompactWidth  = 80
+	playerCompactHeight = 20
+	playerMediumWidth   = 100
+	playerMediumHeight  = 26
+	playerFullWidth     = 120
+	playerFullHeight    = 30
+)
+
+// Las zonas con cajas: la biblioteca y la cola tienen ancho fijo y la tabla se
+// queda el resto del ancho de la ventana.
+const (
+	playerLibraryZone  = 25 // Ancho de la caja de la biblioteca en la banda amplia.
+	playerLibraryMid   = 24 // Ancho de la caja de la biblioteca en la banda media.
+	playerQueueZone    = 30 // Ancho de la caja A CONTINUACIÓN.
+	playerZoneGap      = 1  // Columna de separación entre dos cajas.
+	playerZoneMinTable = 4  // Por debajo de este ancho la composición no cabe.
 )
 
 // La caja del reproductor ocupa el borde inferior: su línea superior lleva el
@@ -1218,31 +1250,35 @@ func (m *playerModel) saveTitle() string {
 // saveRows renders the panel: the chooser, the removal confirmation, the offer to
 // approve the missing permission, or the wait for Spotify.
 func (m *playerModel) saveRows(styles playerStyles, room int) []playerRow {
-	muted := func(text string) playerRow { return playerRow{text: text, style: styles.muted} }
+	state := func(text string, style lipgloss.Style) playerRow {
+		return playerRow{text: text, style: style, state: true}
+	}
+	muted := func(text string) playerRow { return state(text, styles.muted) }
 	switch m.saveTo.phase {
 	case saveSaving:
 		return []playerRow{muted(playerMarked(playerMarkNotice, m.text("Saving…", "Guardando…")))}
 	case saveAuthorization:
 		rows := []playerRow{muted(playerMarked(playerMarkNotice, m.text("Waiting for Spotify…", "Esperando a Spotify…")))}
 		if m.saveTo.authURL != "" {
+			// El enlace no es una frase: se queda en la caja, recortado al ancho.
 			rows = append(rows, playerRow{text: "  " + m.saveTo.authURL, style: styles.muted})
 		}
 		return rows
 	case saveConfirming:
-		rows := []playerRow{{text: m.removePrompt()}}
+		rows := []playerRow{state(m.removePrompt(), lipgloss.NewStyle())}
 		if m.saveTo.reloading {
 			rows = append(rows, muted(playerMarked(playerMarkNotice, m.text("Reading the playlist again…", "Leyendo la lista otra vez…"))))
 		}
 		return rows
 	case saveScopeOffered:
-		return []playerRow{{text: playerMarked(playerMarkFailure, m.text(
+		return []playerRow{state(playerMarked(playerMarkFailure, m.text(
 			"Spotify needs your approval to change playlists. Enter: authorize again.",
-			"Spotify necesita tu aprobación para cambiar listas. Enter: autorizar otra vez.")), style: styles.failure}}
+			"Spotify necesita tu aprobación para cambiar listas. Enter: autorizar otra vez.")), styles.failure)}
 	}
 	library := m.library
 	switch {
 	case library.notice == libraryNoticeLoadFailed && len(library.playlists) == 0:
-		return []playerRow{{text: m.markError(), style: styles.failure}}
+		return []playerRow{state(m.markError(), styles.failure)}
 	case !library.loadedPlaylists && len(library.playlists) == 0:
 		return []playerRow{muted(m.markLoading())}
 	case len(library.playlists) == 0:
@@ -1555,6 +1591,9 @@ func (m *playerModel) markRestricted() string {
 type playerRow struct {
 	text  string
 	style lipgloss.Style
+	// state marca una frase de estado de la sesión: si no cabe en su zona se
+	// dibuja una sola vez a todo el ancho, no recortada dentro de la caja.
+	state bool
 }
 
 func playerRowAt(rows []playerRow, i int) playerRow {
@@ -1580,6 +1619,44 @@ func playerRenderRow(row playerRow, width int) string {
 	return row.style.Render(text)
 }
 
+// playerBand elige la banda de la matriz de tamaños: la primera que cumple
+// manda, y lo que no cumple ninguna se queda con el mensaje de tamaño.
+func playerBand(width, height int) int {
+	switch {
+	case width < playerMinWidth || height < playerMinHeight:
+		return playerBandInsufficient
+	case width >= playerFullWidth && height >= playerFullHeight:
+		return playerBandWide
+	case width >= playerMediumWidth && width < playerFullWidth && height >= playerMediumHeight:
+		return playerBandMedium
+	case width >= playerCompactWidth && width < playerMediumWidth && height >= playerCompactHeight:
+		return playerBandCompact
+	}
+	return playerBandMinimum
+}
+
+// playerBodyMinimum son las filas que la composición necesita para leerse: la
+// tabla conserva encabezado y una pista, o el cuerpo deja de pedir reglas.
+func playerBodyMinimum(band int) int {
+	switch band {
+	case playerBandWide, playerBandMedium:
+		return 5 // Borde, encabezado, regla, una pista y borde.
+	case playerBandCompact:
+		return playerMinBodyRoom
+	}
+	return 1 // La fila de contexto de la banda mínima.
+}
+
+// playerSizeMessage es la banda insuficiente: una sola fila centrada que nombra
+// el tamaño mínimo y el actual, sin cajas.
+func (m *playerModel) playerSizeMessage(width int) string {
+	format := m.text("Minimum %d×%d · now %d×%d", "Mínimo %d×%d · ahora %d×%d")
+	message := fmt.Sprintf(format, playerMinWidth, playerMinHeight, m.width, m.height)
+	text := playerEllipsis(message, width)
+	left := max(0, (width-lipgloss.Width(text))/2)
+	return strings.Repeat(" ", left) + playerPad(text, width-left)
+}
+
 func (m *playerModel) View() string {
 	if m.quit || m.width < 1 || m.height < 1 {
 		return ""
@@ -1588,48 +1665,70 @@ func (m *playerModel) View() string {
 		return m.helpView()
 	}
 	styles := m.styles()
-	width := m.width
+	width, height := m.width, m.height
+	band := playerBand(width, height)
+	if band == playerBandInsufficient {
+		return m.playerSizeMessage(width)
+	}
 	rule := styles.muted.Render(strings.Repeat("─", width))
 
 	play, status := m.playerBoxRows(width, styles), m.statusRows(width, styles)
+	// Las frases de estado que no caben en su caja ocupan filas reservadas a
+	// todo el ancho, directamente sobre el reproductor.
+	overflow := playerSentenceRows(m.playerOverflowRows(styles), width)
+	// El reparto cede en este orden: la caja del reproductor, la fila de
+	// contexto, las frases de estado, las filas de la tabla y por último el pie.
+	// Las reglas también ceden antes que el cuerpo mínimo.
 	rules := 3
-	room := m.height - 2 - len(play) - len(status) - rules
-	for room < playerMinBodyRoom && rules > 0 {
-		rules--
-		room = m.height - 2 - len(play) - len(status) - rules
+	room := height - 2 - len(play) - len(status) - len(overflow) - rules
+	for room < playerBodyMinimum(band) && (rules > 0 || len(status) > 0) {
+		if rules > 0 {
+			rules--
+		} else {
+			status = status[:len(status)-1]
+		}
+		room = height - 2 - len(play) - len(status) - len(overflow) - rules
 	}
 	room = max(0, room)
-	body := m.bodyRows(width, styles, room)
+	body, _ := m.bodyRows(width, styles, room)
 	if len(body) > room {
 		body = body[:room]
 	}
 
-	rows := make([]string, 0, m.height)
+	rows := make([]string, 0, height)
 	rows = append(rows, playerRenderRow(playerRow{text: playerSpread("Pulso", m.statusWord(), width), style: styles.banner}, width))
 	rows = append(rows, playerRenderRow(playerRow{text: m.searchRow(width, styles)}, width))
-	if rules >= 3 {
+	// Una regla bajo el encabezado, otra antes de la caja y otra debajo: cada
+	// una solo se dibuja si su vecino existe.
+	if rules >= 3 && len(body) > 0 {
 		rows = append(rows, rule)
 	}
 	for _, row := range body {
 		rows = append(rows, playerRenderRow(row, width))
 	}
+	// Las filas que el cuerpo no usa se dibujan en blanco: el reproductor queda
+	// siempre al pie de la ventana, como en la matriz de tamaños.
+	for i := len(body); i < room; i++ {
+		rows = append(rows, playerRenderRow(playerRow{}, width))
+	}
 	// Never stack the region rule on top of a table rule.
-	if rules >= 1 && !playerLastRowIsRule(rows, width) {
+	if rules >= 1 && len(body) > 0 && !playerLastRowIsRule(rows, width) {
 		rows = append(rows, rule)
+	}
+	// La frase promovida va una sola vez, a todo el ancho y pegada a la caja.
+	for _, row := range overflow {
+		rows = append(rows, playerRenderRow(row, width))
 	}
 	// La caja ya viene dibujada y ajustada a la ventana.
 	rows = append(rows, play...)
-	if rules >= 2 {
+	if rules >= 2 && len(status) > 0 {
 		rows = append(rows, rule)
 	}
 	for _, row := range status {
 		rows = append(rows, playerRenderRow(row, width))
 	}
-	if len(rows) > m.height {
-		rows = rows[:m.height]
-		if len(rows) > 1 && ansi.Strip(rows[len(rows)-1]) == strings.Repeat("─", width) {
-			rows = rows[:len(rows)-1]
-		}
+	if len(rows) > height {
+		rows = rows[:height]
 	}
 	return strings.Join(rows, "\n")
 }
@@ -2168,34 +2267,246 @@ func (m *playerModel) hintRows(width int) []string {
 	return playerHintLines(m.hintPairs(), width)
 }
 
-func (m *playerModel) bodyRows(width int, styles playerStyles, room int) []playerRow {
+func (m *playerModel) bodyRows(width int, styles playerStyles, room int) ([]playerRow, []playerRow) {
 	if room <= 0 || width <= 0 {
-		return nil
+		return nil, nil
 	}
-	if width >= playerWideWidth && m.height >= playerWideHeight {
-		return m.columnRows(width, styles, room)
+	switch playerBand(width, m.height) {
+	case playerBandWide, playerBandMedium:
+		return m.zoneRows(width, styles, room, playerBand(width, m.height) == playerBandWide)
+	case playerBandCompact:
+		return m.stackedRows(width, styles, room), nil
 	}
-	return m.stackedRows(width, styles, room)
+	// La banda mínima no dibuja tabla: solo la fila que nombra la biblioteca.
+	return []playerRow{{text: m.librarySwitcher(width), style: styles.label}}, nil
 }
 
-// columnRows is the three-region layout: sidebar, a column rule, and the table.
-func (m *playerModel) columnRows(width int, styles playerStyles, room int) []playerRow {
-	sidebarWidth := min(32, max(26, width/4))
-	mainWidth := width - sidebarWidth - 1
-	if mainWidth < 1 {
-		return nil
+// playerZoneWidths reparte el ancho de la banda entre las cajas: la biblioteca
+// tiene ancho fijo, la cola también cuando existe, y la tabla se queda el resto.
+func playerZoneWidths(width int, queue bool) (library, table, upcoming int) {
+	library = playerLibraryMid
+	if queue {
+		library, upcoming = playerLibraryZone, playerQueueZone
 	}
-	side, main := m.sidebarRows(styles, sidebarWidth), m.mainRows(mainWidth, styles, room)
-	separator := styles.muted.Render("│")
+	table = width - library - playerZoneGap
+	if queue {
+		table -= upcoming + playerZoneGap
+	}
+	return library, table, upcoming
+}
+
+// zoneRows es la composición de cajas de las bandas amplia y media: la
+// biblioteca a la izquierda, la tabla flexible y, solo en la banda amplia, la
+// cola con su bloque de contexto. Las tres cajas comparten alto y cada fila
+// mide exactamente width, así que solo la tabla cede filas. Devuelve además las
+// frases de estado que no caben en su caja y se dibujan a todo el ancho.
+func (m *playerModel) zoneRows(width int, styles playerStyles, room int, queue bool) ([]playerRow, []playerRow) {
+	libraryWidth, tableWidth, queueWidth := playerZoneWidths(width, queue)
+	if room < 2 || tableWidth < playerZoneMinTable {
+		return nil, nil
+	}
+	libraryInterior := libraryWidth - 2
+	libraryContent, overflow := playerZoneState(m.libraryRows(styles, libraryInterior), libraryInterior)
+	tableInterior := tableWidth - 2
+	tableContent, sentences := playerZoneState(m.tableZoneRows(tableInterior, styles, room-2), tableInterior)
+	library := playerZoneRows(libraryWidth, room, m.text("LIBRARY", "BIBLIOTECA"),
+		m.zoneEdge(playerFocusSidebar, styles), styles.label, libraryContent)
+	table := playerZoneRows(tableWidth, room, m.mainTitle(),
+		m.zoneEdge(playerFocusTable, styles), styles.label, tableContent)
+	var upcoming []string
+	if queue {
+		upcoming = playerZoneRows(queueWidth, room, m.text("UP NEXT", "A CONTINUACIÓN"),
+			m.queueEdge(styles), styles.label, m.queueRows(queueWidth-2, styles, room-2))
+	}
+	gap := strings.Repeat(" ", playerZoneGap)
 	rows := make([]playerRow, 0, room)
 	for i := 0; i < room; i++ {
-		left := playerCell(playerRowAt(side, i), sidebarWidth)
-		rows = append(rows, playerRow{text: left + separator + playerCell(playerRowAt(main, i), mainWidth)})
+		line := library[i] + gap + table[i]
+		if queue {
+			line += gap + upcoming[i]
+		}
+		rows = append(rows, playerRow{text: line})
 	}
-	return rows
+	return rows, append(overflow, sentences...)
 }
 
-// stackedRows is the breakpoint layout: one library switcher row above the table.
+// playerZoneState separa las frases de estado de una zona: las que caben se
+// quedan dentro y las que no se promueven a la fila a todo el ancho. La caja
+// conserva solo la marca corta de la frase promovida.
+func playerZoneState(rows []playerRow, interior int) ([]playerRow, []playerRow) {
+	kept := make([]playerRow, 0, len(rows))
+	var overflow []playerRow
+	for _, row := range rows {
+		mark := playerStateMark(row.text)
+		if !row.state || mark == "" || lipgloss.Width(row.text) <= interior {
+			kept = append(kept, row)
+			continue
+		}
+		overflow = append(overflow, row)
+		kept = append(kept, playerRow{text: mark, style: row.style, state: true})
+	}
+	return kept, overflow
+}
+
+// playerStateMark es la marca con la que empieza una frase de estado, o nada
+// cuando la fila no trae una.
+func playerStateMark(text string) string {
+	for _, mark := range []string{playerMarkLoading, playerMarkEmpty, playerMarkFailure, playerMarkNotice} {
+		if strings.HasPrefix(text, mark+" ") {
+			return mark
+		}
+	}
+	return ""
+}
+
+// playerOverflowRows son las frases de estado que no caben en su caja. Se
+// calculan antes del reparto porque su fila a todo el ancho va reservada.
+func (m *playerModel) playerOverflowRows(styles playerStyles) []playerRow {
+	band := playerBand(m.width, m.height)
+	if band != playerBandWide && band != playerBandMedium {
+		return nil
+	}
+	library, table, _ := playerZoneWidths(m.width, band == playerBandWide)
+	libraryInterior, tableInterior := library-2, table-2
+	_, overflow := playerZoneState(m.libraryRows(styles, libraryInterior), libraryInterior)
+	_, sentences := playerZoneState(m.tableRows(tableInterior, styles, 0), tableInterior)
+	return append(overflow, sentences...)
+}
+
+// playerSentenceRows dibuja las frases promovidas a todo el ancho, envueltas en
+// varias filas cuando siguen sin caber. Cada fila mide exactamente width.
+func playerSentenceRows(rows []playerRow, width int) []playerRow {
+	var lines []playerRow
+	for _, row := range rows {
+		for _, line := range playerWrap(row.text, width) {
+			lines = append(lines, playerRow{text: line, style: row.style})
+		}
+	}
+	return lines
+}
+
+// playerWrap corta una frase por palabras dentro del ancho; una palabra más
+// larga que la ventana se parte para no perder ninguna letra.
+func playerWrap(text string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	var lines []string
+	line := ""
+	flush := func() {
+		if line != "" {
+			lines = append(lines, line)
+			line = ""
+		}
+	}
+	for _, word := range strings.Fields(text) {
+		switch {
+		case line == "":
+			line = word
+		case lipgloss.Width(line)+1+lipgloss.Width(word) <= width:
+			line += " " + word
+		default:
+			flush()
+			line = word
+		}
+		for lipgloss.Width(line) > width {
+			head := ansi.Truncate(line, width, "")
+			lines = append(lines, head)
+			line = strings.TrimSpace(strings.TrimPrefix(line, head))
+		}
+	}
+	flush()
+	return lines
+}
+
+// playerZoneRows dibuja una caja de zona: el título vive en el borde superior,
+// las filas que no caben se recortan y la caja devuelve exactamente height
+// filas de exactamente width celdas.
+func playerZoneRows(width, height int, title string, edge, heading lipgloss.Style, rows []playerRow) []string {
+	if width < 2 || height < 2 {
+		return nil
+	}
+	inner := width - 2
+	label := "─ " + playerEllipsis(title, max(0, inner-3)) + " "
+	label += strings.Repeat("─", max(0, inner-lipgloss.Width(label)))
+	label = playerFit(label, inner)
+	lines := make([]string, 0, height)
+	lines = append(lines, edge.Render("┌")+heading.Render(label)+edge.Render("┐"))
+	for i := 0; i < height-2; i++ {
+		lines = append(lines, edge.Render("│")+playerCell(playerRowAt(rows, i), inner)+edge.Render("│"))
+	}
+	lines = append(lines, edge.Render("└")+edge.Render(strings.Repeat("─", inner))+edge.Render("┘"))
+	return lines
+}
+
+// zoneEdge acentúa el borde de la zona que tiene el foco y apaga las demás.
+func (m *playerModel) zoneEdge(panel playerPanel, styles playerStyles) lipgloss.Style {
+	if m.focus == panel {
+		return styles.accent
+	}
+	return styles.muted
+}
+
+// queueEdge acentúa la cola cuando es el contenido de la tabla con el foco: no
+// hay lista abierta, ni búsqueda, ni selector de guardado por delante.
+func (m *playerModel) queueEdge(styles playerStyles) lipgloss.Style {
+	if m.focus == playerFocusTable && m.saveTo.phase == saveIdle && !m.search.active && !m.library.open() {
+		return styles.accent
+	}
+	return styles.muted
+}
+
+// queueRows es el interior de la caja A CONTINUACIÓN: las pistas que siguen,
+// cada una con su artista en la fila de abajo, y el bloque de contexto anclado
+// al fondo de la caja.
+func (m *playerModel) queueRows(width int, styles playerStyles, room int) []playerRow {
+	if width <= 0 || room <= 0 {
+		return nil
+	}
+	context := []playerRow{
+		{text: m.text("CONTEXT", "CONTEXTO"), style: styles.label},
+		{text: m.queuePlaylist(), style: styles.muted},
+		{text: "⇄ " + m.shuffleMode() + " · ↻ " + m.repeatMode(), style: styles.muted},
+	}
+	if len(context) > room {
+		context = context[:room]
+	}
+	rows := make([]playerRow, 0, room)
+	if state, ok := m.queueStateRow(styles); ok {
+		rows = append(rows, state)
+	} else {
+		for i, track := range m.state.Queue {
+			if len(rows)+2+len(context) > room {
+				break
+			}
+			rows = append(rows, playerRow{text: fmt.Sprintf("%d ", i+1) + playerText(track.Title)})
+			rows = append(rows, playerRow{text: "  " + playerText(track.Artist), style: styles.muted})
+		}
+	}
+	for len(rows)+len(context) < room {
+		rows = append(rows, playerRow{})
+	}
+	return append(rows, context...)
+}
+
+// queuePlaylist nombra la lista que suena: la que informa Soloist y, cuando no
+// hay ninguna, la lista abierta en la biblioteca.
+func (m *playerModel) queuePlaylist() string {
+	if m.loaded && m.state.Connected {
+		if name := playerText(m.state.PlaylistContext); name != "" {
+			return name
+		}
+	}
+	if m.library.open() {
+		if name := playerText(m.library.playlist.Name); name != "" {
+			return name
+		}
+	}
+	return m.text("No playlist", "Sin lista")
+}
+
+// stackedRows is the compact breakpoint layout: one library switcher row above
+// the table.
 func (m *playerModel) stackedRows(width int, styles playerStyles, room int) []playerRow {
 	rows := []playerRow{{text: m.librarySwitcher(width), style: styles.label}}
 	return append(rows, m.mainRows(width, styles, max(1, room-1))...)
@@ -2235,10 +2546,18 @@ func (m *playerModel) librarySwitcher(width int) string {
 	return playerSpread(left, change, width)
 }
 
-// sidebarRows lists playlists and ends in the state rows, so the panel is never
-// blank: loading, empty, error and unauthorized each read differently.
+// sidebarRows lists the sidebar of the stacked layout: the heading and then
+// the playlists with their state rows, so the panel is never blank.
 func (m *playerModel) sidebarRows(styles playerStyles, width int) []playerRow {
 	rows := []playerRow{{text: m.text("LIBRARY", "BIBLIOTECA"), style: styles.label}}
+	return append(rows, m.libraryRows(styles, width)...)
+}
+
+// libraryRows lists playlists and ends in the state rows: loading, empty, error
+// and unauthorized each read differently. La caja escribe el título en su
+// borde, así que éstas son sus únicas filas interiores.
+func (m *playerModel) libraryRows(styles playerStyles, width int) []playerRow {
+	var rows []playerRow
 	library := m.library
 	for i, playlist := range library.playlists {
 		marker, style := "  ", lipgloss.NewStyle()
@@ -2262,30 +2581,36 @@ func (m *playerModel) sidebarRows(styles playerStyles, width int) []playerRow {
 }
 
 // libraryStateRows explains an unavailable library with the same localized
-// sentence the other panels use for that concept.
+// sentence the other panels use for that concept. Cada fila es una frase de
+// estado: la caja la dibuja entera o la promueve a todo el ancho.
 func (m *playerModel) libraryStateRows(styles playerStyles) []playerRow {
 	library := m.library
-	muted := func(text string) playerRow { return playerRow{text: text, style: styles.muted} }
+	state := func(text string, style lipgloss.Style) playerRow {
+		return playerRow{text: text, style: style, state: true}
+	}
+	muted := func(text string) playerRow { return state(text, styles.muted) }
 	switch {
 	case library.canAuthorize():
 		switch {
 		case library.authURL != "":
+			// El enlace es un dato, no una frase: se queda en la caja, recortado
+			// como hasta ahora, para no mostrar su consulta a todo el ancho.
 			return []playerRow{{text: "  " + library.authURL, style: styles.muted}}
 		case library.authorizing():
 			return []playerRow{muted(playerMarked(playerMarkNotice, m.text("Waiting for Spotify…", "Esperando a Spotify…")))}
 		case library.notice == libraryNoticeAuthFailed:
-			return []playerRow{{text: playerMarked(playerMarkFailure, m.text("Spotify unavailable; playback works. Enter: retry.",
-				"Spotify no disponible; la reproducción funciona. Enter: reintentar.")), style: styles.failure}}
+			return []playerRow{state(playerMarked(playerMarkFailure, m.text("Spotify unavailable; playback works. Enter: retry.",
+				"Spotify no disponible; la reproducción funciona. Enter: reintentar.")), styles.failure)}
 		case library.notice == libraryNoticeClientID:
-			return []playerRow{{text: playerMarked(playerMarkFailure, m.text("Restart Pulso and complete the Spotify step.",
-				"Reinicia Pulso y completa el paso de Spotify.")), style: styles.failure}}
+			return []playerRow{state(playerMarked(playerMarkFailure, m.text("Restart Pulso and complete the Spotify step.",
+				"Reinicia Pulso y completa el paso de Spotify.")), styles.failure)}
 		default:
 			return []playerRow{muted(m.markUnauthorized())}
 		}
 	case library.source == nil:
 		return []playerRow{muted(m.markEmpty())}
 	case library.notice == libraryNoticeLoadFailed && !library.loadedPlaylists:
-		return []playerRow{{text: m.markError(), style: styles.failure}}
+		return []playerRow{state(m.markError(), styles.failure)}
 	case !library.loadedPlaylists && len(library.playlists) == 0:
 		return []playerRow{muted(m.markLoading())}
 	case library.loadedPlaylists && len(library.playlists) == 0:
@@ -2382,12 +2707,22 @@ func (m *playerModel) mainRows(width int, styles playerStyles, room int) []playe
 	if width <= 0 {
 		return nil
 	}
+	rows := []playerRow{{text: m.mainTitle(), style: styles.label}}
+	return append(rows, m.tableZoneRows(width, styles, max(1, room-1))...)
+}
+
+// tableZoneRows son las filas interiores de la caja de la tabla: su encabezado,
+// su propia regla y las pistas que quepan. El nombre de la lista vive en el
+// borde de la caja, así que aquí no se repite.
+func (m *playerModel) tableZoneRows(width int, styles playerStyles, room int) []playerRow {
+	if width <= 0 || room <= 0 {
+		return nil
+	}
 	rows := []playerRow{
-		{text: m.mainTitle(), style: styles.label},
 		{text: m.tableHeader(width), style: playerLabel},
 		{text: strings.Repeat("─", width), style: styles.muted},
 	}
-	return append(rows, m.tableRows(width, styles, max(1, room-3))...)
+	return append(rows, m.tableRows(width, styles, max(0, room-2))...)
 }
 
 func (m *playerModel) tableHeader(width int) string {
@@ -2397,6 +2732,20 @@ func (m *playerModel) tableHeader(width int) string {
 		cells[i] = playerPad(column.label, column.width)
 	}
 	return strings.Join(cells, " ")
+}
+
+// queueStateRow explica por qué la cola no tiene filas que listar: la misma
+// frase en la tabla y en la caja de la cola.
+func (m *playerModel) queueStateRow(styles playerStyles) (playerRow, bool) {
+	switch {
+	case !m.loaded:
+		return playerRow{text: m.markLoading(), style: styles.muted}, true
+	case !m.state.Connected:
+		return playerRow{text: m.text("Queue unavailable", "Cola no disponible"), style: styles.muted}, true
+	case len(m.state.Queue) == 0:
+		return playerRow{text: m.markEmpty(), style: styles.muted}, true
+	}
+	return playerRow{}, false
 }
 
 func (m *playerModel) tableRows(width int, styles playerStyles, room int) []playerRow {
@@ -2409,13 +2758,8 @@ func (m *playerModel) tableRows(width int, styles playerStyles, room int) []play
 	if m.library.open() {
 		return m.libraryTableRows(width, styles, room)
 	}
-	switch {
-	case !m.loaded:
-		return []playerRow{{text: m.markLoading(), style: styles.muted}}
-	case !m.state.Connected:
-		return []playerRow{{text: m.text("Queue unavailable", "Cola no disponible"), style: styles.muted}}
-	case len(m.state.Queue) == 0:
-		return []playerRow{{text: m.markEmpty(), style: styles.muted}}
+	if state, ok := m.queueStateRow(styles); ok {
+		return []playerRow{state}
 	}
 	columns := m.tableColumns(width)
 	start := max(0, m.tableSelected-room+1)
