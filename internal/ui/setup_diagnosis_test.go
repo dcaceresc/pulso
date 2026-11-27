@@ -236,6 +236,11 @@ func TestSetupPairingWithoutDiagnosisIsUnchanged(t *testing.T) {
 	if strings.Contains(view, "d: diagnostics") || strings.Contains(view, "Net ") {
 		t.Fatalf("nil Diagnose added diagnosis content:\n%s", view)
 	}
+	// Sin diagnóstico tampoco hay nivel que mostrar: el indicador solo aparece
+	// cuando hay datos que lo justifiquen.
+	if strings.Contains(view, playerMarkNotice+" ") {
+		t.Fatalf("nil Diagnose added a level indicator:\n%s", view)
+	}
 	model, cmd := model.Update(setupRunes("d"))
 	if cmd != nil {
 		t.Fatal("d must do nothing without a diagnosis hook")
@@ -326,7 +331,7 @@ func TestSetupPairingStoppedShowsDiagnosis(t *testing.T) {
 	model = completeSetup(t, model, cmd)
 	view := model.View()
 	expectSetupBounds(t, view, 80, 24)
-	expectSetupText(t, view, "Soloist stopped",
+	expectSetupText(t, view, "Soloist stopped", "● Blocked",
 		"Net 192.168.1.120 · 2 virtual interfaces · LAN blocked", "d: diagnostics")
 	if diagnoses != 2 {
 		t.Fatalf("diagnoses = %d, want one per pairing step", diagnoses)

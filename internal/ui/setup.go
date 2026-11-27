@@ -218,6 +218,87 @@ func (m *setupModel) beginPairing(recovering bool) tea.Cmd {
 	return tea.Batch(commands...)
 }
 
+// pairingLevel clasifica el diagnóstico en tres niveles. El resumen del paso de
+// emparejamiento empieza con el nivel para que se vea de un vistazo si hay algo
+// que revisar antes de tocar el teléfono.
+type pairingLevel uint8
+
+const (
+	pairingClear   pairingLevel = iota // nada que revisar
+	pairingReview                      // hay un riesgo, pero el emparejamiento puede funcionar
+	pairingBlocked                     // falta una regla y el teléfono no puede conectar
+)
+
+// pairingLevelOf clasifica un diagnóstico. El rojo manda sobre el ámbar: una
+// regla ausente explica por sí sola que el teléfono no conecte. Un error de
+// diagnóstico nunca es verde, porque no hay datos que lo justifiquen.
+func pairingLevelOf(d PairingDiagnosis, err error) pairingLevel {
+	for _, finding := range d.Firewall.Findings {
+		switch finding.Kind {
+		case firewall.MDNSMissing, firewall.ServiceMissing, firewall.Unverifiable:
+			return pairingBlocked
+		}
+	}
+	if err != nil || d.Network.Ambiguous() || len(d.Network.Virtual) > 0 {
+		return pairingReview
+	}
+	for _, finding := range d.Firewall.Findings {
+		switch finding.Kind {
+		case firewall.Inactive, firewall.Active:
+		default:
+			// Un hallazgo que Pulso no sabe leer se revisa, nunca se ignora.
+			return pairingReview
+		}
+	}
+	return pairingClear
+}
+
+// pairingLevelWord nombra el nivel. El glifo es el mismo en los tres: el color
+// acompaña a la palabra, nunca la sustituye.
+func (m *setupModel) pairingLevelWord(level pairingLevel) string {
+	switch level {
+	case pairingBlocked:
+		return m.text("Blocked", "Bloqueado")
+	case pairingReview:
+		return m.text("Review", "Revisar")
+	default:
+		return m.text("OK", "OK")
+	}
+}
+
+// pairingLevelStyle elige el color del nivel con la paleta del tema. El rojo
+// reutiliza el error del tema; el verde y el ámbar no existen en la paleta, así
+// que se declaran aquí con los colores ANSI de siempre.
+func (m *setupModel) pairingLevelStyle(level pairingLevel) lipgloss.Style {
+	switch level {
+	case pairingBlocked:
+		return lipgloss.NewStyle().Foreground(m.preferences.Palette().Error)
+	case pairingReview:
+		return lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "3", Dark: "11"})
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "2", Dark: "10"})
+	}
+}
+
+// pairingLevelIndicator compone el indicador con el glifo de marca del proyecto,
+// la palabra localizada y el color del nivel.
+func (m *setupModel) pairingLevelIndicator(level pairingLevel) string {
+	return m.pairingLevelStyle(level).Render(playerMarked(playerMarkNotice, m.pairingLevelWord(level)))
+}
+
+// diagnosisOpenable informa si `d` abre algo útil: solo cuando el nivel no es
+// verde hay algo que revisar en el detalle.
+func (m *setupModel) diagnosisOpenable() bool {
+	return m.diagnosed && m.service.Diagnose != nil &&
+		pairingLevelOf(m.diagnosis, m.diagnosisErr) != pairingClear
+}
+
+// diagnosisApplicable informa si el plan trae comandos que `a` pueda ejecutar.
+// Un plan sin comandos (firewalld, nftables) no ofrece `a`.
+func (m *setupModel) diagnosisApplicable() bool {
+	return m.service.Apply != nil && len(m.diagnosis.Firewall.Commands) > 0
+}
+
 // beginPairingDiagnosis lanza la red y el cortafuegos fuera del bucle de la
 // interfaz. Sin gancho devuelve nil y la pantalla no cambia.
 func (m *setupModel) beginPairingDiagnosis() tea.Cmd {
@@ -622,7 +703,7 @@ func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		if msg.Type == tea.KeyRunes && !msg.Paste && len(msg.Runes) == 1 &&
-			(msg.Runes[0] == 'd' || msg.Runes[0] == 'D') && m.service.Diagnose != nil {
+			(msg.Runes[0] == 'd' || msg.Runes[0] == 'D') && m.diagnosisOpenable() {
 			m.openDiagnosis()
 			return nil
 		}
@@ -641,7 +722,7 @@ func (m *setupModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		apply := msg.Type == tea.KeyRunes && !msg.Paste && len(msg.Runes) == 1 &&
 			(msg.Runes[0] == 'a' || msg.Runes[0] == 'A')
-		if !apply || m.service.Apply == nil {
+		if !apply || !m.diagnosisApplicable() {
 			// Cualquier otra tecla cancela la confirmación y no aplica nada.
 			m.confirm = false
 			return nil
@@ -772,8 +853,10 @@ func (m *setupModel) screen() setupScreen {
 		}
 		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar"), m.text("b: back to the key", "b: volver a la clave")}
 		if m.service.Diagnose != nil {
-			screen.hints = append(screen.hints, m.text("d: diagnostics", "d: diagnóstico"))
 			screen.summary = m.diagnosisSummary()
+			if m.diagnosisOpenable() {
+				screen.hints = append(screen.hints, m.text("d: diagnostics", "d: diagnóstico"))
+			}
 		}
 	case setupPairingStopped:
 		screen.action = m.text("Soloist stopped. Start it again, then press Enter to recheck.",
@@ -781,8 +864,10 @@ func (m *setupModel) screen() setupScreen {
 		screen.status = m.text("Soloist stopped", "Soloist detenido")
 		screen.hints = []string{m.text("Enter: recheck", "Enter: volver a comprobar"), m.text("b: back to the key", "b: volver a la clave")}
 		if m.service.Diagnose != nil {
-			screen.hints = append(screen.hints, m.text("d: diagnostics", "d: diagnóstico"))
 			screen.summary = m.diagnosisSummary()
+			if m.diagnosisOpenable() {
+				screen.hints = append(screen.hints, m.text("d: diagnostics", "d: diagnóstico"))
+			}
 		}
 	case setupPairingDetail:
 		screen.status = m.text("Pairing diagnosis", "Diagnóstico del emparejamiento")
@@ -793,7 +878,7 @@ func (m *setupModel) screen() setupScreen {
 			screen.hints = []string{m.text("a: confirm · any other key cancels", "a: confirmar · cualquier otra tecla cancela")}
 		} else {
 			screen.hints = []string{m.text("Enter: back", "Enter: volver")}
-			if m.service.Apply != nil {
+			if m.diagnosisApplicable() {
 				screen.hints = append([]string{m.text("a: apply rules", "a: aplicar reglas")}, screen.hints...)
 			}
 		}
@@ -846,14 +931,15 @@ func (m *setupModel) text(english, spanish string) string {
 	return m.preferences.Text(english, spanish)
 }
 
-// diagnosisSummary resume el diagnóstico en una sola línea compacta. Los datos
-// deciden el texto; los paquetes no traen prosa propia.
+// diagnosisSummary resume el diagnóstico en una sola línea compacta que empieza
+// con el nivel. Los datos deciden el texto; los paquetes no traen prosa propia.
 func (m *setupModel) diagnosisSummary() string {
 	if !m.diagnosed {
 		return ""
 	}
+	indicator := m.pairingLevelIndicator(pairingLevelOf(m.diagnosis, m.diagnosisErr))
 	if m.diagnosisErr != nil {
-		return m.text("Network diagnosis unavailable", "Diagnóstico de red no disponible")
+		return indicator + " · " + m.text("Network diagnosis unavailable", "Diagnóstico de red no disponible")
 	}
 	parts := []string{m.text("Net unknown", "Red desconocida")}
 	if lan := m.diagnosis.Network.LAN; lan.IsValid() {
@@ -866,7 +952,7 @@ func (m *setupModel) diagnosisSummary() string {
 	default:
 		parts = append(parts, fmt.Sprintf("%d %s", n, m.text("virtual interfaces", "interfaces virtuales")))
 	}
-	return strings.Join(append(parts, m.firewallSummary()), " · ")
+	return indicator + " · " + strings.Join(append(parts, m.firewallSummary()), " · ")
 }
 
 // firewallSummary elige el hallazgo del cortafuegos que más explica que el
@@ -915,10 +1001,29 @@ func (m *setupModel) diagnosisLines() []string {
 	for _, command := range m.diagnosis.Firewall.Commands {
 		lines = append(lines, "$ "+strings.Join(command.Argv, " "))
 	}
-	if len(lines) == 0 {
-		lines = append(lines, m.text("No problems found.", "No se encontraron problemas."))
+	// Un detalle sin problemas ni comandos lo dice en lugar de mostrar una lista
+	// vacía. Un diagnóstico fallido no promete que no haya nada que corregir.
+	if m.diagnosisErr == nil && !m.diagnosisProblems() {
+		lines = append(lines, m.text("Nothing to fix. Pairing can still work.",
+			"No hay nada que corregir. El emparejamiento puede funcionar."))
 	}
 	return lines
+}
+
+// diagnosisProblems informa si hay algo que corregir: un comando propuesto o un
+// hallazgo que no sea solo el estado del cortafuegos.
+func (m *setupModel) diagnosisProblems() bool {
+	if len(m.diagnosis.Firewall.Commands) > 0 {
+		return true
+	}
+	for _, finding := range m.diagnosis.Firewall.Findings {
+		switch finding.Kind {
+		case firewall.Inactive, firewall.Active:
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func (m *setupModel) findingLine(f firewall.Finding) string {
