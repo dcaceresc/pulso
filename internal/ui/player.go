@@ -1942,7 +1942,6 @@ func (m *playerModel) playerBoxState(width int) string {
 		glyph + " " + word + " ▸ " + shuffle + " ▸ " + repeat + " ▸ " + volumeWord,
 		glyph + " ▸ " + shuffle + " ▸ " + repeat + " ▸ " + volumeWord,
 		glyph + " ▸ " + shuffle + " ▸ " + repeat + fmt.Sprintf(" ▸ %d%%", volume),
-		glyph + fmt.Sprintf(" ▸ %d%%", volume),
 	}
 	for _, line := range options {
 		if lipgloss.Width(line) <= width {
