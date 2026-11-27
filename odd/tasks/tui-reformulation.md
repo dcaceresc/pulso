@@ -247,3 +247,16 @@ Cada etapa es un commit revisable propio; el orden importa: E1 antes de E2, E3 y
 - L11 — User: “lo de desk o spotify connect deks no tiene sentido porque siempre se ocupara en la consola”. El diseño pierde el dispositivo: la línea de estado queda con reproducción, aleatorio, repetición y volumen, y las maquetas se regeneran sin esa columna.
 - L12 — E1 implementada en `internal/ui/player.go`: la caja dibuja su línea de estado en el borde superior con degradación por ancho (palabra de estado → etiqueta de volumen → porcentaje → puntos suspensivos), bloque de iniciales de 10×5 desde 80 columnas, título, artista, álbum, barra de tiempo y línea de contexto. El pie de pistas pasa a ceder filas y la reproducción remota deja de ocupar una columna fija. `go test ./...` verde en Linux; las pruebas que fijaban la barra plana se adaptaron al tamaño donde su regla sigue siendo observable.
 - L13 — Revisión nativa del candidato (lentes readability y reliability): aprobada con cinco hallazgos informativos. Se corrigen los cinco: la caja comparte una sola decisión de estado con su línea superior, así que una desconexión ya no muestra el título guardado ni el bloque de iniciales; la altura interior se recorta cuando la ventana es baja, para que el borde inferior nunca se pierda; las filas interiores se reparten con una prioridad declarada en vez de offsets literales; el bloque de iniciales se construye con `playerArtRows` como fuente de altura; y `hintBudget` pierde el parámetro muerto y su comentario dice la verdad: el pie puede quedarse sin filas. Dos pruebas nuevas fijan la pista obsoleta y la ventana ancha y baja.
+
+## Corte de revisión
+
+La rama `feat/tui-reformulation` acumula cinco commits y unas 771 líneas autoradas desde `947e4ab`, por encima de la rebanada de ~400 que conviene revisar de una vez. El corte queda aquí, al cerrar E1 con sus correcciones:
+
+| Commit | Contenido |
+| --- | --- |
+| `a4a7031` | `docs(agentes)`: convenciones de commits |
+| `6e068c1` | `docs(odd)`: plan por etapas con la versión A |
+| `eaee570` | `feat(tui)`: caja del reproductor (E1) |
+| `1d5963f` | `fix(tui)`: correcciones de la revisión de E1 |
+
+Al publicar, la forma de entrega recomendada es un PR encadenado: el primero con los tres commits del plan y E1, y los siguientes por etapa, para que la revisión no tenga que leer 771 líneas de golpe. La decisión queda abierta hasta que haya algo que publicar.
