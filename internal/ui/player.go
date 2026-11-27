@@ -50,8 +50,9 @@ const (
 	playerBandWide                // Biblioteca, tabla y cola con su contexto.
 )
 
-// Las condiciones de la matriz, con sus dos extremos: un ancho de la banda
-// anterior sin su alto cae en la mínima en vez de heredar la banda de abajo.
+// Las condiciones de la matriz, con un umbral de ancho acumulativo: un alto
+// que no llega a la banda de su ancho cae en la siguiente forma más rica que
+// quepa, nunca en la más pobre.
 const (
 	playerMinWidth      = 40 // Por debajo de este ancho solo cabe el mensaje.
 	playerMinHeight     = 12
@@ -61,6 +62,9 @@ const (
 	playerMediumHeight  = 26
 	playerFullWidth     = 120
 	playerFullHeight    = 30
+	// La banda mínima conserva la tabla cuando el cuerpo tiene la fila de
+	// contexto, el encabezado de la tabla y su regla.
+	playerMinimumTableBody = 3
 )
 
 // Las zonas con cajas: la biblioteca y la cola tienen ancho fijo y la tabla se
@@ -1619,24 +1623,27 @@ func playerRenderRow(row playerRow, width int) string {
 	return row.style.Render(text)
 }
 
-// playerBand elige la banda de la matriz de tamaños: la primera que cumple
-// manda, y lo que no cumple ninguna se queda con el mensaje de tamaño.
+// playerBand elige la forma de la pantalla: la primera banda de la escalera
+// cuyo ancho y alto cumplen manda, así un alto que no llega al umbral de su
+// ancho cae en la forma siguiente y no en la más pobre.
 func playerBand(width, height int) int {
 	switch {
 	case width < playerMinWidth || height < playerMinHeight:
 		return playerBandInsufficient
 	case width >= playerFullWidth && height >= playerFullHeight:
 		return playerBandWide
-	case width >= playerMediumWidth && width < playerFullWidth && height >= playerMediumHeight:
+	case width >= playerMediumWidth && height >= playerMediumHeight:
 		return playerBandMedium
-	case width >= playerCompactWidth && width < playerMediumWidth && height >= playerCompactHeight:
+	case width >= playerCompactWidth && height >= playerCompactHeight:
 		return playerBandCompact
 	}
 	return playerBandMinimum
 }
 
 // playerBodyMinimum son las filas que la composición necesita para leerse: la
-// tabla conserva encabezado y una pista, o el cuerpo deja de pedir reglas.
+// tabla conserva encabezado y una pista, o el cuerpo deja de pedir reglas. La
+// banda mínima pide solo su fila de contexto: la tabla entra después, cuando
+// las filas alcanzan para su encabezado (ver playerMinimumTableBody).
 func playerBodyMinimum(band int) int {
 	switch band {
 	case playerBandWide, playerBandMedium:
@@ -1644,7 +1651,7 @@ func playerBodyMinimum(band int) int {
 	case playerBandCompact:
 		return playerMinBodyRoom
 	}
-	return 1 // La fila de contexto de la banda mínima.
+	return 1
 }
 
 // playerSizeMessage es la banda insuficiente: una sola fila centrada que nombra
@@ -1687,6 +1694,18 @@ func (m *playerModel) View() string {
 		} else {
 			status = status[:len(status)-1]
 		}
+		room = height - 2 - len(play) - len(status) - len(overflow) - rules
+	}
+	// En la banda mínima la tabla entra antes que las pistas del pie: si sus
+	// filas dejan la tabla sin encabezado, el pie cede. El aviso de la sesión
+	// nunca cede, y si tampoco así alcanza (el caso de 40×12), el cuerpo se
+	// queda con su fila de contexto.
+	noticeRows := 0
+	if m.playerNoticeText() != "" {
+		noticeRows = 1
+	}
+	for band == playerBandMinimum && room < playerMinimumTableBody && len(status) > noticeRows {
+		status = status[:len(status)-1]
 		room = height - 2 - len(play) - len(status) - len(overflow) - rules
 	}
 	room = max(0, room)
@@ -2094,7 +2113,9 @@ func (m *playerModel) repeatMode() string {
 	}
 }
 
-func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
+// playerNoticeText es el aviso de la sesión que encabeza el pie: una sola fila
+// que nunca cede, porque el pie cede antes que el aviso.
+func (m *playerModel) playerNoticeText() string {
 	notice := playerText(m.state.Notice)
 	if text := m.saveNoticeText(); text != "" {
 		notice = text
@@ -2115,8 +2136,12 @@ func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
 	if m.saved {
 		notice = m.text("Preferences saved.", "Preferencias guardadas.")
 	}
+	return notice
+}
+
+func (m *playerModel) statusRows(width int, styles playerStyles) []playerRow {
 	var rows []playerRow
-	if notice != "" {
+	if notice := m.playerNoticeText(); notice != "" {
 		rows = append(rows, playerRow{text: notice})
 	}
 	hints := m.hintRows(width)
@@ -2277,8 +2302,13 @@ func (m *playerModel) bodyRows(width int, styles playerStyles, room int) ([]play
 	case playerBandCompact:
 		return m.stackedRows(width, styles, room), nil
 	}
-	// La banda mínima no dibuja tabla: solo la fila que nombra la biblioteca.
-	return []playerRow{{text: m.librarySwitcher(width), style: styles.label}}, nil
+	// La banda mínima: la fila que nombra la biblioteca y, cuando las filas
+	// alcanzan para el encabezado de la tabla y su regla, la tabla también.
+	rows := []playerRow{{text: m.librarySwitcher(width), style: styles.label}}
+	if room < playerMinimumTableBody {
+		return rows, nil
+	}
+	return append(rows, m.tableZoneRows(width, styles, room-1)...), nil
 }
 
 // playerZoneWidths reparte el ancho de la banda entre las cajas: la biblioteca

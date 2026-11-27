@@ -203,8 +203,9 @@ func TestPlayerViewWorkspaceBounds(t *testing.T) {
 			"Estrechez de Corazón", "Volume 37%", "Esc back/quit", "├─", "└",
 		}, nil},
 		{60, 20, []string{
-			"Pulso", "LIBRARY:", "Estrechez de Corazón", "Volume 37%",
-		}, []string{"#", "Title", "Artist", "Duration"}},
+			"Pulso", "LIBRARY:", "Nothing here yet", "#", "Title", "Artist", "Duration",
+			"Estrechez de Corazón", "Volume 37%",
+		}, nil},
 		{40, 12, []string{"Pulso", "▶", "Volume 37%", "Estrechez de Corazón", "├─", "└"}, nil},
 		{20, 8, []string{"Minimum 40×12"}, []string{"Pulso", "├─"}},
 		{1, 1, nil, nil},
@@ -1265,52 +1266,57 @@ func TestPlayerViewPolishBounds(t *testing.T) {
 	}
 }
 
-// TestPlayerViewNarrowColumns keeps the column rules the narrowest band that
-// still draws the table can show, and the column calculus below it.
+// TestPlayerViewNarrowColumns keeps the column rules: the narrowest band that
+// still holds a table drops the artist and the long duration label, and 40x12
+// has no rows for a header at all.
 func TestPlayerViewNarrowColumns(t *testing.T) {
 	m, _ := playerViewModel(t, 120, 40, playerState{
 		Connected: true, Status: "playing", Volume: 42, PositionMS: 1000,
 		Track: playerTrack{Title: "Song", Artist: "Artist", DurationMS: 200000},
 		Queue: []playerTrack{{Title: "Queued", Artist: "Queued Artist", DurationMS: 100000}},
 	})
-	// A 40x12 la banda mínima no tiene tabla: el pie es de la caja del reproductor.
+	// A 40x12 la banda mínima no tiene filas para el encabezado: el pie es de
+	// la caja del reproductor.
 	box := strings.Join(playerViewRows(t, m, 40, 12), "\n")
 	for _, want := range []string{"Song", "Volume 42%", "├─", "│", "└"} {
 		if !strings.Contains(box, want) {
 			t.Fatalf("missing %q at 40x12:\n%s", want, box)
 		}
 	}
-	// La banda compacta es la más estrecha que todavía dibuja la tabla, y ahí
-	// caben las cuatro columnas.
-	narrow := strings.Join(playerViewRows(t, m, 80, 24), "\n")
-	for _, want := range []string{"#", "Title", "Artist", "Duration", "Queued"} {
+	narrow := strings.Join(playerViewRows(t, m, 50, 24), "\n")
+	for _, want := range []string{"#", "Title", "Dur.", "Queued"} {
 		if !strings.Contains(narrow, want) {
-			t.Fatalf("missing %q at 80x24:\n%s", want, narrow)
+			t.Fatalf("missing %q at 50x24:\n%s", want, narrow)
 		}
 	}
-	// La regla de columnas estrechas sigue viva donde se calcula: por debajo de
-	// 60 columnas la tabla pierde artista y duración larga. Ninguna banda la
-	// dibuja ya, porque la tabla empieza en 80.
-	player := m.(*playerModel)
-	short := player.tableColumns(50)
-	if len(short) != 3 {
-		t.Fatalf("the 50-column table renders %d columns, want three: %+v", len(short), short)
+	// La caja escribe el artista dentro de su texto: la regla de columnas se
+	// comprueba en la cabecera de la tabla estrecha.
+	header := ""
+	for _, row := range strings.Split(narrow, "\n") {
+		if strings.Contains(row, "#") && strings.Contains(row, "Title") {
+			header = row
+			break
+		}
 	}
-	if short[2].label != "Dur." {
-		t.Fatalf("the narrow duration label = %q, want %q", short[2].label, "Dur.")
+	if header == "" {
+		t.Fatalf("the narrow table lost its header:\n%s", narrow)
 	}
 	for _, gone := range []string{"Artist", "Duration"} {
-		for _, column := range short {
-			if column.label == gone {
-				t.Fatalf("narrow table kept %q: %+v", gone, short)
-			}
+		if strings.Contains(header, gone) {
+			t.Fatalf("narrow layout kept %q in the table header:\n%s", gone, narrow)
 		}
 	}
-	// A 60x20 la banda mínima ya no dibuja tabla.
-	minimum := strings.Join(playerViewRows(t, m, 60, 20), "\n")
-	for _, gone := range []string{"#", "Title", "Duration"} {
-		if strings.Contains(minimum, gone) {
-			t.Fatalf("the minimum band kept the table header %q:\n%s", gone, minimum)
+	// La regla de columnas sigue viva donde se calcula, por si otra banda la usa.
+	player := m.(*playerModel)
+	short := player.tableColumns(50)
+	if len(short) != 3 || short[2].label != "Dur." {
+		t.Fatalf("the 50-column table renders %+v, want three columns ending in %q", short, "Dur.")
+	}
+	// Desde 60 columnas caben las cuatro columnas.
+	wide := strings.Join(playerViewRows(t, m, 60, 20), "\n")
+	for _, want := range []string{"#", "Title", "Artist", "Duration"} {
+		if !strings.Contains(wide, want) {
+			t.Fatalf("missing %q at 60x20:\n%s", want, wide)
 		}
 	}
 }
@@ -1967,8 +1973,8 @@ func TestPlayerViewZoneBands(t *testing.T) {
 			[]string{"LIBRARY:", "#", "Title", "Tren al Sur"},
 			[]string{"UP NEXT", "CONTEXT"}},
 		{"minimum 79x23", 79, 23,
-			[]string{"LIBRARY:", "Rock Chileno"},
-			[]string{"UP NEXT", "CONTEXT", "#", "Title"}},
+			[]string{"LIBRARY:", "Rock Chileno", "#", "Title", "Tren al Sur"},
+			[]string{"UP NEXT", "CONTEXT"}},
 		{"minimum 40x12", 40, 12,
 			[]string{"Pulso", "LIBRARY:", "├─"},
 			[]string{"#", "Title", "UP NEXT"}},
@@ -2286,4 +2292,68 @@ func playerViewTableMark(rows []string, mark string) bool {
 		}
 	}
 	return false
+}
+
+// TestPlayerViewBandBoundaries keeps the ladder monotone: a height that misses
+// the threshold of its width lands on the next richest shape, never on the
+// poorest, and the table is drawn whenever the resolved shape has one.
+func TestPlayerViewBandBoundaries(t *testing.T) {
+	m := playerZoneModel(t, "en")
+	for _, tt := range []struct {
+		width, height int
+		band          int
+		shape         string
+		table         bool
+	}{
+		{120, 29, playerBandMedium, "medium", true},
+		{100, 25, playerBandCompact, "compact", true},
+		{80, 19, playerBandMinimum, "minimum", true},
+		{119, 40, playerBandMedium, "medium", true},
+		{99, 40, playerBandCompact, "compact", true},
+		{79, 24, playerBandMinimum, "minimum", true},
+	} {
+		t.Run(fmt.Sprintf("%dx%d %s", tt.width, tt.height, tt.shape), func(t *testing.T) {
+			if got := playerBand(tt.width, tt.height); got != tt.band {
+				t.Fatalf("band at %dx%d = %d, want %d", tt.width, tt.height, got, tt.band)
+			}
+			rows := playerViewRows(t, m, tt.width, tt.height)
+			view := strings.Join(rows, "\n")
+			for i, row := range rows {
+				if got := lipgloss.Width(row); got != tt.width {
+					t.Fatalf("row %d of %dx%d measures %d cells: %q", i, tt.width, tt.height, got, row)
+				}
+			}
+			tops := 0
+			for _, row := range rows {
+				if n := strings.Count(row, "┌─ "); n > tops {
+					tops = n
+				}
+			}
+			switch tt.shape {
+			case "medium":
+				if tops != 2 {
+					t.Fatalf("the medium shape drew %d zone titles, want two:\n%s", tops, view)
+				}
+				if strings.Contains(view, "UP NEXT") {
+					t.Fatalf("the medium shape kept the queue column:\n%s", view)
+				}
+			default:
+				if tops != 0 {
+					t.Fatalf("the %s shape drew %d zone titles, want none:\n%s", tt.shape, tops, view)
+				}
+				if !strings.Contains(view, "LIBRARY:") {
+					t.Fatalf("the %s shape lost the library selector:\n%s", tt.shape, view)
+				}
+			}
+			header := false
+			for _, row := range rows {
+				if strings.Contains(row, "#") && strings.Contains(row, "Title") {
+					header = true
+				}
+			}
+			if header != tt.table {
+				t.Fatalf("the %s shape table header = %v, want %v:\n%s", tt.shape, header, tt.table, view)
+			}
+		})
+	}
 }
