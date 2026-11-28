@@ -158,7 +158,7 @@ func TestHelpIgnoresOtherKeys(t *testing.T) {
 		{Type: tea.KeyLeft}, {Type: tea.KeyRight}, {Type: tea.KeyF1}, {Type: tea.KeyF2}, {Type: tea.KeyF3},
 		playerViewKey("s"), playerViewKey("r"), playerViewKey("+"), playerViewKey("-"),
 		playerViewKey("n"), playerViewKey("b"), playerViewKey("/"), playerViewKey("l"),
-		playerViewKey("c"), playerViewKey("a"), playerViewKey("x"),
+		playerViewKey("c"), playerViewKey("a"), playerViewKey("x"), playerViewKey("d"),
 	}
 	for _, key := range keys {
 		var cmd tea.Cmd
@@ -188,10 +188,10 @@ func TestHelpListsEveryBinding(t *testing.T) {
 	m, _ = m.Update(playerViewKey("?"))
 	view := helpOpened(t, m)
 	for _, want := range []string{
-		"q / Ctrl+C", "Space", "←→", "n / b", "+/-", "s", "r", "F2 / F3", "?", "Esc",
+		"q / Ctrl+C", "Space", "←→", "n / b", "+/-", "s", "r", "d", "F2 / F3", "?", "Esc",
 		"l", "/", "c", "↑↓/jk", "Enter", "a", "x", "Backspace",
 		"quit", "play or pause", "seek 10 s", "next or previous track", "volume",
-		"shuffle playback", "repeat off, all, one", "language or theme", "help",
+		"shuffle playback", "repeat off, all, one", "discover songs similar to the playing track", "language or theme", "help",
 		"back to the table or cancel", "library", "search: q s r + - are text", "queue",
 		"move the cursor", "open the playlist or play it", "shuffle the selected playlist",
 		"play the row", "save the playing track to a playlist",

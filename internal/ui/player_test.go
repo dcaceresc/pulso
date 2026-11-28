@@ -310,7 +310,7 @@ func TestPlayerViewSearchInputSwallowsCommands(t *testing.T) {
 	m, out := playerViewModel(t, 100, 30, playerState{Connected: true, Status: "paused", Volume: 50})
 	m, _ = m.Update(playerViewKey("/"))
 	playerViewText(t, m, "Search: _")
-	for _, key := range []string{"q", "s", "r", "+", "-"} {
+	for _, key := range []string{"q", "s", "r", "+", "-", "d"} {
 		var cmd tea.Cmd
 		m, cmd = m.Update(playerViewKey(key))
 		if cmd != nil {
@@ -320,14 +320,14 @@ func TestPlayerViewSearchInputSwallowsCommands(t *testing.T) {
 			t.Fatalf("%q sent a playback command while typing", key)
 		}
 	}
-	view := playerViewText(t, m, "Search: qsr+-_")
+	view := playerViewText(t, m, "Search: qsr+-d_")
 	if strings.Contains(view, "Search tracks") {
 		t.Fatalf("typing opened the catalog overlay:\n%s", view)
 	}
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-	playerViewText(t, m, "Search: qsr+_")
+	playerViewText(t, m, "Search: qsr+-_")
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
-	playerViewText(t, m, "Search: qsr+ _")
+	playerViewText(t, m, "Search: qsr+- _")
 	if len(out) != 0 {
 		t.Fatal("typing space toggled playback")
 	}
@@ -2842,6 +2842,201 @@ func TestPlayerViewRemoveConfirmationKeepsItsText(t *testing.T) {
 				}
 			}
 			_ = library
+		})
+	}
+}
+
+// discoverFake es el catálogo de la tecla `d`: registra cada semilla que recibió
+// y responde con las recomendaciones o el fallo que elija la prueba.
+type discoverFake struct {
+	*libraryFake
+	mu        sync.Mutex
+	seeds     []string
+	recommend func(call int, seed string) ([]libraryTrack, error)
+}
+
+func newDiscoverFake(tracks ...libraryTrack) *discoverFake {
+	fake := &discoverFake{libraryFake: &libraryFake{playlists: libraryPlaylistsFixture()}}
+	fake.recommend = func(int, string) ([]libraryTrack, error) { return tracks, nil }
+	return fake
+}
+
+func (f *discoverFake) Recommendations(_ context.Context, seed string) ([]libraryTrack, error) {
+	f.mu.Lock()
+	f.seeds = append(f.seeds, seed)
+	call, recommend := len(f.seeds), f.recommend
+	f.mu.Unlock()
+	return recommend(call, seed)
+}
+
+func (f *discoverFake) requestedSeeds() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.seeds...)
+}
+
+// discoverStateFixture is a playing session whose Soloist item is one track: the
+// only seed `d` accepts.
+func discoverStateFixture() playerState {
+	return playerState{
+		Connected: true, SessionID: 9, Status: "playing", Volume: 40,
+		Track: playerTrack{Title: "Seed", Artist: "Artist", DurationMS: 180000, URI: "spotify:track:seed"},
+	}
+}
+
+// discoverPlayer builds the workspace over a catalog that can recommend, with a
+// deterministic pick so the played row is observable.
+func discoverPlayer(t *testing.T, p preferences, state playerState, api CatalogAPI, pick int) (tea.Model, chan playerCommand) {
+	t.Helper()
+	model, out, _ := libraryNewPlayer(t, 120, 40, p, state, api.(librarySource), nil, "")
+	model.(*playerModel).discover.pick = func(int) int { return pick }
+	return model, out
+}
+
+// discoverPlayed runs `d` and the request it schedules, and returns the playback
+// command that fit through the channel, if any.
+func discoverPlayed(t *testing.T, m tea.Model, out chan playerCommand) (tea.Model, *playerCommand) {
+	t.Helper()
+	m, cmd := m.Update(playerViewKey("d"))
+	if cmd != nil {
+		m, _ = m.Update(playerViewRun(t, cmd))
+	}
+	select {
+	case command := <-out:
+		return m, &command
+	default:
+		return m, nil
+	}
+}
+
+// TestDiscoverPlaysARecommendationFromThePlayingSeed fija la tecla `d`: una sola
+// petición con la pista en reproducción como semilla y una reproducción por el
+// camino de siempre, con una de las pistas recomendadas elegida al azar.
+func TestDiscoverPlaysARecommendationFromThePlayingSeed(t *testing.T) {
+	fake := newDiscoverFake(
+		libraryTrack{Name: "One", Artist: "A", URI: "spotify:track:one"},
+		libraryTrack{Name: "Two", Artist: "B", URI: "spotify:track:two"},
+	)
+	m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 1)
+	m, played := discoverPlayed(t, m, out)
+	if played == nil {
+		t.Fatal("d sent no playback command")
+	}
+	if played.Name != "play" || played.URI != "spotify:track:two" || played.SessionID != 9 {
+		t.Fatalf("d played %#v", *played)
+	}
+	if seeds := fake.requestedSeeds(); len(seeds) != 1 || seeds[0] != "spotify:track:seed" {
+		t.Fatalf("seeds = %v", seeds)
+	}
+	if view := ansi.Strip(m.View()); strings.Contains(view, "recommendations") || strings.Contains(view, "Discover") {
+		t.Fatalf("a successful discovery left a notice:\n%s", view)
+	}
+}
+
+// TestDiscoverExplainsForbiddenWithoutTouchingPlayback fija que un 403 se
+// explica en una línea localizada, la reproducción no se toca, no se inventa una
+// lista y no se reintenta.
+func TestDiscoverExplainsForbiddenWithoutTouchingPlayback(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		p    preferences
+		want string
+	}{
+		{"english", preferences{}, "This Spotify app has no access to recommendations."},
+		{"spanish", preferences{Language: "es", Theme: "standard"}, "Esta aplicación de Spotify no tiene acceso a las recomendaciones."},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newDiscoverFake()
+			fake.recommend = func(int, string) ([]libraryTrack, error) { return nil, spotify.ErrRecommendationsUnavailable }
+			m, out := discoverPlayer(t, tt.p, discoverStateFixture(), fake, 0)
+			m, played := discoverPlayed(t, m, out)
+			if played != nil {
+				t.Fatalf("the forbidden answer touched playback: %#v", *played)
+			}
+			playerViewText(t, m, tt.want)
+			if seeds := fake.requestedSeeds(); len(seeds) != 1 {
+				t.Fatalf("recommendations were requested %d times, want one", len(seeds))
+			}
+		})
+	}
+}
+
+// TestDiscoverWithoutASeedOnlyExplainsWhy fija que ninguna sesión sin una pista
+// de Spotify sonando envía una semilla vacía: la tecla deja de hacer y lo dice.
+func TestDiscoverWithoutASeedOnlyExplainsWhy(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		state playerState
+	}{
+		{"nothing playing", playerState{Connected: true, SessionID: 9}},
+		{"not a track", func() playerState {
+			state := discoverStateFixture()
+			state.Track.URI = "spotify:episode:one"
+			return state
+		}()},
+		{"disconnected", func() playerState {
+			state := discoverStateFixture()
+			state.Connected = false
+			return state
+		}()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newDiscoverFake(libraryTrack{Name: "One", URI: "spotify:track:one"})
+			m, out := discoverPlayer(t, preferences{}, tt.state, fake, 0)
+			m, cmd := m.Update(playerViewKey("d"))
+			if cmd != nil {
+				t.Fatal("a session without a seed scheduled a request")
+			}
+			playerViewText(t, m, "Play a Spotify track to discover similar songs.")
+			if len(out) != 0 {
+				t.Fatal("a session without a seed sent a playback command")
+			}
+			if seeds := fake.requestedSeeds(); len(seeds) != 0 {
+				t.Fatalf("sent the seed %v", seeds)
+			}
+		})
+	}
+}
+
+// TestDiscoverWithoutACatalogSaysSo fija que una sesión sin catálogo no pide
+// nada y nombra lo que falta en lugar de quedarse muda.
+func TestDiscoverWithoutACatalogSaysSo(t *testing.T) {
+	m, out := playerViewModel(t, 120, 40, discoverStateFixture())
+	m, cmd := m.Update(playerViewKey("d"))
+	if cmd != nil {
+		t.Fatal("a session without a catalog scheduled a request")
+	}
+	playerViewText(t, m, "Discover needs Spotify. Connect it in the library.")
+	if len(out) != 0 {
+		t.Fatal("a session without a catalog sent a playback command")
+	}
+}
+
+// TestDiscoverReportsOtherAnswers fija el resto de respuestas: un fallo no
+// repite el cuerpo de Spotify y una respuesta vacía no inventa una lista.
+func TestDiscoverReportsOtherAnswers(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		tracks   []libraryTrack
+		err      error
+		want     string
+		playback bool
+	}{
+		{"failure", nil, errors.New("fixture secret body"), "Could not read recommendations.", false},
+		{"empty", nil, nil, "Spotify returned no recommendations.", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newDiscoverFake()
+			fake.recommend = func(int, string) ([]libraryTrack, error) { return tt.tracks, tt.err }
+			m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 0)
+			m, played := discoverPlayed(t, m, out)
+			if (played != nil) != tt.playback {
+				t.Fatalf("playback = %v, want %v", played, tt.playback)
+			}
+			view := playerViewText(t, m, tt.want)
+			if strings.Contains(view, "fixture secret body") {
+				t.Fatalf("the notice repeated Spotify's answer:\n%s", view)
+			}
 		})
 	}
 }

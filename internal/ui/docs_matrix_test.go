@@ -228,8 +228,8 @@ func TestDocsDeclareTheSameMatrixAndControls(t *testing.T) {
 	var keys []string
 	for _, doc := range controls {
 		rows := docsTableRows(t, doc.name, doc.header)
-		if len(rows) != 16 {
-			t.Fatalf("%s: %d control rows, want 16", doc.name, len(rows))
+		if len(rows) != 17 {
+			t.Fatalf("%s: %d control rows, want 17", doc.name, len(rows))
 		}
 		got := make([]string, len(rows))
 		for i, row := range rows {

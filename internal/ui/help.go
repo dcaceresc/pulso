@@ -33,6 +33,7 @@ func (m *playerModel) helpSections() []helpSection {
 			{"+/-", m.text("volume", "volumen")},
 			{"s", m.text("shuffle playback", "aleatorio de la reproducción")},
 			{"r", m.text("repeat off, all, one", "repetir apagado, todo, una")},
+			{"d", m.text("discover songs similar to the playing track", "descubrir canciones parecidas a la que suena")},
 			{"F2 / F3", m.text("language or theme", "idioma o tema")},
 			{"?", m.text("help", "ayuda")},
 			{"Esc", m.text("back to the table or cancel", "volver a la tabla o cancelar")},

@@ -158,6 +158,7 @@ Every key does one thing. `?` opens help, the complete reference by scope: it re
 | Global | `+` / `-` | Volume |
 | Global | `←` / `→` | Seek back or forward 10 seconds |
 | Global | `r` | Repeat: off, context, track |
+| Global | `d` | Discover songs similar to the playing track |
 | Global | `F2` / `F3` | Language or theme |
 | Global | `?` | Help: the only key reference |
 | Global | `Esc` | Back to the table or cancel what has the focus |
@@ -175,7 +176,9 @@ The arrows `↑` `↓` move the cursor just like `j` `k`. `s` toggles shuffle fo
 
 `s` in the library works by playlist URI even when the tracks cannot be listed. Pulso waits for Soloist to accept playback and confirm the playlist context before sending a separate shuffle command. The first track is not guaranteed to be random, and another Spotify client can change the context between confirmation and shuffle. If confirmation does not arrive in time, Pulso does not send shuffle; the playlist may still start playing.
 
-Pulso does not change Autoplay. If it is enabled and Spotify continues playback after a playlist ends, Spotify chooses the tracks.
+Pulso does not change Autoplay. Entering a playlist plays it in order and, when it ends, playback continues with what Spotify adds; `s` in the library shuffles the list and, when it runs out, continues the same way. When Autoplay is enabled and Spotify continues playback after a playlist ends, Spotify chooses the tracks.
+
+`d` asks Spotify for songs similar to the playing track and starts one of them, chosen at random, so Spotify continues from there with what it hands over next. It uses the same authorization as search and playlists: no new permission. When this Spotify app no longer has access to recommendations, Pulso explains it in one line — “This Spotify app has no access to recommendations.” — and leaves playback untouched; it neither invents a list nor retries. With no Spotify track playing, the key only says why it cannot.
 
 `a` appears only with a track playing and a Spotify catalog that can write. After `Enter`, Pulso waits for Spotify's answer: when it accepts, it shows “Saved to …” with the playlist name; on failure it shows one row such as “Could not save to …” and playback stays as it was. When Spotify answers that the write permission is missing (for example, a session approved before this action existed), Pulso offers to approve again, opens the browser, shows the approval link and retries the save once. A playlist this account cannot edit, or an approval that does not complete, gets no retry. Spotify's response text is never shown.
 

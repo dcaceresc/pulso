@@ -140,6 +140,7 @@ Rules that do not change with the band: the status line always lives on the play
 | Global | `+` / `-` | Volume |
 | Global | `←` / `→` | Back / forward 10 s |
 | Global | `r` | Repeat: off → all → one |
+| Global | `d` | Discover songs similar to the playing track |
 | Global | `F2` / `F3` | Language / theme |
 | Global | `?` | Help: the only key reference |
 | Global | `Esc` | Back to the table or cancel what has the focus |
@@ -171,6 +172,7 @@ The cover is drawn in two sizes: the wide and medium bands fill a slot of 20 col
 | Playlist snapshot for removal | `GET /v1/playlists/…?fields=snapshot_id` | delivered; the items page does not return it, so it is read from the playlist object next to the page, and a missing snapshot only leaves `x` unavailable |
 | Search results | `GET /v1/search?type=track` | delivered, ten per request |
 | Account handle | `/me` `display_name` | delivered; a missing name shows no label |
+| Recommendations for the playing track | `GET /v1/recommendations?seed_tracks=…&limit=20` | delivered; the seed is the id of the playing track, the key starts one of the results at random and Spotify's Autoplay continues from there; no new scope |
 | Shuffle, repeat, volume and playing state | Soloist `playback_state.options` and its events | delivered; the box shows what Soloist reported, never an optimistic guess beyond the pending intent |
 | Confirmed playlist context | Soloist `playback_state.context` and `context_changed` | delivered; only a validated playlist entity is named |
 | Queue | Soloist `get_queue` | delivered; the wide band's column and the table's `c` view read it |
@@ -180,6 +182,8 @@ The cover is drawn in two sizes: the wide and medium bands fill a slot of 20 col
 | Album cover | `album.images` in the responses above, plus one narrow track query | delivered; standard library decode, 24-bit half blocks over a 20×10-cell slot and a 10×5-cell one |
 
 Playlist shuffle sends `play` with the playlist URI, waits for acceptance and confirmation of that playlist on the current Soloist session, then sends `set_shuffle`. An intervening observed change away from the confirmed context cancels the pending action. The commands are not atomic: an unobserved context switch between confirmation and command execution can still affect different playback. The first track is not guaranteed to be random. Spotify manages Autoplay; Pulso does not modify or simulate it.
+
+`d` (discover) extracts the id from the playing track's `spotify:track:` URI and sends one request to `/v1/recommendations` with that id as the only seed and the endpoint's maximum of twenty tracks; the response is read with the same track shape as the search results — name, artists, duration, URI and cover — and the endpoint uses the playlist scopes the session already has, so no authorization changes. Soloist accepts one target per `play`, so the key starts one of the returned tracks, chosen at random, through the same playback path and Spotify's Autoplay continues from there: Pulso never builds a queue of its own. A session with nothing playing, or an item that is not a Spotify track, sends no request — never an empty seed — and the notice row says why. A `403` means this Spotify app has no access to recommendations: one localized line says so, playback is untouched, no fallback list is invented and nothing is retried, and any other failure is reported without naming Spotify's response body.
 
 Save keeps Soloist's `item.uri` only when it is a track URI, so a missing or non-track item leaves the action unavailable instead of saving the wrong thing. Both write paths use Spotify's current playlist-items route: adding keeps the `uris` body and removing sends `items` with the playlist's `snapshot_id`. A `403` that does not clearly state that this account cannot change that particular playlist offers one explicit reauthorization with the wizard's browser-and-link presentation and retries once; a refusal that names the playlist the account cannot edit is reported as such without a retry. Playback is never touched and Spotify response bodies are never rendered.
 

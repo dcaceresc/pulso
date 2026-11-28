@@ -158,6 +158,7 @@ Cada tecla hace una sola cosa. `?` abre la ayuda, la referencia completa por ám
 | Global | `+` / `-` | Volumen |
 | Global | `←` / `→` | Retroceder o avanzar 10 segundos |
 | Global | `r` | Repetir: apagado, lista, pista |
+| Global | `d` | Descubrir canciones parecidas a la que suena |
 | Global | `F2` / `F3` | Idioma o tema |
 | Global | `?` | Ayuda: la única referencia de teclas |
 | Global | `Esc` | Volver a la tabla o cancelar lo enfocado |
@@ -175,7 +176,9 @@ Las flechas `↑` `↓` mueven el cursor igual que `j` `k`. `s` alterna el aleat
 
 `s` en la biblioteca funciona con la URI de la lista aunque no se puedan consultar sus canciones. Pulso espera a que Soloist acepte la reproducción y confirme la lista antes de enviar una segunda orden para activar el aleatorio. No se garantiza que la primera canción sea aleatoria, y otro cliente de Spotify puede cambiar el contexto entre la confirmación y la segunda orden. Si la confirmación no llega a tiempo, Pulso no envía la segunda orden; la lista aún puede empezar a reproducirse.
 
-Pulso no cambia Autoplay. Si está activado y Spotify continúa la reproducción al terminar una lista, Spotify elige las canciones.
+Pulso no cambia Autoplay. Entrar en una lista la reproduce en orden y, cuando termina, la reproducción continúa con lo que Spotify agregue; `s` en la biblioteca mezcla la lista y, al agotarse, continúa igual. Si Autoplay está activado y Spotify continúa la reproducción al terminar una lista, Spotify elige las canciones.
+
+`d` pide a Spotify canciones parecidas a la que suena y empieza a reproducir una de ellas, elegida al azar, para que Spotify siga desde ahí con lo que corresponda. Usa la misma autorización que la búsqueda y las listas: no pide un permiso nuevo. Si esta aplicación de Spotify no conserva acceso a las recomendaciones, Pulso lo explica en una línea —«Esta aplicación de Spotify no tiene acceso a las recomendaciones.»— y no toca la reproducción; tampoco inventa una lista ni reintenta. Sin una pista de Spotify sonando, la tecla solo dice por qué no puede.
 
 `a` solo aparece con una canción en reproducción y un catálogo de Spotify que puede escribir. Después de `Enter`, Pulso espera la respuesta de Spotify: si la acepta, muestra «Guardada en …» con el nombre de la lista; si falla, muestra una línea como «No se pudo guardar en …» y la reproducción sigue igual. Cuando Spotify responde que falta el permiso de escritura (por ejemplo, una sesión aprobada antes de existir esta acción), Pulso ofrece aprobar otra vez, abre el navegador, muestra el enlace de aprobación y reintenta el guardado una sola vez. Si la lista es de otra cuenta y no se puede editar, o si la aprobación no se completa, no hay reintento. El texto de la respuesta de Spotify nunca se muestra.
 

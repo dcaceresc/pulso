@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"reflect"
 	"strings"
 	"sync"
@@ -250,6 +251,69 @@ type playerProfileMsg struct {
 	err        error
 }
 
+// discoverNotice es el resultado de la tecla `d`: la única fila que explica por
+// qué no hubo reproducción, nunca con un texto de Spotify.
+type discoverNotice uint8
+
+const (
+	discoverNoticeNone discoverNotice = iota
+	// discoverNoticeNoSource significa que esta sesión no tiene un catálogo que
+	// sepa pedir recomendaciones.
+	discoverNoticeNoSource
+	// discoverNoticeNoSeed significa que no hay una pista de Spotify sonando.
+	discoverNoticeNoSeed
+	// discoverNoticeUnavailable significa que la aplicación de Spotify no conserva
+	// acceso a /v1/recommendations.
+	discoverNoticeUnavailable
+	// discoverNoticeFailed informa de un fallo sin inventar un motivo.
+	discoverNoticeFailed
+	// discoverNoticeEmpty significa que Spotify no devolvió ninguna pista.
+	discoverNoticeEmpty
+)
+
+// recommendationSource es la lectura del catálogo que `d` necesita: pistas
+// parecidas a la que suena. Es opcional, como el resto de lecturas, así que un
+// catálogo que no sabe responder deja la tecla con su explicación.
+type recommendationSource interface {
+	Recommendations(context.Context, string) ([]libraryTrack, error)
+}
+
+// recommendationSourceOf acepta el catálogo solo cuando sabe pedir
+// recomendaciones; un catálogo nulo tipado queda ausente.
+func recommendationSourceOf(api CatalogAPI) recommendationSource {
+	if api == nil {
+		return nil
+	}
+	source, ok := api.(recommendationSource)
+	if !ok {
+		return nil
+	}
+	if value := reflect.ValueOf(source); value.Kind() == reflect.Pointer && value.IsNil() {
+		return nil
+	}
+	return source
+}
+
+// discoverResultMsg carries the recommendations one `d` asked for, fenced by the
+// generation of the request.
+type discoverResultMsg struct {
+	generation uint64
+	tracks     []libraryTrack
+	err        error
+}
+
+// discoverState es la tecla `d`: el catálogo que sabe pedir recomendaciones, la
+// generación que descarta una respuesta vieja, el aviso del último intento y la
+// elección de la pista con la que empieza lo que Spotify continúe.
+type discoverState struct {
+	source     recommendationSource
+	notice     discoverNotice
+	generation uint64
+	// pick elige una pista del resultado: empezar por una elegida al azar es lo
+	// que mezcla el descubrimiento. Las pruebas lo reemplazan.
+	pick func(int) int
+}
+
 type playerModel struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -293,6 +357,9 @@ type playerModel struct {
 	// sentido con un catálogo que puede escribir; el resto del tiempo la acción
 	// no se anuncia ni responde.
 	saveTo savePanel
+	// discover es la tecla global `d`: pistas parecidas a la que suena, con su
+	// propio aviso de una línea.
+	discover discoverState
 	// covers guarda el mapa URI → URL que anuncian las páginas ya cargadas, la
 	// consulta de respaldo y la imagen decodificada: la caja dibuja la carátula
 	// cuando llega y, mientras tanto, sus iniciales.
@@ -332,6 +399,7 @@ func NewPlayerModelWithCatalog(ctx context.Context, states <-chan soloist.State,
 	m.search = newSearchState(ctx, m.library.source)
 	m.profile = profileSourceOf(api)
 	m.saveTo.writer = playlistWriterOf(api)
+	m.discover = discoverState{source: recommendationSourceOf(api), pick: rand.IntN}
 	m.covers = newCoverArt(coverSourceOf(api))
 	m.openBrowser = spotify.OpenBrowser
 	return m
@@ -406,6 +474,14 @@ func (m *playerModel) installProfile(api CatalogAPI) tea.Cmd {
 	return m.fetchProfile()
 }
 
+// installDiscoverSource adopta el catálogo recién aprobado para `d`; uno que no
+// sepa pedir recomendaciones no borra al que ya sabía.
+func (m *playerModel) installDiscoverSource(api CatalogAPI) {
+	if source := recommendationSourceOf(api); source != nil {
+		m.discover.source = source
+	}
+}
+
 func (m *playerModel) awaitState() tea.Cmd {
 	if m.pending || m.ended || m.quit {
 		return nil
@@ -451,11 +527,15 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.saveTo.writer = playlistWriterOf(auth.api)
 			// Y con él la consulta de carátula que antes no podía hacerse.
 			m.covers.installSource(coverSourceOf(auth.api))
+			// Y las recomendaciones que la tecla `d` pide.
+			m.installDiscoverSource(auth.api)
 			return m, playerCommands(cmd, m.installProfile(auth.api), m.coverRequest())
 		}
 		return m, playerCommands(cmd, m.coverRequest())
 	case saveResultMsg, saveAuthMsg:
 		return m, m.updateSave(msg)
+	case discoverResultMsg:
+		return m, m.updateDiscover(msg)
 	case coverURLMsg:
 		// La respuesta de la consulta de respaldo: con URL se sigue con la
 		// descarga; sin ella el intento ya quedó recordado.
@@ -497,9 +577,10 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel()
 			break
 		}
-		// Un aviso nuevo de Soloist no queda escondido por el último guardado.
+		// Un aviso nuevo de Soloist no queda escondido por el último guardado ni
+		// por la explicación del último descubrimiento.
 		if playerText(msg.state.Notice) != playerText(m.state.Notice) {
-			m.saveTo.notice = saveNoticeNone
+			m.saveTo.notice, m.discover.notice = saveNoticeNone, discoverNoticeNone
 		}
 		m.state = msg.state
 		// Sin una pista en reproducción el selector de guardado se queda sin qué
@@ -594,6 +675,11 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		return m.openRemove()
+	}
+	// `d` es global, como el transporte: descubre canciones parecidas a la que
+	// suena desde cualquier zona.
+	if key.String() == "d" {
+		return m.discoverTracks()
 	}
 	// El transporte es global: salto, aleatorio y repetición valen desde
 	// cualquier zona; después va el cursor de la zona y al final la fila.
@@ -691,6 +777,86 @@ func (m *playerModel) playPlaylistShuffle(uri string) {
 	if m.send(playerCommand{Name: soloist.PlayPlaylistShuffle, URI: uri}) {
 		m.wantShuffle = nil
 	}
+}
+
+// discoverTracks es la tecla `d`: pide recomendaciones para la pista en
+// reproducción y empieza a reproducir una de ellas, elegida al azar, por el
+// camino de reproducción de siempre; Spotify continúa desde ahí. Sin catálogo o
+// sin una pista de Spotify sonando la tecla solo explica el motivo, y ningún
+// caso envía una semilla vacía.
+func (m *playerModel) discoverTracks() tea.Cmd {
+	m.saveTo.notice, m.discover.notice = saveNoticeNone, discoverNoticeNone
+	m.discover.generation++
+	seed := ""
+	if m.state.Connected && soloist.IsTrackURI(m.state.Track.URI) {
+		seed = m.state.Track.URI
+	}
+	switch {
+	case m.discover.source == nil:
+		m.discover.notice = discoverNoticeNoSource
+	case seed == "":
+		m.discover.notice = discoverNoticeNoSeed
+	case m.ctx.Err() != nil:
+		m.discover.notice = discoverNoticeFailed
+	default:
+		ctx, generation, source := m.ctx, m.discover.generation, m.discover.source
+		return func() tea.Msg {
+			if ctx.Err() != nil {
+				return nil
+			}
+			tracks, err := source.Recommendations(ctx, seed)
+			return discoverResultMsg{generation: generation, tracks: tracks, err: err}
+		}
+	}
+	return nil
+}
+
+// updateDiscover aplica la respuesta de `d`. Un fallo se explica en una línea y
+// la reproducción no se toca: no hay lista inventada ni reintento.
+func (m *playerModel) updateDiscover(msg tea.Msg) tea.Cmd {
+	result, ok := msg.(discoverResultMsg)
+	if !ok || m.quit || m.ctx.Err() != nil || result.generation != m.discover.generation {
+		return nil
+	}
+	switch {
+	case errors.Is(result.err, spotify.ErrRecommendationsUnavailable):
+		m.discover.notice = discoverNoticeUnavailable
+		return nil
+	case result.err != nil:
+		m.discover.notice = discoverNoticeFailed
+		return nil
+	case len(result.tracks) == 0:
+		m.discover.notice = discoverNoticeEmpty
+		return nil
+	}
+	m.discover.notice = discoverNoticeNone
+	// La caja ya conoce las carátulas que la respuesta anuncia.
+	m.covers.remember(result.tracks)
+	pick := m.discover.pick
+	if pick == nil {
+		pick = rand.IntN
+	}
+	track := result.tracks[max(0, min(pick(len(result.tracks)), len(result.tracks)-1))]
+	m.playURI(track.URI)
+	return nil
+}
+
+// discoverNoticeText es la línea que deja `d` cuando no pudo empezar la
+// reproducción.
+func (m *playerModel) discoverNoticeText() string {
+	switch m.discover.notice {
+	case discoverNoticeNoSource:
+		return m.text("Discover needs Spotify. Connect it in the library.", "Descubrir necesita Spotify. Conéctalo en la biblioteca.")
+	case discoverNoticeNoSeed:
+		return m.text("Play a Spotify track to discover similar songs.", "Reproduce una pista de Spotify para descubrir canciones parecidas.")
+	case discoverNoticeUnavailable:
+		return m.text("This Spotify app has no access to recommendations.", "Esta aplicación de Spotify no tiene acceso a las recomendaciones.")
+	case discoverNoticeFailed:
+		return m.text("Could not read recommendations.", "No se pudieron leer las recomendaciones.")
+	case discoverNoticeEmpty:
+		return m.text("Spotify returned no recommendations.", "Spotify no devolvió recomendaciones.")
+	}
+	return ""
 }
 
 // send binds a command to the session on screen and reports whether it fit
@@ -1287,6 +1453,8 @@ func (m *playerModel) installApproved(writer spotify.PlaylistWriter) tea.Cmd {
 	if source := librarySourceOf(api); source != nil {
 		m.library.source, m.search.source, m.library.started = source, source, true
 	}
+	// Y las recomendaciones que la tecla `d` pide.
+	m.installDiscoverSource(api)
 	return playerCommands(m.installProfile(api), retry)
 }
 
@@ -2251,6 +2419,9 @@ func (m *playerModel) repeatMode() string {
 func (m *playerModel) playerNoticeText() string {
 	notice := playerText(m.state.Notice)
 	if text := m.saveNoticeText(); text != "" {
+		notice = text
+	}
+	if text := m.discoverNoticeText(); text != "" {
 		notice = text
 	}
 	switch m.state.PlaylistShuffle {
