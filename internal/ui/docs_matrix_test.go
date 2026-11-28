@@ -284,7 +284,7 @@ func TestDocsMatrixMatchesTheLayout(t *testing.T) {
 			if got := docsNumbers(row[doc.player]); len(got) == 0 || got[0] != playerBoxBand(probe.width) {
 				t.Errorf("%s: row %d declares %q interior rows, want %d", doc.name, i+1, row[doc.player], playerBoxBand(probe.width))
 			}
-			slot := playerArtSlot(probe.width, playerBoxInterior(probe.width, probe.height))
+			slot := playerArtSlot(probe.width, probe.height)
 			if want := docsCover(docsCoverWord(doc.lang, slot.ok())); docsCover(row[doc.cover]) != want {
 				t.Errorf("%s: row %d declares cover %q, want %q", doc.name, i+1, row[doc.cover], want)
 			}
@@ -331,12 +331,10 @@ func TestDocsCoverMatchesTheSlot(t *testing.T) {
 		fmt.Sprintf("a %d×%d reduction", playerArtCompact.pixelWidth(), playerArtCompact.pixelHeight()),
 		fmt.Sprintf("%d pixels", playerArtWide.pixelWidth()*playerArtWide.pixelHeight()),
 		fmt.Sprintf("%d pixels", playerArtCompact.pixelWidth()*playerArtCompact.pixelHeight()),
-		// La regla de la ranura se escribe con los mismos umbrales que
-		// playerArtSlot, así un cambio de código no deja el texto atrás.
-		fmt.Sprintf("at least %d columns", playerBoxGutter),
-		fmt.Sprintf("%d interior rows", playerArtWide.rows+2),
-		fmt.Sprintf("%d interior rows", playerArtCompact.rows+2),
-		fmt.Sprintf("%d interior rows", playerBoxMinimum),
+		// La regla se escribe con la banda, que es la que playerArtSlot consulta,
+		// así el texto no puede volver a prometerla por filas interiores.
+		"the resolved band decides",
+		"the minimum band gets none",
 	} {
 		if !strings.Contains(docsText(t, docsPlan), want) {
 			t.Errorf("%s does not declare %q", docsPlan, want)
@@ -345,8 +343,12 @@ func TestDocsCoverMatchesTheSlot(t *testing.T) {
 	for _, doc := range []struct{ name, phrase string }{
 		{docsSpanish, "veinte columnas por diez filas"},
 		{docsSpanish, "diez columnas por cinco filas"},
+		{docsSpanish, "la banda resuelta decide"},
+		{docsSpanish, "La banda mínima no gasta ninguna"},
 		{docsEnglish, "twenty columns by ten rows"},
 		{docsEnglish, "ten columns by five rows"},
+		{docsEnglish, "the resolved band decides"},
+		{docsEnglish, "The minimum band spends none"},
 	} {
 		if !strings.Contains(docsText(t, doc.name), doc.phrase) {
 			t.Errorf("%s does not state the cover slot as %q", doc.name, doc.phrase)

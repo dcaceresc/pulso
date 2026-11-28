@@ -1907,20 +1907,18 @@ func playerBoxHeight(width, height int) int {
 
 // playerArtSlot es la única regla de la ranura de la carátula: dibujarla y
 // pedirla usan la misma, así una ventana estrecha no descarga una imagen que
-// nunca podría pintar. La caja pide la mayor ranura que quepa en sus filas
-// interiores, porque la carátula ocupa las suyas y necesita la fila del título
-// encima y la línea de contexto debajo: la grande pide doce filas —las de las
-// bandas amplia y media— y la pequeña siete, que es lo que dejan las ocho de la
-// banda compacta. Por debajo de playerBoxGutter columnas, y en la banda mínima
-// con sus seis filas, la caja no gasta carátula y la ranura queda vacía.
-func playerArtSlot(width, interior int) artSlot {
-	if width < playerBoxGutter {
-		return artSlot{}
-	}
-	for _, slot := range playerArtSlots {
-		if interior >= slot.rows+2 {
-			return slot
-		}
+// nunca podría pintar. La banda resuelta decide: las bandas amplia y media
+// gastan la carátula grande —veinte celdas por diez filas, que caben en sus doce
+// filas interiores— y la compacta la pequeña —diez por cinco, que caben en sus
+// ocho—; la banda mínima y la insuficiente no gastan ninguna, por muchas filas
+// que una ventana baja deje a la caja. La ranura vacía es la de una caja sin
+// carátula.
+func playerArtSlot(width, height int) artSlot {
+	switch playerBand(width, height) {
+	case playerBandWide, playerBandMedium:
+		return playerArtWide
+	case playerBandCompact:
+		return playerArtCompact
 	}
 	return artSlot{}
 }
@@ -2056,12 +2054,12 @@ func (m *playerModel) playerBoxArtLines(slot artSlot) ([]string, bool) {
 // coverRequest pide lo que falte para dibujar la carátula de la pista en
 // reproducción. Se llama al llegar un estado, una página o un tamaño, nunca al
 // dibujar: así la primera pintura muestra las iniciales sin esperar la imagen, y
-// una ventana que no tiene ranura no descarga ni pregunta nada.
+// una banda que no tiene ranura no descarga ni pregunta nada.
 func (m *playerModel) coverRequest() tea.Cmd {
 	if m.covers == nil || m.quit || m.playerBoxCondition() != playerBoxLive {
 		return nil
 	}
-	if !playerArtSlot(m.width, playerBoxInterior(m.width, m.height)).ok() {
+	if !playerArtSlot(m.width, m.height).ok() {
 		return nil
 	}
 	return m.covers.request(m.ctx, playerText(m.state.Track.URI))
@@ -2140,7 +2138,7 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 	border += strings.Repeat("─", max(0, inner-lipgloss.Width(border)))
 	rows = append(rows, edge.Render("├")+styles.label.Render(playerFit(border, inner))+edge.Render("┤"))
 
-	slot := playerArtSlot(width, interior)
+	slot := playerArtSlot(width, m.height)
 	hasArt := slot.ok() && m.playerBoxCondition() == playerBoxLive
 	art := []string{}
 	artColored := false
