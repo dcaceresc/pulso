@@ -1185,10 +1185,11 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 		switch {
 		case msg.err == nil:
 			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeSaved, msg.name
-			if removing {
-				// La fila ya no existe: se relee la lista abierta para que desaparezca.
-				return m.afterRemove()
-			}
+			// Cualquier escritura aceptada cambia el snapshot de la lista: se relee
+			// para que las filas queden con la versión que Spotify ya conoce. En una
+			// retirada además hace desaparecer la fila.
+			m.saveTo.removeSnapshot = ""
+			return m.afterRemove()
 		case errors.Is(msg.err, spotify.ErrPlaylistSnapshotConflict) && removing:
 			// La lista cambió desde que se leyó: se relee y se pregunta otra vez.
 			m.saveTo.phase, m.saveTo.reloading = saveConfirming, true

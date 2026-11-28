@@ -407,6 +407,83 @@ func TestRemoveStaleSnapshotReadsAgainAndAsks(t *testing.T) {
 	}
 }
 
+// TestRemoveAfterAddUsesTheFreshlyReadSnapshot reproduce el defecto de R1: una
+// escritura aceptada publica una versión nueva de la lista, así que las filas de
+// la lista abierta conservan el snapshot de la lectura anterior. Si la
+// aplicación no relee la lista tras guardar, la retirada siguiente viaja con un
+// snapshot viejo y Spotify la rechaza; la persona tendría que salir de la lista
+// y volver a entrar para poder quitar una pista.
+func TestRemoveAfterAddUsesTheFreshlyReadSnapshot(t *testing.T) {
+	// La lista ficticia se comporta como Spotify: cada lectura informa la versión
+	// vigente de la lista y cada escritura aceptada publica una nueva.
+	rows, version := libraryTracksFor("spotify:playlist:rock"), 0
+	snapshot := func() string { return fmt.Sprintf("snapshot-%d", version) }
+	added := libraryTrack{Name: "Nueva Canción", Artist: "Artista Nueva", DurationMS: 200000, URI: "spotify:track:new"}
+	api := newSaveFake(libraryPlaylistsFixture())
+	api.items = func(_ context.Context, _ string, _ int) (spotify.PlaylistItemsPage, error) {
+		return spotify.PlaylistItemsPage{Tracks: rows, Total: len(rows), Snapshot: snapshot()}, nil
+	}
+	api.add = func(_ int, _, trackURI string) (string, error) {
+		rows, version = append(rows, added), version+1
+		return snapshot(), nil
+	}
+	api.remove = func(_ int, _, trackURI, sent string) error {
+		// Spotify rechaza una retirada que nombra una versión que ya no es la actual.
+		if sent != snapshot() {
+			return spotify.ErrPlaylistSnapshotConflict
+		}
+		for i, track := range rows {
+			if track.URI == trackURI {
+				rows = append(rows[:i:i], rows[i+1:]...)
+				break
+			}
+		}
+		version++
+		return nil
+	}
+	state := saveTrackState()
+	state.Track = playerTrack{Title: added.Name, Artist: added.Artist, DurationMS: added.DurationMS, URI: added.URI}
+	m, out, _ := removeWorkspace(t, preferences{}, state, api)
+	playerViewText(t, m, "Tren al Sur", "Estrechez de Corazón")
+
+	// Guardar la pista en la lista abierta publica la versión 1 de Spotify.
+	m, _ = m.Update(playerViewKey("a"))
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter on the chooser started no save")
+	}
+	m = librarySettle(t, m, cmd)
+	if got := api.saved(); len(got) != 1 ||
+		got[0] != (saveCall{playlistURI: "spotify:playlist:rock", trackURI: added.URI}) {
+		t.Fatalf("saved = %+v, want one add to the open playlist", got)
+	}
+	// El guardado aceptado relee la lista: la fila nueva solo existe en la página
+	// que Spotify sirve después de la escritura.
+	playerViewText(t, m, "Saved to Rock Chileno.", added.Name)
+
+	// Sin cambiar de lista, la retirada siguiente usa la lectura nueva: ni un
+	// rechazo ni una segunda pregunta.
+	m, _ = m.Update(playerViewKey("j"))
+	m, _ = m.Update(playerViewKey("x"))
+	playerViewText(t, m, "Remove Estrechez de Corazón from Rock Chileno?")
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter on the confirmation started no removal")
+	}
+	m = librarySettle(t, m, cmd)
+	if got := api.removed(); len(got) != 1 || got[0] != (removeCall{
+		playlistURI: "spotify:playlist:rock", trackURI: "spotify:track:two", snapshot: "snapshot-1"}) {
+		t.Fatalf("removed = %+v, want the removal to name the listing read after the save", got)
+	}
+	view := playerViewText(t, m, "Removed Estrechez de Corazón from Rock Chileno.", added.Name, "Tren al Sur")
+	if strings.Contains(view, "from Rock Chileno?") {
+		t.Fatalf("the removal was asked again instead of using the refreshed snapshot:\n%s", view)
+	}
+	if len(out) != 0 {
+		t.Fatal("saving and removing in the same playlist touched playback")
+	}
+}
+
 // TestRemoveAsksForWriteScopeThenRetriesOnce proves a missing write scope reuses
 // the one explicit reauthorization and retries the removal exactly once.
 func TestRemoveAsksForWriteScopeThenRetriesOnce(t *testing.T) {
