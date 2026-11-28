@@ -126,7 +126,7 @@ The width conditions are floors and the height decides, so the first band in the
 | Minimum | width ≥ 40 and height ≥ 12 | library switcher and the player box, and the table when the height leaves rows for its header | 6 rows | no | 40×12, 79×23 |
 | Insufficient | width < 40 or height < 12 | size message, no frame | — | — | 39×11 |
 
-Rules that do not change with the band: the status line always lives on the player box's top border; inside, the title comes first, then the artist, the album, the time line and the bar, and the context line closes the box; the bar is drawn only when its row keeps at least four cells, and below that it is not drawn and the row stays empty while the time line still carries the three values; the box never grows past its band height and, when the window is short, is cropped below it so the bottom border is never lost; the table cedes its rows first; no row overflows the width.
+Rules that do not change with the band: the status line always lives on the player box's top border; inside, the title comes first, then the artist, the album, the time line and the bar, and the context line closes the box; the bar is drawn only when its row keeps at least four cells, and below that it is not drawn and the row stays empty while the time line still carries the three values; the box never grows past its band height and, when the window is short, is cropped below it so the bottom border is never lost — in the minimum band it declares six rows and at 40×12 draws three: title, artist and album, with no time; the table cedes its rows first; no row overflows the width.
 
 ## Controls (one key, one action)
 
@@ -160,7 +160,7 @@ The cover fills a slot of 20 columns by 10 rows: half blocks `▀` with 24-bit c
 - The URL comes from `album.images` in the responses the app already requests (`/v1/search` and `/v1/playlists/…/items`); the playing track that no loaded page brought is resolved with one narrow `GET /v1/tracks/…?fields=album.images`. The image picked is the smallest one at least as wide as the drawn cover — 20 pixels —, and the largest available when none reaches it.
 - Download and decode use `image/png` and `image/jpeg` from the standard library: no new dependency and no new scope. The download is capped at 4 MiB and the header at one million pixels before decoding; the image is reduced by block average and drawn with 24-bit colour.
 - The first paint shows the initials block and never waits for the image; the result is cached in memory per URL and a failed download is remembered as well, leaving the initials with no notice and no error row.
-- The slot rule is one and shared by drawing and requesting — at least 80 columns and 12 interior rows, the ten of the image plus the title above and the context below — so a window without a slot downloads nothing, and a window that grows into the slot asks for the image then. That is why the cover exists in the wide and medium bands and not in the compact or minimum ones.
+- The slot rule is one and shared by drawing and requesting — at least 80 columns and 12 interior rows, the ten of the image plus the title above and the context below — so a window without a slot downloads nothing, and a window that grows into the slot asks for the image then. That is why the cover exists in the wide and medium bands and not in the compact or minimum ones: at 80×24 the box declares eight interior rows and at 40×12 six, both below the twelve the slot needs.
 
 ## Data
 

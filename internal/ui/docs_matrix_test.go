@@ -298,6 +298,9 @@ func TestDocsCoverMatchesTheSlot(t *testing.T) {
 		fmt.Sprintf("slot of %d columns by %d rows", playerArtWidth, playerArtRows),
 		fmt.Sprintf("a %d×%d reduction", playerArtWidth, playerArtRows*coverPixelRows),
 		fmt.Sprintf("%d pixels", pixels),
+		// La regla de la ranura se escribe con los mismos umbrales que
+		// playerArtSlot, así un cambio de código no deja el texto atrás.
+		fmt.Sprintf("at least %d columns and %d interior rows", playerBoxGutter, playerArtRows+2),
 	} {
 		if !strings.Contains(docsText(t, docsPlan), want) {
 			t.Errorf("%s does not declare %q", docsPlan, want)

@@ -95,9 +95,10 @@ func TestE6CapturesMatchTheRecord(t *testing.T) {
 }
 
 // TestE6CoverCaptureDrawsTheCover fija que la quinta captura muestra la imagen y
-// no las iniciales: cinco filas de diez medios bloques con color de 24 bits.
+// no las iniciales: diez filas de veinte medios bloques con color de 24 bits.
 func TestE6CoverCaptureDrawsTheCover(t *testing.T) {
 	block := e6Captures(t)[4]
+	initials := "┌" + strings.Repeat("─", playerArtWidth-2) + "┐"
 	rows := 0
 	for _, line := range block {
 		blocks := strings.Count(line, "▀")
@@ -105,14 +106,14 @@ func TestE6CoverCaptureDrawsTheCover(t *testing.T) {
 			continue
 		}
 		rows++
-		if blocks != 10 {
-			t.Fatalf("la fila %d de la carátula dibuja %d medios bloques; se esperaban 10: %q", rows, blocks, line)
+		if blocks != playerArtWidth {
+			t.Fatalf("la fila %d de la carátula dibuja %d medios bloques; se esperaban %d: %q", rows, blocks, playerArtWidth, line)
 		}
-		if strings.Contains(line, "EC") || strings.Contains(line, "┌────────┐") {
+		if strings.Contains(line, "EC") || strings.Contains(line, initials) {
 			t.Fatalf("la captura con carátula muestra las iniciales: %q", line)
 		}
 	}
-	if rows != 5 {
-		t.Fatalf("la captura con carátula dibuja %d filas; se esperaban 5", rows)
+	if rows != playerArtRows {
+		t.Fatalf("la captura con carátula dibuja %d filas; se esperaban %d", rows, playerArtRows)
 	}
 }

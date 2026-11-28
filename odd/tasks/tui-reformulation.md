@@ -316,8 +316,6 @@ Buscar: escribe para buscar                                                     
 │                       │ │                                                             │ │                            │
 │                       │ │                                                             │ │                            │
 │                       │ │                                                             │ │                            │
-│                       │ │                                                             │ │                            │
-│                       │ │                                                             │ │                            │
 │                       │ │                                                             │ │CONTEXTO                    │
 │                       │ │                                                             │ │Rock Chileno                │
 │                       │ │                                                             │ │⇄ activado · ↻ todo         │
@@ -325,16 +323,18 @@ Buscar: escribe para buscar                                                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                                                                                                                         
 ├─ ▶ Reproduciendo  ▸  ⇄ activado  ▸  ↻ todo  ▸  Volumen 85% ──────────────────────────────────────────────────────────┤
-│                                                                                                                      │
-│  ┌────────┐  Estrechez de Corazón                                                                                    │
-│  │        │  Los Prisioneros                                                                                         │
-│  │   EC   │  La Cultura de la Basura                                                                                 │
-│  │        │                                                                                                          │
-│  └────────┘                                                                                                          │
-│              0:00 ╸─────────────────── 6:21                                                                          │
-│                                                                                                                      │
-│              Lista: Rock Chileno                                                                                     │
-│                                                                                                                      │
+│                        Estrechez de Corazón                                                                          │
+│  ┌──────────────────┐  Los Prisioneros                                                                               │
+│  │                  │  La Cultura de la Basura                                                                       │
+│  │                  │  0:00 / 6:21 (-6:21)                                                                           │
+│  │                  │  ╸─────────────────────────────────────────────────────────────────────────────────────────────│
+│  │                  │                                                                                                │
+│  │        EC        │                                                                                                │
+│  │                  │                                                                                                │
+│  │                  │                                                                                                │
+│  │                  │                                                                                                │
+│  └──────────────────┘                                                                                                │
+│                        Lista: Rock Chileno                                                                           │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -356,20 +356,20 @@ Rock Chileno · 42 canciones
 ────────────────────────────────────────────────────────────────────────────────
                                                                                 
 ├─ ▶ Reproduciendo  ▸  ⇄ activado  ▸  ↻ todo  ▸  Volumen 85% ──────────────────┤
+│  Estrechez de Corazón                                                        │
+│  Los Prisioneros                                                             │
+│  La Cultura de la Basura                                                     │
+│  0:00 / 6:21 (-6:21)                                                         │
+│  ╸───────────────────────────────────────────────────────────────────────────│
 │                                                                              │
-│  ┌────────┐  Estrechez de Corazón                                            │
-│  │        │  Los Prisioneros                                                 │
-│  │   EC   │  La Cultura de la Basura                                         │
-│  │        │                                                                  │
-│  └────────┘  0:00 ╸─────────────────── 6:21                                  │
 │                                                                              │
-│              Lista: Rock Chileno                                             │
+│  Lista: Rock Chileno                                                         │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Después con carátula — 120×34
 
-La carátula real sustituye al bloque de iniciales dentro de la misma ranura. Se dibuja con una imagen de dos tonos para que el medio bloque se lea en texto plano; las pruebas de la etapa comprueban las cinco filas de diez medios bloques `▀` con primer plano y fondo de 24 bits.
+La carátula real sustituye al bloque de iniciales dentro de la misma ranura. Se dibuja con una imagen de dos tonos para que el medio bloque se lea en texto plano; las pruebas de la etapa comprueban las diez filas de veinte medios bloques `▀` con primer plano y fondo de 24 bits, y el título, el tiempo, la barra y el contexto repartidos alrededor de la imagen.
 
 ```
 Pulso                                                                                                            playing
@@ -386,8 +386,6 @@ Search: type to search                                                          
 │                       │ │                                                             │ │                            │
 │                       │ │                                                             │ │                            │
 │                       │ │                                                             │ │                            │
-│                       │ │                                                             │ │                            │
-│                       │ │                                                             │ │                            │
 │                       │ │                                                             │ │CONTEXT                     │
 │                       │ │                                                             │ │Rock Chileno                │
 │                       │ │                                                             │ │⇄ off · ↻ off               │
@@ -395,15 +393,17 @@ Search: type to search                                                          
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                                                                                                                         
 ├─ ▶ Playing  ▸  ⇄ off  ▸  ↻ off  ▸  Volume 37% ───────────────────────────────────────────────────────────────────────┤
-│                                                                                                                      │
-│  ▀▀▀▀▀▀▀▀▀▀  Estrechez de Corazón                                                                                    │
-│  ▀▀▀▀▀▀▀▀▀▀  Los Prisioneros                                                                                         │
-│  ▀▀▀▀▀▀▀▀▀▀  La Cultura de la Basura                                                                                 │
-│  ▀▀▀▀▀▀▀▀▀▀                                                                                                          │
-│  ▀▀▀▀▀▀▀▀▀▀                                                                                                          │
-│              0:00 ╸─────────────────── 6:21                                                                          │
-│                                                                                                                      │
-│                                                                                                                      │
+│                        Estrechez de Corazón                                                                          │
+│  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  Los Prisioneros                                                                               │
+│  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  La Cultura de la Basura                                                                       │
+│  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  0:00 / 6:21 (-6:21)                                                                           │
+│  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  ╸─────────────────────────────────────────────────────────────────────────────────────────────│
+│  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                                │
+│  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                                │
+│  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                                │
+│  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                                │
+│  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                                │
+│  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                                │
 │                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
