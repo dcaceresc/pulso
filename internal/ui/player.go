@@ -575,6 +575,11 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.cancelled:
 		case msg.stale || m.coverSixelWanted() != msg.key:
 			m.sixel.painted, m.sixel.pending = "", nil
+			// Una salida restaura el terminal: no se repinta lo que ya no está.
+			if m.quit || m.ctx.Err() != nil {
+				return m, nil
+			}
+			return m, coverSixelRepaint()
 		default:
 			m.sixel.emitted = msg.key
 		}

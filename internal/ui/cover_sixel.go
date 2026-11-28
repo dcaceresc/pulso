@@ -256,6 +256,14 @@ func (m *playerModel) coverSixelWanted() string {
 	return m.sixel.wanted
 }
 
+// coverSixelRepaint pide al marco un repintado completo: borra la pantalla y la
+// vuelve a dibujar, así se reescriben las celdas de la ranura. No garantiza que un
+// terminal que guarde los píxeles aparte de las celdas los borre; eso queda en sus
+// manos y como mucho se ve una imagen vieja durante un cuadro.
+func coverSixelRepaint() tea.Cmd {
+	return func() tea.Msg { return tea.ClearScreen() }
+}
+
 // coverSixelEmit escribe la imagen en la ranura una sola vez por cambio: al
 // cambiar de pista, al cambiar el tamaño de la ventana y al cambiar el tamaño
 // de la imagen. No se escribe en cada repintado porque Bubble Tea, en la

@@ -1029,21 +1029,29 @@ func (w *coverSixelWriter) Write(p []byte) (int, error) {
 // TestCoverSixelChecksTheScreenAroundTheWrite fija la comprobación antes y después de escribir.
 func TestCoverSixelChecksTheScreenAroundTheWrite(t *testing.T) {
 	help := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}
-	for _, during := range []func(*playerModel){
-		func(m *playerModel) { m.Update(help) }, func(m *playerModel) { m.quitApp() },
+	for _, tt := range []struct {
+		during  func(*playerModel)
+		repaint bool
+	}{
+		{func(m *playerModel) { m.Update(help) }, true},
+		{func(m *playerModel) { m.quitApp() }, false},
 	} {
 		m, _ := coverSixelPlayer(t, 120, 40)
 		playerViewRows(t, m, 120, 40)
-		writer := &coverSixelWriter{during: func() { during(m) }}
+		writer := &coverSixelWriter{during: func() { tt.during(m) }}
 		m.sixel.out = writer
 		message := m.coverSixelEmit()()
 		if msg, ok := message.(coverSixelMsg); !ok || !msg.stale || msg.err != nil {
 			t.Fatalf("a changed screen was not reported as stale: %#v", message)
 		}
-		model, _ := m.Update(message)
+		model, cmd := m.Update(message)
+		repaint := false
+		if cmd != nil {
+			repaint = reflect.TypeOf(cmd()) == reflect.TypeOf(tea.ClearScreen())
+		}
 		stale := model.(*playerModel)
-		if writer.written.Len() == 0 || stale.sixel.emitted != "" || stale.sixel.pending != nil || stale.sixel.painted != "" {
-			t.Fatalf("a changed screen was not respected: wrote=%d emitted=%q", writer.written.Len(), stale.sixel.emitted)
+		if repaint != tt.repaint || writer.written.Len() == 0 || stale.sixel.emitted != "" || stale.sixel.pending != nil || stale.sixel.painted != "" {
+			t.Fatalf("a changed screen was not respected: repaint=%v wrote=%d emitted=%q", repaint, writer.written.Len(), stale.sixel.emitted)
 		}
 	}
 
