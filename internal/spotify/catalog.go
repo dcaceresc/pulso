@@ -20,6 +20,10 @@ const (
 	spotifyAPIURL = "https://api.spotify.com"
 	// Consumers advance offsets by this page size, not by the number of playable items.
 	CatalogPageSize = 10
+	// CoverWidth es el ancho de la carátula en celdas de la caja del reproductor.
+	// Elegir con él la imagen que la cubre evita descargar 640 px para dibujar
+	// diez columnas; la caja toma su ranura de aquí, así no hay dos números.
+	CoverWidth = 10
 )
 
 var (
@@ -70,13 +74,73 @@ func (p spotifyPage[T]) more(offset int) bool {
 	return len(p.Items) > 0 && p.Next != "" && offset <= math.MaxInt-2*CatalogPageSize
 }
 
+// Image es una carátula de álbum con el tamaño que Spotify publica, en píxeles.
+// La misma forma se lee en la pista y en la consulta estrecha de respaldo.
+type Image struct {
+	URL    string `json:"url"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
+// spotifyAlbum son las carátulas del álbum de una pista. Es el único campo del
+// álbum que el reproductor dibuja, así que el resto no se declara.
+type spotifyAlbum struct {
+	Images []Image `json:"images"`
+}
+
 type spotifyTrack struct {
 	Name    string `json:"name"`
 	URI     string `json:"uri"`
 	Artists []struct {
 		Name string `json:"name"`
 	} `json:"artists"`
-	Playable *bool `json:"is_playable"`
+	Album    spotifyAlbum `json:"album"`
+	Playable *bool        `json:"is_playable"`
+}
+
+// CoverImage elige la carátula de una pista entre las imágenes que la respuesta
+// ya trae: la más pequeña que alcanza el ancho de la ranura en celdas y, cuando
+// ninguna llega, la más grande. Ante dos anchos iguales gana la primera imagen
+// que los declara, para que la elección sea siempre la misma.
+func CoverImage(images []Image, minWidth int) string {
+	smallest, largest := "", ""
+	smallestWidth, largestWidth := 0, 0
+	for _, image := range images {
+		if image.URL == "" {
+			continue
+		}
+		if largest == "" || image.Width > largestWidth {
+			largest, largestWidth = image.URL, image.Width
+		}
+		if image.Width < minWidth {
+			continue
+		}
+		if smallest == "" || image.Width < smallestWidth {
+			smallest, smallestWidth = image.URL, image.Width
+		}
+	}
+	if smallest != "" {
+		return smallest
+	}
+	return largest
+}
+
+// TrackCover lee la carátula de una pista que ninguna página cargada trajo. Es
+// una sola consulta estrecha al objeto de la pista, con los permisos de lectura
+// que la sesión ya tiene: la caja la usa cuando lo que suena no está ni en la
+// lista abierta ni en los resultados de una búsqueda.
+func (c *Catalog) TrackCover(ctx context.Context, uri string) (string, error) {
+	id := spotifyURIID(uri, "track")
+	if id == "" {
+		return "", errSpotifyTrackURI
+	}
+	var response struct {
+		Album spotifyAlbum `json:"album"`
+	}
+	if err := c.request(ctx, "/v1/tracks/"+id+"?fields=album.images", &response, false); err != nil {
+		return "", err
+	}
+	return CoverImage(response.Album.Images, CoverWidth), nil
 }
 
 func (c *Catalog) Search(ctx context.Context, query string, offset int) ([]Item, bool, error) {

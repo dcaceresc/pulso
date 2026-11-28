@@ -85,7 +85,8 @@ const (
 	playerBoxWide    = 10 // Filas interiores desde 100 columnas.
 	playerBoxCompact = 8  // Filas interiores desde 80 columnas.
 	playerBoxMinimum = 6  // Filas interiores por debajo de 80 columnas.
-	playerArtWidth   = 10
+	// El ancho de la ranura es el que el catálogo usa para elegir la imagen.
+	playerArtWidth   = spotify.CoverWidth
 	playerArtRows    = 5
 	playerBoxGutter  = 80 // Por debajo de este ancho la caja no gasta carátula.
 	playerBoxMinRoom = 8  // Por debajo de este ancho no hay caja que dibujar.
@@ -261,6 +262,10 @@ type playerModel struct {
 	// sentido con un catálogo que puede escribir; el resto del tiempo la acción
 	// no se anuncia ni responde.
 	saveTo savePanel
+	// covers guarda el mapa URI → URL que anuncian las páginas ya cargadas, la
+	// consulta de respaldo y la imagen decodificada: la caja dibuja la carátula
+	// cuando llega y, mientras tanto, sus iniciales.
+	covers *coverArt
 	// openBrowser presenta el enlace de aprobación; las pruebas lo reemplazan.
 	openBrowser func(string) error
 }
@@ -296,6 +301,7 @@ func NewPlayerModelWithCatalog(ctx context.Context, states <-chan soloist.State,
 	m.search = newSearchState(ctx, m.library.source)
 	m.profile = profileSourceOf(api)
 	m.saveTo.writer = playlistWriterOf(api)
+	m.covers = newCoverArt(coverSourceOf(api))
 	m.openBrowser = spotify.OpenBrowser
 	return m
 }
@@ -392,6 +398,9 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		// Una ventana que crece hasta la ranura de la carátula pide lo que antes
+		// no cabía; mientras no quepa, la petición no se hace.
+		return m, m.coverRequest()
 	case libraryAuthMsg, libraryPageMsg:
 		auth, isAuth := msg.(libraryAuthMsg)
 		// Una autorización solo instala el catálogo si la generación sigue viva.
@@ -403,14 +412,33 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.saveTo.cursor = playerIndex(m.saveTo.cursor, len(m.library.playlists))
 		// Una lista releída tras un snapshot viejo vuelve a armar la confirmación.
 		m.reloadRemoval(msg)
+		// Cada página cargada anuncia la carátula de sus pistas, así que puede ser
+		// la primera vez que la pista en reproducción tiene imagen.
+		m.covers.remember(m.library.tracks)
 		if accepted {
 			// El catálogo aprobado también trae la mitad de escritura, si la tiene.
 			m.saveTo.writer = playlistWriterOf(auth.api)
-			return m, playerCommands(cmd, m.installProfile(auth.api))
+			// Y con él la consulta de carátula que antes no podía hacerse.
+			m.covers.installSource(coverSourceOf(auth.api))
+			return m, playerCommands(cmd, m.installProfile(auth.api), m.coverRequest())
 		}
-		return m, cmd
+		return m, playerCommands(cmd, m.coverRequest())
 	case saveResultMsg, saveAuthMsg:
 		return m, m.updateSave(msg)
+	case coverURLMsg:
+		// La respuesta de la consulta de respaldo: con URL se sigue con la
+		// descarga; sin ella el intento ya quedó recordado.
+		if m.quit || m.ctx.Err() != nil {
+			break
+		}
+		if msg.err == nil && msg.url != "" {
+			m.covers.urls[msg.uri] = msg.url
+		}
+		return m, m.coverRequest()
+	case coverBytesMsg:
+		// Una descarga fallida deja las iniciales: no hay aviso ni fila de error.
+		m.covers.land(msg)
+		return m, nil
 	case playerProfileMsg:
 		if m.quit || msg.generation != m.profileGeneration || m.ctx.Err() != nil {
 			break
@@ -423,7 +451,10 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.profileName = playerText(msg.name)
 		return m, nil
 	case searchPageMsg:
-		return m, m.search.update(msg)
+		cmd := m.search.update(msg)
+		// Los resultados de la búsqueda también anuncian carátulas.
+		m.covers.remember(m.search.tracks)
+		return m, playerCommands(cmd, m.coverRequest())
 	case playerViewState:
 		if m.quit || !m.pending {
 			break
@@ -448,7 +479,7 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reconcileModes()
 		m.clampSelections()
 		// A playing session needs a second of wall time to advance its playhead.
-		return m, tea.Batch(m.awaitState(), m.armTick())
+		return m, playerCommands(m.awaitState(), m.armTick(), m.coverRequest())
 	case playerTickMsg:
 		return m, m.tick()
 	case tea.KeyMsg:
@@ -1833,6 +1864,13 @@ func playerBoxHeight(width, height int) int {
 	return playerBoxInterior(width, height) + 2
 }
 
+// playerArtSlot es la única regla de la ranura de la carátula: dibujarla y
+// pedirla usan la misma, así una ventana estrecha no descarga una imagen que
+// nunca podría pintar.
+func playerArtSlot(width, interior int) bool {
+	return width >= playerBoxGutter && interior >= playerArtRows+3
+}
+
 // playerBoxLayout reparte las filas interiores de la caja. Las filas que no
 // caben quedan en -1 y no se dibujan.
 type playerBoxLayout struct {
@@ -1944,6 +1982,30 @@ func (m *playerModel) playerBoxState(width int) string {
 	return playerEllipsis(options[len(options)-1], width)
 }
 
+// playerBoxArtLines devuelve la ranura de la carátula: la imagen ya decodificada
+// cuando llegó y, mientras no esté, el bloque de iniciales. El segundo valor dice
+// si las filas ya traen su color, porque la carátula usa 24 bits por celda.
+func (m *playerModel) playerBoxArtLines() ([]string, bool) {
+	if rows, ok := m.covers.rows(playerText(m.state.Track.URI)); ok {
+		return rows, true
+	}
+	return m.playerBoxArt(), false
+}
+
+// coverRequest pide lo que falte para dibujar la carátula de la pista en
+// reproducción. Se llama al llegar un estado, una página o un tamaño, nunca al
+// dibujar: así la primera pintura muestra las iniciales sin esperar la imagen, y
+// una ventana que no tiene ranura no descarga ni pregunta nada.
+func (m *playerModel) coverRequest() tea.Cmd {
+	if m.covers == nil || m.quit || m.playerBoxCondition() != playerBoxLive {
+		return nil
+	}
+	if !playerArtSlot(m.width, playerBoxInterior(m.width, m.height)) {
+		return nil
+	}
+	return m.covers.request(m.ctx, playerText(m.state.Track.URI))
+}
+
 // playerBoxArt devuelve el bloque de iniciales de la carátula: dos letras del
 // título mientras no haya imagen que dibujar. playerArtRows es la fuente de la
 // altura y cada cadena mide playerArtWidth celdas.
@@ -2017,10 +2079,11 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 	border += strings.Repeat("─", max(0, inner-lipgloss.Width(border)))
 	rows = append(rows, edge.Render("├")+styles.label.Render(playerFit(border, inner))+edge.Render("┤"))
 
-	hasArt := interior >= playerArtRows+3 && width >= playerBoxGutter && m.playerBoxCondition() == playerBoxLive
+	hasArt := playerArtSlot(width, interior) && m.playerBoxCondition() == playerBoxLive
 	art := []string{}
+	artColored := false
 	if hasArt {
-		art = m.playerBoxArt()
+		art, artColored = m.playerBoxArtLines()
 	}
 	left := "  "
 	if hasArt {
@@ -2056,7 +2119,13 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 		}
 		line := left
 		if hasArt && row-1 >= 0 && row-1 < len(art) {
-			line = "  " + styles.muted.Render(art[row-1]) + "  "
+			// La carátula trae su color de 24 bits por celda; las iniciales van
+			// con el color atenuado del tema.
+			cell := art[row-1]
+			if !artColored {
+				cell = styles.muted.Render(cell)
+			}
+			line = "  " + cell + "  "
 		}
 		line += playerPad(style.Render(playerEllipsis(text, textWidth)), textWidth)
 		rows = append(rows, edge.Render("│")+playerPad(line, inner)+edge.Render("│"))
