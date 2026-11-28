@@ -75,8 +75,13 @@ func TestE6CapturesMatchTheRecord(t *testing.T) {
 			}
 		}
 	}
-	if len(blocks[0]) != 34 || len(blocks[2]) != 34 || len(blocks[3]) != 24 || len(blocks[4]) != 34 {
-		t.Fatalf("alturas = %d, %d, %d, %d; se esperaban 34, 34, 24 y 34", len(blocks[0]), len(blocks[2]), len(blocks[3]), len(blocks[4]))
+	// La línea base a 80×24 dibuja sus propias filas: se fija la altura observada
+	// para que una captura recortada o inflada no pase inadvertida.
+	wantHeights := []int{34, 17, 34, 24, 34}
+	for i, want := range wantHeights {
+		if got := len(blocks[i]); got != want {
+			t.Fatalf("la captura %d tiene %d filas; se esperaban %d", i, got, want)
+		}
 	}
 
 	m := e6DeclaredWorkspace(t)
@@ -93,18 +98,21 @@ func TestE6CapturesMatchTheRecord(t *testing.T) {
 // no las iniciales: cinco filas de diez medios bloques con color de 24 bits.
 func TestE6CoverCaptureDrawsTheCover(t *testing.T) {
 	block := e6Captures(t)[4]
-	rows, cells := 0, 0
+	rows := 0
 	for _, line := range block {
-		if !strings.Contains(line, "▀") {
+		blocks := strings.Count(line, "▀")
+		if blocks == 0 {
 			continue
 		}
 		rows++
-		cells += strings.Count(line, "▀")
+		if blocks != 10 {
+			t.Fatalf("la fila %d de la carátula dibuja %d medios bloques; se esperaban 10: %q", rows, blocks, line)
+		}
 		if strings.Contains(line, "EC") || strings.Contains(line, "┌────────┐") {
 			t.Fatalf("la captura con carátula muestra las iniciales: %q", line)
 		}
 	}
-	if rows != 5 || cells != 50 {
-		t.Fatalf("la captura con carátula dibuja %d filas y %d medios bloques; se esperaban 5 y 50", rows, cells)
+	if rows != 5 {
+		t.Fatalf("la captura con carátula dibuja %d filas; se esperaban 5", rows)
 	}
 }
