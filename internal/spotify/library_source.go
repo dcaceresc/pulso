@@ -17,6 +17,10 @@ type Track struct {
 	DurationMS   int64
 	URI          string
 	Snapshot     string
+	// Cover es la URL de la carátula del álbum, elegida por CoverImage entre las
+	// imágenes que la misma respuesta ya trae. Queda vacía cuando la pista no
+	// publica ninguna, y entonces la caja dibuja sus iniciales.
+	Cover string
 }
 
 // Playlist es una fila de la barra lateral; Total es el número de pistas de la
@@ -157,5 +161,6 @@ func appendLibraryTrack(tracks []Track, track *librarySpotifyTrack) []Track {
 		return tracks
 	}
 	item := usable[0]
-	return append(tracks, Track{Name: item.Name, Artist: item.Detail, DurationMS: track.DurationMS, URI: item.URI})
+	return append(tracks, Track{Name: item.Name, Artist: item.Detail, DurationMS: track.DurationMS, URI: item.URI,
+		Cover: CoverImage(track.Album.Images, CoverWidth)})
 }
