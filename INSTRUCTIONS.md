@@ -126,14 +126,14 @@ La pantalla es un único espacio de trabajo con tres zonas y el reproductor al p
 
 El foco se mueve solo con la letra de cada zona: `l` lleva a la biblioteca, `/` a la búsqueda y `c` a la cola. Dentro del espacio de trabajo `Esc` nunca cierra Pulso: vuelve a la tabla o cancela lo enfocado; el asistente, en cambio, sí sale con `Esc`. Tampoco hay ciclo de foco ni línea de pistas al pie: cada zona tiene su tecla y `?` abre la ayuda, la única referencia de teclas, que las enumera por ámbitos —global, zonas, biblioteca, tabla y búsqueda—.
 
-El tamaño de la ventana decide la forma de la pantalla; si el alto no alcanza para la banda de su ancho, Pulso usa la forma más rica que sí quepa, nunca la más pobre.
+El tamaño de la ventana decide la forma de la pantalla; las condiciones de ancho son pisos y el alto decide: si el alto no alcanza para una banda, Pulso usa la forma siguiente más rica que sí quepa, nunca la más pobre. Por eso 120×29 usa la banda media y 100×25 la compacta.
 
 | Tamaño | Qué se ve | Reproductor | Carátula |
 | --- | --- | --- | --- |
 | ancho ≥ 120 y alto ≥ 30 | biblioteca, tabla y cola con su contexto | 10 filas interiores | sí |
-| 100 ≤ ancho < 120 y alto ≥ 26 | biblioteca y tabla; la cola se abre con `c` | 10 filas | sí |
-| 80 ≤ ancho < 100 y alto ≥ 20 | una fila con la biblioteca encima de la tabla | 8 filas | sí |
-| 40 ≤ ancho < 80 y alto ≥ 12 | la fila de la biblioteca y el reproductor, y la tabla cuando el alto deja filas para su encabezado | 6 filas | no |
+| ancho ≥ 100 y alto ≥ 26, también con más de 120 columnas si el alto no llega a la banda amplia | biblioteca y tabla; la cola se abre con `c` | 10 filas | sí |
+| ancho ≥ 80 y alto ≥ 20 | una fila con la biblioteca encima de la tabla | 8 filas | sí |
+| ancho ≥ 40 y alto ≥ 12 | la fila de la biblioteca y el reproductor, y la tabla cuando el alto deja filas para su encabezado | 6 filas | no |
 | ancho < 40 o alto < 12 | un mensaje con el tamaño mínimo, sin marco | — | — |
 
 La tabla es la que cede filas y ninguna fila desborda el ancho. En la banda mínima la caja del reproductor declara seis filas interiores y una ventana baja las recorta —a 40×12 dibuja tres— para que su borde inferior no se pierda. Solo las bandas con zonas, la amplia y la media, promueven a todo el ancho una frase de estado que no cabe en su caja —un aviso de autorización largo, por ejemplo—; en la compacta y la mínima el aviso es una fila normal y, si es más ancho que la ventana, se recorta.

@@ -126,14 +126,14 @@ The screen is one workspace with three zones and the player at the bottom:
 
 Focus moves only with the zone keys: `l` goes to the library, `/` to search and `c` to the queue. Inside the workspace `Esc` never quits Pulso: it returns to the table or cancels what has the focus; the wizard, in turn, does quit on `Esc`. There is no focus cycle and no key hint line at the bottom either: every zone has its letter, and `?` opens help, the only key reference, which lists them by scope — global, zones, library, table and search.
 
-The window size decides the shape of the screen; when the height misses its width's band, Pulso uses the richest shape that does fit, never the poorest.
+The window size decides the shape of the screen; the width conditions are floors and the height decides: when the height misses a band, Pulso uses the next richer shape that does fit, never the poorest. That is why 120×29 uses the medium band and 100×25 the compact one.
 
 | Size | What you see | Player | Cover |
 | --- | --- | --- | --- |
 | width ≥ 120 and height ≥ 30 | library, table and queue with its context | 10 interior rows | yes |
-| 100 ≤ width < 120 and height ≥ 26 | library and table; the queue opens with `c` | 10 rows | yes |
-| 80 ≤ width < 100 and height ≥ 20 | one library row above the table | 8 rows | yes |
-| 40 ≤ width < 80 and height ≥ 12 | the library row and the player, and the table when the height leaves rows for its header | 6 rows | no |
+| width ≥ 100 and height ≥ 26, also above 120 columns when the height misses the wide band | library and table; the queue opens with `c` | 10 rows | yes |
+| width ≥ 80 and height ≥ 20 | one library row above the table | 8 rows | yes |
+| width ≥ 40 and height ≥ 12 | the library row and the player, and the table when the height leaves rows for its header | 6 rows | no |
 | width < 40 or height < 12 | one message with the minimum size, no frame | — | — |
 
 The table is the zone that gives up rows and no row overflows the width. In the minimum band the player box declares six interior rows and a low window crops them — at 40×12 it draws three — so its bottom border is never lost. Only the bands with zones, wide and medium, promote a session sentence that does not fit inside its box — a long authorization notice, for example — to the full width; in the compact and minimum bands the notice is an ordinary row and, when it is wider than the window, it is clipped.

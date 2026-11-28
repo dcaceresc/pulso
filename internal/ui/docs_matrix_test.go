@@ -114,11 +114,17 @@ func docsCondition(lang string, index int) string {
 	case 0:
 		return fmt.Sprintf("%s ≥ %d %s %s ≥ %d", width, playerFullWidth, and, height, playerFullHeight)
 	case 1:
-		return fmt.Sprintf("%d ≤ %s < %d %s %s ≥ %d", playerMediumWidth, width, playerFullWidth, and, height, playerMediumHeight)
+		// El ancho es un piso: la banda media también recoge las ventanas anchas
+		// cuyo alto no llega a la banda amplia, y la matriz lo dice.
+		medium := fmt.Sprintf("%s ≥ %d %s %s ≥ %d", width, playerMediumWidth, and, height, playerMediumHeight)
+		if lang == "es" {
+			return medium + fmt.Sprintf(", también con más de %d columnas si el alto no llega a la banda amplia", playerFullWidth)
+		}
+		return medium + fmt.Sprintf(", also above %d columns when the height misses the wide band", playerFullWidth)
 	case 2:
-		return fmt.Sprintf("%d ≤ %s < %d %s %s ≥ %d", playerCompactWidth, width, playerMediumWidth, and, height, playerCompactHeight)
+		return fmt.Sprintf("%s ≥ %d %s %s ≥ %d", width, playerCompactWidth, and, height, playerCompactHeight)
 	case 3:
-		return fmt.Sprintf("%d ≤ %s < %d %s %s ≥ %d", playerMinWidth, width, playerCompactWidth, and, height, playerMinHeight)
+		return fmt.Sprintf("%s ≥ %d %s %s ≥ %d", width, playerMinWidth, and, height, playerMinHeight)
 	}
 	return fmt.Sprintf("%s < %d %s %s < %d", width, playerMinWidth, or, height, playerMinHeight)
 }
@@ -259,17 +265,19 @@ func TestDocsMatrixMatchesTheLayout(t *testing.T) {
 		}
 	}
 
-	// La escalera: un alto que no llega a la banda de su ancho baja a la
-	// siguiente forma más rica que cabe, nunca a la más pobre.
+	// La escalera: el ancho es un piso y el alto decide, así que un alto que no
+	// llega a la banda de su ancho baja a la siguiente forma más rica que cabe,
+	// nunca a la más pobre. Los tres tamaños casi-límite son los que la matriz no
+	// describe con una cota superior y los documentos nombran como ejemplo.
 	for _, probe := range []struct {
 		width, height, band int
 	}{
 		{120, 30, playerBandWide},
 		{120, 29, playerBandMedium},
 		{119, 40, playerBandMedium},
-		{100, 26, playerBandMedium},
+		{100, 25, playerBandCompact},
 		{99, 40, playerBandCompact},
-		{80, 20, playerBandCompact},
+		{80, 19, playerBandMinimum},
 		{79, 24, playerBandMinimum},
 		{40, 12, playerBandMinimum},
 		{39, 12, playerBandInsufficient},

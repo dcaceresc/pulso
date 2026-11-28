@@ -116,14 +116,14 @@ Below 40 columns or 12 rows one centred row says `Minimum 40×12 · now 39×11`;
 
 ## Sizes (one matrix)
 
-The first band in the ladder that fits wins, so a height that misses its width's band falls to the next richer shape that fits, never to the poorest. This matrix is the single source of truth and is copied from the feature document.
+The width conditions are floors and the height decides, so the first band in the ladder whose floor the window reaches wins: a height that misses a band falls to the next richer shape that fits, never to the poorest. That is why 120×29 uses the medium band and 100×25 the compact one. This matrix is the single source of truth and is copied from the feature document.
 
 | Band | Condition | Zones | Player box | Cover | Proof |
 | --- | --- | --- | --- | --- | --- |
 | Wide | width ≥ 120 and height ≥ 30 | library + table + queue/context | 10 interior rows | yes | 140×40, 120×34 |
-| Medium | 100 ≤ width < 120 and height ≥ 26 | library + table; queue with `c` | 10 rows | yes | 100×30 |
-| Compact | 80 ≤ width < 100 and height ≥ 20 | library switcher + table | 8 rows | yes | 80×24 |
-| Minimum | 40 ≤ width < 80 and height ≥ 12 | library switcher and the player box, and the table when the height leaves rows for its header | 6 rows | no | 40×12, 79×23 |
+| Medium | width ≥ 100 and height ≥ 26, also above 120 columns when the height misses the wide band | library + table; queue with `c` | 10 rows | yes | 100×30 |
+| Compact | width ≥ 80 and height ≥ 20 | library switcher + table | 8 rows | yes | 80×24 |
+| Minimum | width ≥ 40 and height ≥ 12 | library switcher and the player box, and the table when the height leaves rows for its header | 6 rows | no | 40×12, 79×23 |
 | Insufficient | width < 40 or height < 12 | size message, no frame | — | — | 39×11 |
 
 Rules that do not change with the band: the status line always lives on the player box's top border; the box never grows past its band height and, when the window is short, is cropped below it so the bottom border is never lost; the table cedes its rows first; no row overflows the width.
