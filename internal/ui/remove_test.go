@@ -642,7 +642,7 @@ func TestRemoveKeepsPreExistingKeys(t *testing.T) {
 		{"anterior", playerViewKey("b"), saveTrackState(), []playerCommand{{Name: "skip_prev"}}},
 		{"más volumen", playerViewKey("+"), saveTrackState(), []playerCommand{{Name: "set_volume", Volume: 55}}},
 		{"menos volumen", playerViewKey("-"), saveTrackState(), []playerCommand{{Name: "set_volume", Volume: 45}}},
-		{"aleatorio de la lista", playerViewKey("s"), saveTrackState(), []playerCommand{{Name: "play_playlist_shuffle", URI: "spotify:playlist:rock"}}},
+		{"aleatorio", playerViewKey("s"), saveTrackState(), []playerCommand{{Name: "set_shuffle", Shuffle: true}, {Name: "get_state"}}},
 		{"repetición", playerViewKey("r"), saveTrackState(), []playerCommand{{Name: "set_repeat", Repeat: "context"}, {Name: "get_state"}}},
 		{"reproducir la fila", tea.KeyMsg{Type: tea.KeyEnter}, saveTrackState(), []playerCommand{{Name: "play", URI: "spotify:track:one"}}},
 	} {

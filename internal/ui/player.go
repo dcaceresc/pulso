@@ -751,23 +751,18 @@ func (m *playerModel) activateSelection(key tea.KeyMsg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-// playlistShuffleURI nombra la lista que `s` mezcla en la zona enfocada: la
-// seleccionada en la biblioteca o la abierta en la tabla. Fuera de la
-// biblioteca devuelve vacío y `s` alterna el aleatorio de la reproducción.
+// playlistShuffleURI nombra la lista que `s` mezcla desde la biblioteca. Fuera
+// de la biblioteca devuelve vacío y `s` alterna el aleatorio de la reproducción:
+// la lista abierta en la tabla no cambia el significado de la tecla.
 func (m *playerModel) playlistShuffleURI() string {
-	var uri string
-	switch {
-	case m.focus == playerFocusSidebar:
-		if playlist, ok := m.library.selectedPlaylist(); ok {
-			uri = playlist.URI
-		}
-	case m.focus == playerFocusTable && !m.search.active && m.library.open():
-		uri = m.library.playlist.URI
+	if m.focus != playerFocusSidebar {
+		return ""
 	}
-	if soloist.IsPlaylistURI(uri) {
-		return uri
+	playlist, ok := m.library.selectedPlaylist()
+	if !ok || !soloist.IsPlaylistURI(playlist.URI) {
+		return ""
 	}
-	return ""
+	return playlist.URI
 }
 
 // activatePlaylist abre la lista seleccionada en la biblioteca o inicia la
@@ -1673,19 +1668,17 @@ func (m *playerModel) View() string {
 	// todo el ancho, directamente sobre el reproductor.
 	overflow := playerSentenceRows(m.playerOverflowRows(styles), width)
 	// El reparto cede en este orden: la caja del reproductor, la fila de
-	// contexto, las frases de estado, las filas de la tabla y por último el pie
-	// retirado, que solo deja en blanco la fila que ocupaba. Las reglas también
-	// ceden antes que el cuerpo mínimo.
+	// contexto, las frases de estado y las filas de la tabla. Las reglas también
+	// ceden antes que el cuerpo mínimo. Sin pie, sus filas vuelven a la tabla.
 	rules := 3
-	reserve := m.footerRoom(width, len(status))
-	room := height - 2 - len(play) - len(status) - len(overflow) - rules - reserve
+	room := height - 2 - len(play) - len(status) - len(overflow) - rules
 	for room < playerBodyMinimum(band) && (rules > 0 || len(status) > 0) {
 		if rules > 0 {
 			rules--
 		} else {
 			status = status[:len(status)-1]
 		}
-		room = height - 2 - len(play) - len(status) - len(overflow) - rules - reserve
+		room = height - 2 - len(play) - len(status) - len(overflow) - rules
 	}
 	// En la banda mínima la tabla entra antes que el aviso de la sesión: si sus
 	// filas dejan la tabla sin encabezado, el aviso cede. Si tampoco así alcanza
@@ -1696,7 +1689,7 @@ func (m *playerModel) View() string {
 	}
 	for band == playerBandMinimum && room < playerMinimumTableBody && len(status) > noticeRows {
 		status = status[:len(status)-1]
-		room = height - 2 - len(play) - len(status) - len(overflow) - rules - reserve
+		room = height - 2 - len(play) - len(status) - len(overflow) - rules
 	}
 	room = max(0, room)
 	body, _ := m.bodyRows(width, styles, room)
@@ -1723,6 +1716,16 @@ func (m *playerModel) View() string {
 	// Never stack the region rule on top of a table rule.
 	if rules >= 1 && len(body) > 0 && !playerLastRowIsRule(rows, width) {
 		rows = append(rows, rule)
+	}
+	// El hueco que dejó el pie retirado se dibuja en blanco sobre la caja y
+	// debajo de la frase promovida: el marco llena la ventana y el reproductor
+	// sigue al pie, sin separar la frase de la caja.
+	tail := len(play) + len(status) + len(overflow)
+	if rules >= 2 && len(status) > 0 {
+		tail++
+	}
+	for fill := height - len(rows) - tail; fill > 0; fill-- {
+		rows = append(rows, playerRenderRow(playerRow{}, width))
 	}
 	// La frase promovida va una sola vez, a todo el ancho y pegada a la caja.
 	for _, row := range overflow {
@@ -2135,17 +2138,6 @@ func (m *playerModel) statusRows() []playerRow {
 		return []playerRow{{text: notice}}
 	}
 	return nil
-}
-
-// footerRoom es la fila que ocupaba el pie retirado, en blanco: la geometría de
-// las bandas no cambia al quitar la línea de pistas. Solo se reserva donde el
-// pie existía, así el marco de 40×12 queda como estaba.
-func (m *playerModel) footerRoom(width, noticeRows int) int {
-	fixed := 2 + playerBoxHeight(width, m.height) + noticeRows + 1 + playerMinBodyRoom
-	if m.height-fixed <= 0 {
-		return 0
-	}
-	return 1
 }
 
 // quitApp sale de la aplicación: `q` sin campo de texto y `Ctrl+C` siempre.

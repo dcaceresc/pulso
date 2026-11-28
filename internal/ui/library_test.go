@@ -382,10 +382,11 @@ func TestLibraryPlaysPlaylistAndTrackForSession(t *testing.T) {
 	}
 }
 
-// TestShuffleIsScopedByZone fija el único significado de `s`: en la biblioteca
-// mezcla la lista seleccionada o abierta y fuera de ella alterna el aleatorio de
-// la reproducción. `S` ya no existe y `p` tampoco.
-func TestShuffleIsScopedByZone(t *testing.T) {
+// TestE3ShuffleIsScopedByZoneOnly fija el único significado de `s`, tal como lo
+// declara la tabla de controles: en la biblioteca mezcla la lista seleccionada y
+// en cualquier otra zona —también en la tabla con una lista abierta— alterna el
+// aleatorio de la reproducción. `S` ya no existe y `p` tampoco.
+func TestE3ShuffleIsScopedByZoneOnly(t *testing.T) {
 	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: func(context.Context, string, int) (spotify.PlaylistItemsPage, error) {
 		return spotify.PlaylistItemsPage{}, errPlaylistUnavailable
 	}}
@@ -410,7 +411,7 @@ func TestShuffleIsScopedByZone(t *testing.T) {
 		default:
 		}
 	}
-	// Fuera de la biblioteca `s` es el aleatorio de la reproducción.
+	// En la tabla `s` es el aleatorio de la reproducción.
 	check("s", playerCommand{Name: "set_shuffle", Shuffle: true}, playerCommand{Name: "get_state"})
 	// En la biblioteca `s` mezcla la lista seleccionada.
 	m, _ = m.Update(playerViewKey("l"))
@@ -418,11 +419,15 @@ func TestShuffleIsScopedByZone(t *testing.T) {
 	// `S` ya no es un enlace y `p` tampoco.
 	check("S")
 	check("p")
-	// Con la lista abierta y el foco en la tabla, `s` sigue siendo la lista.
+	// Con la lista abierta y el foco en la tabla, `s` vuelve a la reproducción:
+	// la lista abierta no le da un tercer significado a la tecla.
 	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = librarySettle(t, m, cmd)
+	check("s", playerCommand{Name: "set_shuffle", Shuffle: true}, playerCommand{Name: "get_state"})
+	// La misma tecla en la biblioteca sigue mezclando la lista abierta.
+	m, _ = m.Update(playerViewKey("l"))
 	check("s", playerCommand{Name: "play_playlist_shuffle", URI: "spotify:playlist:rock"})
-	// La tabla con la cola a la vista vuelve al aleatorio de la reproducción.
+	// Y la tabla con la cola a la vista no cambia nada: sigue siendo reproducción.
 	check("c")
 	check("s", playerCommand{Name: "set_shuffle", Shuffle: true}, playerCommand{Name: "get_state"})
 }

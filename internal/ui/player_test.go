@@ -1497,17 +1497,43 @@ func TestPlayerViewQueueKeyShowsTheQueue(t *testing.T) {
 	playerViewText(t, m, "UP NEXT", "CONTEXT")
 }
 
-// TestPlayerViewRetiredKeysDoNothing fija la tabla de duplicados que
-// desaparece: `Tab`, `Shift+Tab`, `F1`, `p` y `S` no hacen nada en ninguna zona.
+// playerViewRetiredZone builds the workspace in one of the four reachable
+// states —table, queue, open playlist, library and search results— and returns
+// the Soloist channel, so a key that only emits a command cannot pass as inert.
+func playerViewRetiredZone(t *testing.T, zone string) (tea.Model, chan playerCommand) {
+	t.Helper()
+	source := &libraryFake{playlists: libraryPlaylistsFixture(), items: libraryTracksFixture(3), search: searchTracksFixture(3)}
+	m, out, _ := libraryNewPlayer(t, 120, 40, preferences{}, playerState{
+		Connected: true, SessionID: 4, Status: "paused", Volume: 50, PositionMS: 60000,
+		Track: playerTrack{Title: "Song", DurationMS: 200000},
+	}, source, nil, "")
+	switch zone {
+	case "table":
+	case "queue":
+		m, _ = m.Update(playerViewKey("c"))
+	case "playlist":
+		var cmd tea.Cmd
+		m, cmd = libraryOpenFirst(t, m)
+		m = librarySettle(t, m, cmd)
+	case "library":
+		m, _ = m.Update(playerViewKey("l"))
+	case "results":
+		m = searchSubmit(t, m, "tren")
+	default:
+		t.Fatalf("unknown zone %q", zone)
+	}
+	return m, out
+}
+
+// TestPlayerViewRetiredKeysDoNothing fija la tabla de duplicados que desaparece:
+// `Tab`, `Shift+Tab`, `F1`, `p` y `S` no hacen nada en ninguna de las cuatro
+// zonas y tampoco emiten un comando de reproducción.
 func TestPlayerViewRetiredKeysDoNothing(t *testing.T) {
-	for _, zone := range []string{"", "c", "l"} {
+	for _, zone := range []string{"queue", "playlist", "library", "results"} {
 		for _, key := range []tea.KeyMsg{{Type: tea.KeyTab}, {Type: tea.KeyShiftTab},
 			{Type: tea.KeyF1}, playerViewKey("p"), playerViewKey("S")} {
 			t.Run(zone+"/"+key.String(), func(t *testing.T) {
-				m := playerZoneModel(t, "en")
-				if zone != "" {
-					m, _ = m.Update(playerViewKey(zone))
-				}
+				m, out := playerViewRetiredZone(t, zone)
 				player := m.(*playerModel)
 				focus := player.focus
 				before := ansi.Strip(m.View())
@@ -1525,8 +1551,61 @@ func TestPlayerViewRetiredKeysDoNothing(t *testing.T) {
 				if got := ansi.Strip(after.View()); got != before {
 					t.Fatalf("%q changed the workspace:\n%s", key.String(), got)
 				}
+				// El canal se vacía: una tecla que solo emitiera un comando falla aquí.
+				select {
+				case got := <-out:
+					t.Fatalf("%q sent %+v", key.String(), got)
+				default:
+				}
 			})
 		}
+	}
+}
+
+// TestPlayerViewTransportIsGlobal prueba que las teclas de la caja del
+// reproductor valen desde la tabla, la cola y la biblioteca: cada una envía su
+// único comando y ningún otro.
+func TestPlayerViewTransportIsGlobal(t *testing.T) {
+	for _, zone := range []string{"table", "queue", "library"} {
+		t.Run(zone, func(t *testing.T) {
+			keys := []struct {
+				name string
+				key  tea.KeyMsg
+				want playerCommand
+			}{
+				{"space", tea.KeyMsg{Type: tea.KeySpace}, playerCommand{Name: "play"}},
+				{"n", playerViewKey("n"), playerCommand{Name: "skip_next"}},
+				{"b", playerViewKey("b"), playerCommand{Name: "skip_prev"}},
+				{"+", playerViewKey("+"), playerCommand{Name: "set_volume", Volume: 55}},
+				{"-", playerViewKey("-"), playerCommand{Name: "set_volume", Volume: 45}},
+				{"left", tea.KeyMsg{Type: tea.KeyLeft}, playerCommand{Name: "seek", PositionMS: 50000}},
+				{"right", tea.KeyMsg{Type: tea.KeyRight}, playerCommand{Name: "seek", PositionMS: 70000}},
+			}
+			for _, tt := range keys {
+				t.Run(tt.name, func(t *testing.T) {
+					m, out := playerViewRetiredZone(t, zone)
+					if _, cmd := m.Update(tt.key); cmd != nil {
+						t.Fatalf("%q scheduled work", tt.key.String())
+					}
+					want := tt.want
+					want.SessionID = 4
+					select {
+					case got := <-out:
+						if got != want {
+							t.Fatalf("%q sent %+v, want %+v", tt.key.String(), got, want)
+						}
+					default:
+						t.Fatalf("%q sent no command from the %s zone", tt.key.String(), zone)
+					}
+					// Nada más sale del canal: una tecla, un comando.
+					select {
+					case got := <-out:
+						t.Fatalf("%q sent a second command %+v", tt.key.String(), got)
+					default:
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -1645,28 +1724,46 @@ func TestPlayerViewRendersNoFooter(t *testing.T) {
 	}
 }
 
-// TestPlayerViewKeepsItsFrameWhenTheFooterGoes fija que el espacio del pie
-// retirado queda en blanco: la tabla no crece para ocuparlo y la caja conserva
-// sus dos bordes en cada banda.
-func TestPlayerViewKeepsItsFrameWhenTheFooterGoes(t *testing.T) {
+// TestPlayerViewFillsTheWindow fija que el marco ocupa el alto de la ventana en
+// las bandas que lo dibujan —el reproductor al pie— y que ninguna talla dibuja
+// más filas que su alto.
+func TestPlayerViewFillsTheWindow(t *testing.T) {
 	m := playerZoneModel(t, "en")
 	for _, tt := range []struct {
 		width, height int
+		full          bool
 	}{
-		{140, 40}, {120, 34}, {100, 30}, {80, 24}, {79, 23}, {40, 12},
+		{140, 40, true}, {120, 34, true}, {100, 30, true}, {80, 24, true}, {79, 23, true},
+		{40, 12, true}, {39, 11, false}, {20, 8, false}, {1, 1, false},
 	} {
 		t.Run(fmt.Sprintf("%dx%d", tt.width, tt.height), func(t *testing.T) {
+			// playerViewRows ya falla si una fila desborda o si sobran filas.
 			rows := playerViewRows(t, m, tt.width, tt.height)
-			view := strings.Join(rows, "\n")
-			bottom := "└" + strings.Repeat("─", tt.width-2) + "┘"
-			if !strings.Contains(view, bottom) {
-				t.Fatalf("the %dx%d box lost its bottom border:\n%s", tt.width, tt.height, view)
+			if !tt.full {
+				return
 			}
-			if len(rows) >= tt.height {
-				t.Fatalf("the %dx%d view filled the frame the retired footer used to leave blank: %d rows", tt.width, tt.height, len(rows))
+			if len(rows) != tt.height {
+				t.Fatalf("the %dx%d frame draws %d rows, want the whole window", tt.width, tt.height, len(rows))
+			}
+			bottom := "└" + strings.Repeat("─", tt.width-2) + "┘"
+			if !strings.Contains(rows[len(rows)-1], bottom) {
+				t.Fatalf("the %dx%d box is not at the foot of the window:\n%s", tt.width, tt.height, strings.Join(rows, "\n"))
 			}
 		})
 	}
+	// El aviso de la sesión ocupa su fila y el marco sigue llenando la ventana.
+	t.Run("con aviso", func(t *testing.T) {
+		noticed, _ := playerViewModel(t, 120, 40, playerState{Connected: true, Notice: "Retrying Soloist"})
+		for _, size := range []struct{ width, height int }{
+			{140, 40}, {120, 34}, {100, 30}, {80, 24}, {79, 23},
+		} {
+			rows := playerViewRows(t, noticed, size.width, size.height)
+			if len(rows) != size.height {
+				t.Fatalf("the %dx%d frame with a notice draws %d rows, want the whole window", size.width, size.height, len(rows))
+			}
+			playerViewText(t, noticed, "Retrying Soloist")
+		}
+	})
 }
 
 // playerProfileFake sirve el nombre de la cuenta y cuenta sus peticiones, para
