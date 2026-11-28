@@ -20,8 +20,9 @@ import (
 )
 
 // La carátula ocupa la ranura de la caja: medio bloque por celda, con el píxel
-// de arriba como color de texto y el de abajo como fondo. Así la ranura de diez
-// columnas por cinco filas dibuja una imagen de 10×10 píxeles sin más filas.
+// de arriba como color de texto y el de abajo como fondo. Así la ranura de veinte
+// columnas por diez filas dibuja una imagen de 20×20 píxeles —cuatro veces los
+// 10×10 de la ranura anterior— sin más filas.
 const (
 	coverUpperHalf = "▀"
 	// coverPixelRows son los píxeles que caben en cada fila de la ranura.
@@ -31,7 +32,7 @@ const (
 	// coverMaxPixels acota lo que la cabecera puede declarar, porque el tope de
 	// bytes no acota la memoria que pide decodificar: unos cientos de bytes
 	// pueden anunciar millones de píxeles. La carátula más grande que Spotify
-	// publica mide 640×640 —410 000 píxeles— y la ranura dibuja 10×10, así que un
+	// publica mide 640×640 —410 000 píxeles— y la ranura dibuja 20×20, así que un
 	// millón deja sitio de sobra y acota la decodificación a unos 4 MiB en RGBA.
 	coverMaxPixels = 1 << 20
 	// coverTimeout acota la espera de una descarga que no llega.

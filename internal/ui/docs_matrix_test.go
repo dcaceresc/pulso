@@ -289,6 +289,30 @@ func TestDocsMatrixMatchesTheLayout(t *testing.T) {
 	}
 }
 
+// TestDocsCoverMatchesTheSlot fija que el plan y las dos INSTRUCTIONS declaren
+// la ranura que el código dibuja: las veinte columnas por diez filas y la
+// reducción de 20×20 píxeles, para que un número suelto no se quede atrás.
+func TestDocsCoverMatchesTheSlot(t *testing.T) {
+	pixels := playerArtWidth * playerArtRows * coverPixelRows
+	for _, want := range []string{
+		fmt.Sprintf("slot of %d columns by %d rows", playerArtWidth, playerArtRows),
+		fmt.Sprintf("a %d×%d reduction", playerArtWidth, playerArtRows*coverPixelRows),
+		fmt.Sprintf("%d pixels", pixels),
+	} {
+		if !strings.Contains(docsText(t, docsPlan), want) {
+			t.Errorf("%s does not declare %q", docsPlan, want)
+		}
+	}
+	for _, doc := range []struct{ name, phrase string }{
+		{docsSpanish, "veinte columnas por diez filas"},
+		{docsEnglish, "twenty columns by ten rows"},
+	} {
+		if !strings.Contains(docsText(t, doc.name), doc.phrase) {
+			t.Errorf("%s does not state the cover slot as %q", doc.name, doc.phrase)
+		}
+	}
+}
+
 // TestDocsAnnounceNoRetiredControl fija que ningún documento de usuario anuncie
 // una tecla retirada, el ciclo de foco ni la línea de pistas del pie: `?` es la
 // única referencia de teclas y el pie ya no existe.

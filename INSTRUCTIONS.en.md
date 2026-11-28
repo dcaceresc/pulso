@@ -122,7 +122,7 @@ The screen is one workspace with three zones and the player at the bottom:
 - **Library:** your playlists, with the cursor and the `l` key that brings the focus there.
 - **Table:** tracks of the selected playlist, search results, or the queue, with number, title, artist and duration.
 - **Queue:** in wide windows a third box shows what comes next and the playback context; `c` brings the queue back into the table and gives it the focus.
-- **Player:** a box at the bottom. Its top border carries the state — playing, paused, disconnected —, shuffle, repeat and volume; inside are the cover of the playing track — or a block with its initials when there is no image —, the title, the artist, the album, the time with its bar and the playlist or remote device Soloist reports.
+- **Player:** a box at the bottom. Its top border carries the state — playing, paused, disconnected —, shuffle, repeat and volume; inside are the cover of the playing track — or a block with its initials when there is no image —, the title, the artist, the album, the time line `elapsed / total (remaining)` right under the album, the bar, which reaches the box's edge, and the playlist or remote device Soloist reports.
 
 Focus moves only with the zone keys: `l` goes to the library, `/` to search and `c` to the queue. Inside the workspace `Esc` never quits Pulso: it returns to the table or cancels what has the focus; the wizard, in turn, does quit on `Esc`. There is no focus cycle and no key hint line at the bottom either: every zone has its letter, and `?` opens help, the only key reference, which lists them by scope — global, zones, library, table and search.
 
@@ -130,13 +130,13 @@ The window size decides the shape of the screen; the width conditions are floors
 
 | Size | What you see | Player | Cover |
 | --- | --- | --- | --- |
-| width ≥ 120 and height ≥ 30 | library, table and queue with its context | 10 interior rows | yes |
-| width ≥ 100 and height ≥ 26, also above 120 columns when the height misses the wide band | library and table; the queue opens with `c` | 10 rows | yes |
-| width ≥ 80 and height ≥ 20 | one library row above the table | 8 rows | yes |
+| width ≥ 120 and height ≥ 30 | library, table and queue with its context | 12 interior rows | yes |
+| width ≥ 100 and height ≥ 26, also above 120 columns when the height misses the wide band | library and table; the queue opens with `c` | 12 rows | yes |
+| width ≥ 80 and height ≥ 20 | one library row above the table | 8 rows | no |
 | width ≥ 40 and height ≥ 12 | the library row and the player, and the table when the height leaves rows for its header | 6 rows | no |
 | width < 40 or height < 12 | one message with the minimum size, no frame | — | — |
 
-The table is the zone that gives up rows and no row overflows the width. In the minimum band the player box declares six interior rows and a low window crops them — at 40×12 it draws three — so its bottom border is never lost. Only the bands with zones, wide and medium, promote a session sentence that does not fit inside its box — a long authorization notice, for example — to the full width; in the compact and minimum bands the notice is an ordinary row and, when it is wider than the window, it is clipped.
+The table is the zone that gives up rows and no row overflows the width. The cover measures twenty columns by ten rows and is drawn only in the wide and medium bands, the ones that declare twelve interior rows: the compact and minimum bands spend no slot. In the minimum band the player box declares six interior rows and a low window crops them — at 40×12 it draws three: title, artist and album — so its bottom border is never lost. Only the bands with zones, wide and medium, promote a session sentence that does not fit inside its box — a long authorization notice, for example — to the full width; in the compact and minimum bands the notice is an ordinary row and, when it is wider than the window, it is clipped.
 
 `a` opens the playlist chooser for the playing track: `↑` `↓` or `j` `k` choose the playlist, the panel title names the targeted playlist, `Enter` saves and `Esc` cancels. The success notice appears only once Spotify confirmed the playlist, and a failure shows as one row that does not interrupt playback.
 

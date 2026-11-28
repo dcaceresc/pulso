@@ -22,8 +22,8 @@ const (
 	CatalogPageSize = 10
 	// CoverWidth es el ancho de la carátula en celdas de la caja del reproductor.
 	// Elegir con él la imagen que la cubre evita descargar 640 px para dibujar
-	// diez columnas; la caja toma su ranura de aquí, así no hay dos números.
-	CoverWidth = 10
+	// veinte columnas; la caja toma su ranura de aquí, así no hay dos números.
+	CoverWidth = 20
 )
 
 var (

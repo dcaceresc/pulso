@@ -79,17 +79,23 @@ const (
 
 // La caja del reproductor ocupa el borde inferior: su línea superior lleva el
 // estado y dentro van la carátula —o sus iniciales cuando no hay imagen—, el
-// título, el álbum con el artista y el tiempo con su barra. La altura interior
+// título, el artista, el álbum, el tiempo con lo que queda debajo del álbum y la
+// barra en la fila siguiente, que llega hasta el borde. La altura interior
 // depende del ancho, para que la tabla sea siempre la que cede filas.
 const (
-	playerBoxWide    = 10 // Filas interiores desde 100 columnas.
+	// Las bandas amplia y media dibujan doce filas interiores: las diez de la
+	// carátula más el título por encima y la línea de contexto por debajo.
+	playerBoxWide    = 12 // Filas interiores desde 100 columnas.
 	playerBoxCompact = 8  // Filas interiores desde 80 columnas.
 	playerBoxMinimum = 6  // Filas interiores por debajo de 80 columnas.
 	// El ancho de la ranura es el que el catálogo usa para elegir la imagen.
-	playerArtWidth   = spotify.CoverWidth
-	playerArtRows    = 5
-	playerBoxGutter  = 80 // Por debajo de este ancho la caja no gasta carátula.
-	playerBoxMinRoom = 8  // Por debajo de este ancho no hay caja que dibujar.
+	playerArtWidth = spotify.CoverWidth
+	playerArtRows  = 10
+	// playerBarMinCells es el ancho mínimo de la línea de la barra: por debajo
+	// no se dibuja y la fila queda vacía, con el tiempo igual de completo.
+	playerBarMinCells = 4
+	playerBoxGutter   = 80 // Por debajo de este ancho la caja no gasta carátula.
+	playerBoxMinRoom  = 8  // Por debajo de este ancho no hay caja que dibujar.
 )
 
 type playerViewState struct {
@@ -1510,21 +1516,30 @@ func playerElapsed(ms int64) string {
 	return fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
 }
 
-// playerProgress renders elapsed time, a playhead bar, and total time.
-func playerProgress(position, duration int64, width int) string {
-	start := playerElapsed(max(0, position))
+// playerTime es la línea de tiempo: el transcurrido, el total y lo que queda,
+// con la forma `2:14 / 6:21 (-4:07)`. Sin duración conocida degrada a la forma
+// de siempre, la única que puede afirmar.
+func playerTime(position, duration int64) string {
+	position = max(0, position)
 	if duration <= 0 {
-		return start + " / --:--"
+		return playerElapsed(position) + " / --:--"
+	}
+	position = min(duration, position)
+	return playerElapsed(position) + " / " + playerElapsed(duration) + " (-" + playerElapsed(duration-position) + ")"
+}
+
+// playerBar dibuja la barra de progreso hasta el borde de la caja: lo recorrido
+// en `━`, la cabeza en el glifo de siempre y el resto en `─`, tantas celdas como
+// ancho le den. Por debajo de playerBarMinCells no se dibuja —la fila queda
+// vacía y el tiempo sigue diciendo los tres valores— y sin duración conocida
+// tampoco, porque no hay recorrido que afirmar.
+func playerBar(position, duration int64, width int) string {
+	if width < playerBarMinCells || duration <= 0 {
+		return ""
 	}
 	position = min(duration, max(0, position))
-	end := playerElapsed(duration)
-	cells := min(20, width-lipgloss.Width(start)-lipgloss.Width(end)-2)
-	if cells < 4 {
-		return start + " / " + end
-	}
-	filled := min(cells-1, int(float64(position)/float64(duration)*float64(cells)))
-	bar := strings.Repeat("━", filled) + "╸" + strings.Repeat("─", cells-filled-1)
-	return start + " " + bar + " " + end
+	filled := min(width-1, int(float64(position)/float64(duration)*float64(width)))
+	return strings.Repeat("━", filled) + "╸" + strings.Repeat("─", width-filled-1)
 }
 
 // playerPad fits plain text into exactly width cells.
@@ -1867,32 +1882,40 @@ func playerBoxHeight(width, height int) int {
 
 // playerArtSlot es la única regla de la ranura de la carátula: dibujarla y
 // pedirla usan la misma, así una ventana estrecha no descarga una imagen que
-// nunca podría pintar.
+// nunca podría pintar. La ranura pide las diez filas de la imagen y las dos que
+// la enmarcan —el título arriba y el contexto abajo—, así que solo existe en
+// las bandas amplia y media.
 func playerArtSlot(width, interior int) bool {
-	return width >= playerBoxGutter && interior >= playerArtRows+3
+	return width >= playerBoxGutter && interior >= playerArtRows+2
 }
 
-// playerBoxLayout reparte las filas interiores de la caja. Las filas que no
-// caben quedan en -1 y no se dibujan.
+// playerBoxLayout reparte las filas interiores de la caja: el título la
+// encabeza, le siguen el artista, el álbum, el tiempo y la barra, y la línea de
+// contexto la cierra. La carátula ocupa de la fila 1 a la playerArtRows, de modo
+// que el título queda por encima de la imagen y el contexto por debajo. Las
+// filas que no caben quedan en -1 y no se dibujan: con cinco filas la caja pierde
+// el contexto, con cuatro la barra, con tres el tiempo y con dos el álbum y el
+// artista, así el título es siempre lo último que cede.
 type playerBoxLayout struct {
-	progress int
-	context  int
+	title, artist, album, time, bar, context int
 }
 
 func playerBoxLayoutFor(interior int) playerBoxLayout {
 	switch {
-	case interior >= playerBoxWide:
-		return playerBoxLayout{progress: 6, context: 8}
-	case interior >= playerBoxCompact:
-		return playerBoxLayout{progress: 5, context: 7}
-	case interior >= playerBoxMinimum:
-		return playerBoxLayout{progress: 4, context: 5}
+	case interior > playerBoxMinimum:
+		return playerBoxLayout{title: 0, artist: 1, album: 2, time: 3, bar: 4, context: interior - 1}
+	case interior == playerBoxMinimum:
+		return playerBoxLayout{title: 0, artist: 1, album: 2, time: 3, bar: 4, context: 5}
 	case interior == 5:
-		return playerBoxLayout{progress: 4, context: -1}
+		return playerBoxLayout{title: 0, artist: 1, album: 2, time: 3, bar: 4, context: -1}
 	case interior == 4:
-		return playerBoxLayout{progress: 3, context: -1}
+		return playerBoxLayout{title: 0, artist: 1, album: 2, time: 3, bar: -1, context: -1}
+	case interior == 3:
+		return playerBoxLayout{title: 0, artist: 1, album: 2, time: -1, bar: -1, context: -1}
+	case interior == 2:
+		return playerBoxLayout{title: 0, artist: 1, album: -1, time: -1, bar: -1, context: -1}
 	}
-	return playerBoxLayout{progress: 2, context: -1}
+	return playerBoxLayout{title: 0, artist: -1, album: -1, time: -1, bar: -1, context: -1}
 }
 
 // Lo que la caja puede afirmar de la sesión: una pista real, una carga en
@@ -2091,6 +2114,9 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 		left = "  " + strings.Repeat(" ", playerArtWidth) + "  "
 	}
 	textWidth := max(1, inner-lipgloss.Width(left)-2)
+	// La barra no deja margen derecho: ocupa todas las celdas que quedan hasta el
+	// borde interior de la caja, que es lo que pidió S2.
+	barWidth := max(1, inner-lipgloss.Width(left))
 
 	title, artist, album := m.playerBoxText()
 	layout := playerBoxLayoutFor(interior)
@@ -2101,24 +2127,26 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 	if m.playerBoxCondition() == playerBoxLive {
 		position, duration = m.playhead(), m.state.Track.DurationMS
 	}
-	progress := playerProgress(position, duration, textWidth)
+	progress := playerTime(position, duration)
+	bar := playerBar(position, duration, barWidth)
 
-	// Las filas se reparten por prioridad: el título y el tiempo sobreviven a
-	// cualquier altura; el artista y el álbum solo cuando hay sitio para ellos.
-	showArtist := interior >= 4
-	showAlbum := interior >= 5
+	// Cada fila recibe su línea del reparto: el título, el artista, el álbum, el
+	// tiempo, la barra y el contexto. La carátula ocupa de la fila 1 a la diez y
+	// comparte fila con las líneas de su derecha.
 	for row := 0; row < interior; row++ {
 		text, style := "", lipgloss.Style{}
-		switch {
-		case row == 1:
+		switch row {
+		case layout.title:
 			text, style = title, styles.accent
-		case row == 2 && showArtist:
+		case layout.artist:
 			text, style = artist, styles.muted
-		case row == 3 && showAlbum:
+		case layout.album:
 			text, style = album, styles.muted
-		case row == layout.progress:
+		case layout.time:
 			text, style = progress, styles.muted
-		case row == layout.context:
+		case layout.bar:
+			text, style = bar, styles.muted
+		case layout.context:
 			text, style = m.playerBoxContext(), styles.muted
 		}
 		line := left
@@ -2131,7 +2159,13 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 			}
 			line = "  " + cell + "  "
 		}
-		line += playerPad(style.Render(playerEllipsis(text, textWidth)), textWidth)
+		// Solo la barra usa el ancho completo: las líneas de texto dejan el
+		// margen derecho que las separa del borde.
+		rowWidth := textWidth
+		if row == layout.bar {
+			rowWidth = barWidth
+		}
+		line += playerPad(style.Render(playerEllipsis(text, rowWidth)), rowWidth)
 		rows = append(rows, edge.Render("│")+playerPad(line, inner)+edge.Render("│"))
 	}
 	rows = append(rows, edge.Render("└")+edge.Render(strings.Repeat("─", inner))+edge.Render("┘"))

@@ -57,7 +57,7 @@ func coverSlotSolid(t *testing.T) *coverFetchFake {
 	}}
 }
 
-// TestCoverSlotMetrics fija la ranura: cinco filas de diez medios bloques, con
+// TestCoverSlotMetrics fija la ranura: diez filas de veinte medios bloques, con
 // color de 24 bits, nada dibujado fuera de ella y cada fila del ancho exacto de
 // la ventana.
 func TestCoverSlotMetrics(t *testing.T) {
@@ -78,7 +78,7 @@ func TestCoverSlotMetrics(t *testing.T) {
 				if blocks != playerArtWidth {
 					t.Fatalf("%dx%d row %d carries %d half blocks, want %d: %q", size.width, size.height, index, blocks, playerArtWidth, row)
 				}
-				// Los diez medios bloques van juntos y son lo único de la fila:
+				// Los veinte medios bloques van juntos y son lo único de la fila:
 				// nada de la carátula se sale de la ranura.
 				if want := "  " + strings.Repeat(coverUpperHalf, playerArtWidth) + "  "; !strings.Contains(row, want) {
 					t.Fatalf("%dx%d row %d does not keep the slot together: %q", size.width, size.height, index, row)
@@ -128,15 +128,17 @@ func TestCoverFailedDownloadMatchesNoCoverView(t *testing.T) {
 }
 
 // TestCoverSlotThreshold fija cuándo existe la ranura: con las filas de la
-// carátula disponibles y al menos 80 columnas.
+// carátula disponibles —las diez de la imagen y las dos que la enmarcan— y al
+// menos 80 columnas. La banda compacta se queda sin carátula porque su caja solo
+// declara ocho filas interiores.
 func TestCoverSlotThreshold(t *testing.T) {
 	m := coverSlotPlayer(t, coverFixtureURL, coverSlotSolid(t))
 	for _, tt := range []struct {
 		width, height int
 		slot          bool
 	}{
-		{120, 18, true}, {80, 24, true},
-		{120, 17, false}, {80, 16, false}, {79, 40, false},
+		{120, 40, true}, {120, 22, true}, {100, 30, true},
+		{120, 21, false}, {100, 21, false}, {80, 24, false}, {79, 40, false},
 	} {
 		view := strings.Join(playerViewRows(t, m, tt.width, tt.height), "\n")
 		switch drawn := strings.Contains(view, coverUpperHalf); {

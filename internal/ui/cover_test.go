@@ -486,6 +486,9 @@ func TestCoverImageChoice(t *testing.T) {
 		{"smallest that reaches the slot", []spotify.Image{image("a", 640), image("b", 300), image("c", 64)}, "c"},
 		{"first of equal widths", []spotify.Image{image("a", 64), image("b", 64)}, "a"},
 		{"largest when none reaches the slot", []spotify.Image{image("a", 4), image("b", 8), image("c", 2)}, "b"},
+		// La ranura de veinte columnas ya no la cubre la imagen de la ranura
+		// anterior: la regla pide al menos el ancho nuevo.
+		{"the ten-pixel image no longer covers the slot", []spotify.Image{image("a", 10), image("b", 20)}, "b"},
 		{"empty URL is not an image", []spotify.Image{image("", 64), image("b", 300)}, "b"},
 		{"no images", nil, ""},
 	} {
@@ -494,6 +497,35 @@ func TestCoverImageChoice(t *testing.T) {
 				t.Fatalf("CoverImage(%v) = %q, want %q", tt.images, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCoverSlotIsTwentyByTen garantiza la geometría de R2: la ranura mide veinte
+// celdas por diez filas, dibuja doscientos medios bloques —dos píxeles por celda,
+// 400 píxeles de imagen en total— y el catálogo pide la imagen con ese ancho.
+func TestCoverSlotIsTwentyByTen(t *testing.T) {
+	if spotify.CoverWidth != 20 {
+		t.Fatalf("spotify.CoverWidth = %d, want the twenty cells of the slot", spotify.CoverWidth)
+	}
+	if playerArtWidth != spotify.CoverWidth || playerArtRows != 10 {
+		t.Fatalf("the slot is %dx%d cells, want 20x10", playerArtWidth, playerArtRows)
+	}
+	rows, err := coverRows(coverImagePNG(t, 40, 20, color.RGBA{R: 0x30, G: 0x60, B: 0x90, A: 0xFF}))
+	if err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	if len(rows) != playerArtRows {
+		t.Fatalf("the cover draws %d rows, want %d", len(rows), playerArtRows)
+	}
+	blocks := 0
+	for _, row := range rows {
+		blocks += strings.Count(row, coverUpperHalf)
+	}
+	if want := playerArtWidth * playerArtRows; blocks != want {
+		t.Fatalf("the cover draws %d half blocks, want %d", blocks, want)
+	}
+	if pixels := playerArtWidth * playerArtRows * coverPixelRows; pixels != 400 {
+		t.Fatalf("the slot holds %d pixels, want the 400 of a 20x20 reduction", pixels)
 	}
 }
 

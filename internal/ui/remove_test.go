@@ -244,6 +244,28 @@ func TestRemoveConfirmsWithTrackAndPlaylist(t *testing.T) {
 	})
 }
 
+// removeListingRows devuelve las filas de la lista abierta que dibuja la tabla:
+// las que quedan entre su encabezado y la caja del reproductor.
+func removeListingRows(t *testing.T, m tea.Model, width, height int) string {
+	t.Helper()
+	rows := playerViewRows(t, m, width, height)
+	start := -1
+	for i, row := range rows {
+		plain := ansi.Strip(row)
+		if start < 0 && strings.Contains(plain, "#") && strings.Contains(plain, "Title") {
+			start = i
+		}
+		if strings.HasPrefix(plain, "├─") {
+			if start < 0 {
+				t.Fatalf("the player box came before the listing header:\n%s", strings.Join(rows, "\n"))
+			}
+			return strings.Join(rows[start:i], "\n")
+		}
+	}
+	t.Fatalf("the view drew no player box:\n%s", strings.Join(rows, "\n"))
+	return ""
+}
+
 // TestRemoveSuccessNotifiesAndReloads proves one accepted removal names the
 // track and the playlist, reloads the browsed listing so the row disappears and
 // leaves playback and the queue untouched.
@@ -279,6 +301,12 @@ func TestRemoveSuccessNotifiesAndReloads(t *testing.T) {
 		t.Fatalf("removed = %+v, want one removal of the chosen occurrence", got)
 	}
 	view := playerViewText(t, m, "Removed Estrechez de Corazón from Rock Chileno.")
+	// La fila quitada ya no está en la lista abierta: el nombre solo sobrevive en
+	// el aviso. Una recarga perdida volvería a dibujar la fila y esta comprobación
+	// falla, aunque el aviso siga nombrando la canción.
+	if listing := removeListingRows(t, m, 120, 40); strings.Contains(listing, "Estrechez de Corazón") {
+		t.Fatalf("the removed track is still a row of the open list:\n%s", listing)
+	}
 	if strings.Contains(view, "Estrechez de Corazón") && strings.Count(view, "Estrechez de Corazón") != 1 {
 		// La fila se fue de la tabla; el título del panel ya no la nombra.
 		t.Logf("view still names the track once:\n%s", view)

@@ -2009,6 +2009,168 @@ func TestPlayerBoxDisconnectedProgressHasNoStaleTime(t *testing.T) {
 	}
 }
 
+// playerBoxInteriorRows devuelve las filas interiores de la caja del
+// reproductor, sin sus bordes laterales: las que quedan entre el borde superior
+// —el que lleva la línea de estado— y el inferior.
+func playerBoxInteriorRows(t *testing.T, m tea.Model, width, height int) []string {
+	t.Helper()
+	rows := playerViewRows(t, m, width, height)
+	top := -1
+	for i, row := range rows {
+		if strings.HasPrefix(ansi.Strip(row), "├─") {
+			top = i
+			break
+		}
+	}
+	if top < 0 {
+		t.Fatalf("the %dx%d view drew no player box:\n%s", width, height, strings.Join(rows, "\n"))
+	}
+	interior := playerBoxInterior(width, height)
+	if top+1+interior > len(rows) {
+		t.Fatalf("the %dx%d box declares %d interior rows but draws %d", width, height, interior, len(rows)-top-1)
+	}
+	inside := make([]string, 0, interior)
+	for _, row := range rows[top+1 : top+1+interior] {
+		cells := []rune(ansi.Strip(row))
+		if len(cells) < 2 {
+			t.Fatalf("the %dx%d box row %q has no borders", width, height, row)
+		}
+		inside = append(inside, string(cells[1:len(cells)-1]))
+	}
+	return inside
+}
+
+// playerArtIndent es el hueco que la ranura de la carátula deja a las líneas de
+// texto: dos columnas, la imagen y otras dos.
+func playerArtIndent() string {
+	return "  " + strings.Repeat(" ", playerArtWidth) + "  "
+}
+
+// playerBarFixture arma la barra con la regla declarada —lo recorrido en `━`, la
+// cabeza en `╸` y el resto en `─`— para que la prueba compare la fila entera y
+// no una parte.
+func playerBarFixture(position, duration int64, width int) string {
+	filled := int(float64(position) / float64(duration) * float64(width))
+	return strings.Repeat("━", filled) + "╸" + strings.Repeat("─", width-filled-1)
+}
+
+// TestPlayerTimeAndBar fija las dos formas de R3: el tiempo dice el transcurrido,
+// el total y lo que queda, y la barra ocupa el ancho que se le da. Sin duración
+// conocida el tiempo degrada a la forma de siempre y la barra no se dibuja.
+func TestPlayerTimeAndBar(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		position, duration int64
+		want               string
+	}{
+		{"elapsed, total and remaining", 134000, 381000, "2:14 / 6:21 (-4:07)"},
+		{"start of the track", 0, 381000, "0:00 / 6:21 (-6:21)"},
+		{"end of the track", 381000, 381000, "6:21 / 6:21 (-0:00)"},
+		{"hour-long track", 3723000, 7200000, "1:02:03 / 2:00:00 (-57:57)"},
+		{"unknown duration", 62000, 0, "1:02 / --:--"},
+		{"position past the end is clamped", 500000, 381000, "6:21 / 6:21 (-0:00)"},
+		{"negative position", -5000, 381000, "0:00 / 6:21 (-6:21)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := playerTime(tt.position, tt.duration); got != tt.want {
+				t.Fatalf("playerTime(%d, %d) = %q, want %q", tt.position, tt.duration, got, tt.want)
+			}
+		})
+	}
+	for _, tt := range []struct {
+		name               string
+		position, duration int64
+		width              int
+		want               string
+	}{
+		{"start", 0, 381000, 6, "╸─────"},
+		{"middle", 134000, 381000, 6, "━━╸───"},
+		{"end", 381000, 381000, 6, "━━━━━╸"},
+		{"narrower than the minimum", 134000, 381000, playerBarMinCells - 1, ""},
+		{"unknown duration", 134000, 0, 6, ""},
+	} {
+		t.Run("bar/"+tt.name, func(t *testing.T) {
+			if got := playerBar(tt.position, tt.duration, tt.width); got != tt.want {
+				t.Fatalf("playerBar(%d, %d, %d) = %q, want %q", tt.position, tt.duration, tt.width, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPlayerBoxTimeUnderTheAlbumAndBarToTheEdge fija R3 en la matriz: las doce
+// filas interiores de las bandas amplia y media y las ocho de la compacta, el
+// tiempo justo debajo del álbum con la forma `transcurrido / total (restante)`, la
+// barra en la fila siguiente llegando hasta el borde interior y ninguna fila
+// interior vacía en la banda amplia.
+func TestPlayerBoxTimeUnderTheAlbumAndBarToTheEdge(t *testing.T) {
+	const position, duration = 134000, 381000
+	for _, size := range []struct {
+		width, height, interior int
+		art                     bool
+	}{
+		{120, 34, playerBoxWide, true},
+		{100, 30, playerBoxWide, true},
+		{80, 24, playerBoxCompact, false},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			m, _ := playerViewModel(t, size.width, size.height, playerState{
+				Connected: true, Status: "playing", Volume: 37, PositionMS: position,
+				PlaylistContext: "Rock Chileno",
+				Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros",
+					Album: "La Cultura de la Basura", DurationMS: duration},
+			})
+			rows := playerBoxInteriorRows(t, m, size.width, size.height)
+			if len(rows) != size.interior {
+				t.Fatalf("the %dx%d box declares %d interior rows, want %d", size.width, size.height, len(rows), size.interior)
+			}
+			// El orden: título, artista, álbum, tiempo y barra, con el contexto al
+			// final de la caja.
+			for row, want := range []string{"Estrechez de Corazón", "Los Prisioneros", "La Cultura de la Basura", "2:14 / 6:21 (-4:07)"} {
+				if !strings.Contains(rows[row], want) {
+					t.Fatalf("%dx%d interior row %d = %q, want %q", size.width, size.height, row, rows[row], want)
+				}
+			}
+			if want := "Rock Chileno"; !strings.Contains(rows[size.interior-1], want) {
+				t.Fatalf("the context line is not the last interior row: %q", rows[size.interior-1])
+			}
+			// La barra empieza donde empieza el texto y no deja margen derecho: ocupa
+			// todas las celdas que quedan hasta el borde interior.
+			left := "  "
+			if size.art {
+				left = playerArtIndent()
+			}
+			barWidth := size.width - 2 - lipgloss.Width(left)
+			bar := playerBarFixture(position, duration, barWidth)
+			if !strings.HasSuffix(rows[4], bar) {
+				t.Fatalf("%dx%d bar row = %q, want it to end with %q", size.width, size.height, rows[4], bar)
+			}
+			if got, want := lipgloss.Width(rows[4][:len(rows[4])-len(bar)]), lipgloss.Width(left); got != want {
+				t.Fatalf("the bar starts at column %d, want the text column at %d", got, want)
+			}
+			if got := lipgloss.Width(rows[4]); got != size.width-2 {
+				t.Fatalf("the bar row measures %d cells, want the %d of the box interior", got, size.width-2)
+			}
+		})
+	}
+	// La banda amplia no deja ninguna fila interior vacía: la carátula ocupa de la
+	// uno a la diez, el título la cero y el contexto la once.
+	m, _ := playerViewModel(t, 120, 34, playerState{
+		Connected: true, Status: "playing", Volume: 37, PositionMS: position,
+		PlaylistContext: "Rock Chileno",
+		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros",
+			Album: "La Cultura de la Basura", DurationMS: duration},
+	})
+	rows := playerBoxInteriorRows(t, m, 120, 34)
+	if len(rows) != playerBoxWide {
+		t.Fatalf("the wide box draws %d interior rows, want %d", len(rows), playerBoxWide)
+	}
+	for i, row := range rows {
+		if strings.TrimSpace(row) == "" {
+			t.Fatalf("interior row %d of the wide box stays empty:\n%s", i, strings.Join(rows, "\n"))
+		}
+	}
+}
+
 // TestPlayerBoxFitsShortWideViewport fija que una ventana ancha y baja conserve
 // la caja completa: la altura interior cede antes de que el borde inferior se
 // pierda.
