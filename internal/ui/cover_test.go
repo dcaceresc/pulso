@@ -346,8 +346,8 @@ func TestCoverFallbackReadsTheTrackOnce(t *testing.T) {
 	if len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("requests = %v, want %v", got, want)
 	}
-	if downloaded := fetch.requested(); len(downloaded) != 1 || downloaded[0] != coverSmallURL {
-		t.Fatalf("downloads = %v, want the smallest image that covers the slot", downloaded)
+	if downloaded := fetch.requested(); len(downloaded) != 1 || downloaded[0] != coverLargeURL {
+		t.Fatalf("downloads = %v, want the image the new rule chooses, which is the largest published", downloaded)
 	}
 	if view := strings.Join(playerViewRows(t, m, 120, 40), "\n"); !strings.Contains(view, coverUpperHalf) {
 		t.Fatalf("the fallback cover is not drawn:\n%s", view)
@@ -456,20 +456,20 @@ func TestCoverURLComesFromAlreadyRequestedPages(t *testing.T) {
 	})
 	// La carátula se agrega sin cambiar el resto de la fila.
 	page, err := catalog.PlaylistItems(context.Background(), "spotify:playlist:rock", 0)
-	if err != nil || len(page.Tracks) != 1 || page.Tracks[0].Cover != coverSmallURL {
+	if err != nil || len(page.Tracks) != 1 || page.Tracks[0].Cover != coverLargeURL {
 		t.Fatalf("playlist items cover = %#v, %v", page.Tracks, err)
 	}
 	// El snapshot de la lectura vive en la página, no en cada fila.
 	if want := (spotify.Track{Name: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000,
-		URI: "spotify:track:one", Cover: coverSmallURL}); page.Tracks[0] != want || page.Snapshot != "snapshot-rock" {
+		URI: "spotify:track:one", Cover: coverLargeURL}); page.Tracks[0] != want || page.Snapshot != "snapshot-rock" {
 		t.Fatalf("playlist row = %#v, want %#v", page.Tracks[0], want)
 	}
 	tracks, _, _, err := catalog.SearchPage(context.Background(), "tren", 0)
-	if err != nil || len(tracks) != 1 || tracks[0].Cover != coverSmallURL {
+	if err != nil || len(tracks) != 1 || tracks[0].Cover != coverLargeURL {
 		t.Fatalf("search cover = %#v, %v", tracks, err)
 	}
 	if want := (spotify.Track{Name: "Tren al Sur", Artist: "Los Prisioneros", DurationMS: 336000,
-		URI: "spotify:track:one", Cover: coverSmallURL}); tracks[0] != want {
+		URI: "spotify:track:one", Cover: coverLargeURL}); tracks[0] != want {
 		t.Fatalf("search row = %#v, want %#v", tracks[0], want)
 	}
 }
@@ -483,7 +483,7 @@ func TestCoverImageChoice(t *testing.T) {
 		images []spotify.Image
 		want   string
 	}{
-		{"smallest that reaches the slot", []spotify.Image{image("a", 640), image("b", 300), image("c", 64)}, "c"},
+		{"the source closest above the preferred width", []spotify.Image{image("a", 640), image("b", 300), image("c", 64)}, "a"},
 		{"first of equal widths", []spotify.Image{image("a", 64), image("b", 64)}, "a"},
 		{"largest when none reaches the slot", []spotify.Image{image("a", 4), image("b", 8), image("c", 2)}, "b"},
 		// La ranura de veinte columnas ya no la cubre la imagen de la ranura
@@ -493,7 +493,7 @@ func TestCoverImageChoice(t *testing.T) {
 		{"no images", nil, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := spotify.CoverImage(tt.images, spotify.CoverWidth); got != tt.want {
+			if got := spotify.CoverImage(tt.images); got != tt.want {
 				t.Fatalf("CoverImage(%v) = %q, want %q", tt.images, got, tt.want)
 			}
 		})

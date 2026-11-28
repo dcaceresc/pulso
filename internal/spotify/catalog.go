@@ -109,9 +109,18 @@ type spotifyTrack struct {
 // ya trae: la más pequeña que alcanza el ancho de la ranura en celdas y, cuando
 // ninguna llega, la más grande. Ante dos anchos iguales gana la primera imagen
 // que los declara, para que la elección sea siempre la misma.
-func CoverImage(images []Image, minWidth int) string {
-	smallest, largest := "", ""
-	smallestWidth, largestWidth := 0, 0
+// coverSourceWidth es el ancho de origen que se prefiere pedir a Spotify. La
+// ranura dibuja pocos píxeles, pero reducir desde una imagen grande conserva el
+// detalle; partir de un original diminuto lo pierde para siempre.
+const coverSourceWidth = 640
+
+// CoverImage elige la imagen de la que se reduce la carátula: la más cercana por
+// encima de coverSourceWidth y, si ninguna llega, la mayor publicada. Antes se
+// pedía la más pequeña que cubriera la ranura, que es exactamente lo que se veía
+// pixelado.
+func CoverImage(images []Image) string {
+	best, bestWidth := "", 0
+	largest, largestWidth := "", 0
 	for _, image := range images {
 		if image.URL == "" {
 			continue
@@ -119,15 +128,15 @@ func CoverImage(images []Image, minWidth int) string {
 		if largest == "" || image.Width > largestWidth {
 			largest, largestWidth = image.URL, image.Width
 		}
-		if image.Width < minWidth {
+		if image.Width < coverSourceWidth {
 			continue
 		}
-		if smallest == "" || image.Width < smallestWidth {
-			smallest, smallestWidth = image.URL, image.Width
+		if best == "" || image.Width < bestWidth {
+			best, bestWidth = image.URL, image.Width
 		}
 	}
-	if smallest != "" {
-		return smallest
+	if best != "" {
+		return best
 	}
 	return largest
 }
@@ -147,7 +156,7 @@ func (c *Catalog) TrackCover(ctx context.Context, uri string) (string, error) {
 	if err := c.request(ctx, "/v1/tracks/"+id+"?fields=album.images", &response, false); err != nil {
 		return "", err
 	}
-	return CoverImage(response.Album.Images, CoverWidth), nil
+	return CoverImage(response.Album.Images), nil
 }
 
 func (c *Catalog) Search(ctx context.Context, query string, offset int) ([]Item, bool, error) {

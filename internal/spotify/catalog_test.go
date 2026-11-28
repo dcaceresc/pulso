@@ -202,7 +202,7 @@ func TestSpotifyCatalogRecommendations(t *testing.T) {
 		return spotifyFixtureResponse(200, `{"tracks":[{"name":"Like it","artists":[{"name":"A"},{"name":"B"}],"duration_ms":210000,"uri":"spotify:track:one","is_playable":true,"album":{"images":[{"url":"https://img/64","width":64,"height":64},{"url":"https://img/20","width":20,"height":20}]}},{"name":"Not playable","uri":"spotify:track:two","is_playable":false},null]}`), nil
 	})
 	tracks, err := c.Recommendations(context.Background(), "spotify:track:seed1")
-	want := []Track{{Name: "Like it", Artist: "A, B", DurationMS: 210000, URI: "spotify:track:one", Cover: "https://img/20"}}
+	want := []Track{{Name: "Like it", Artist: "A, B", DurationMS: 210000, URI: "spotify:track:one", Cover: "https://img/64"}}
 	if err != nil || !reflect.DeepEqual(tracks, want) || calls != 1 {
 		t.Fatalf("recommendations = %#v, %v; calls=%d", tracks, err, calls)
 	}
