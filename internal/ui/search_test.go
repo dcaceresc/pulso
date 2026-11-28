@@ -148,10 +148,12 @@ func TestSearchEscapeRestoresThePlaylistTable(t *testing.T) {
 	if strings.Contains(view, ">1 Tren al Sur") {
 		t.Fatalf("the search results survived Esc:\n%s", view)
 	}
+	// Esc nunca sale: el segundo Esc deja la tabla como estaba.
 	m, quit := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if _, ok := playerViewRun(t, quit).(tea.QuitMsg); !ok {
-		t.Fatal("a second Esc did not quit")
+	if quit != nil || m.View() == "" {
+		t.Fatal("a second Esc quit the workspace")
 	}
+	playerViewText(t, m, "Rock Chileno · 42 tracks")
 }
 
 func TestSearchEscapeBlursTheField(t *testing.T) {
@@ -296,24 +298,23 @@ func TestSearchStaleGenerationDropped(t *testing.T) {
 	}
 }
 
-func TestSearchFieldReachableFromEveryPanel(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		tabs int
-	}{
-		{"table", 0},
-		{"search", 1},
-		{"playing bar", 2},
-		{"sidebar", 3},
+// TestSearchFieldReachableFromEveryZone fija la letra de la zona de búsqueda:
+// `/` enfoca el campo desde la tabla, la cola y la biblioteca, y dentro del
+// campo es texto como el resto de las teclas imprimibles.
+func TestSearchFieldReachableFromEveryZone(t *testing.T) {
+	for _, tt := range []struct{ name, zone string }{
+		{"table", ""},
+		{"queue", "c"},
+		{"sidebar", "l"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			m, out := playerViewModel(t, 120, 40, playerState{Connected: true})
-			for range tt.tabs {
-				m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+			if tt.zone != "" {
+				m, _ = m.Update(playerViewKey(tt.zone))
 			}
 			m, _ = m.Update(playerViewKey("/"))
 			if player := m.(*playerModel); player.focus != playerFocusSearch {
-				t.Fatalf("/ did not focus the search field from the %s", tt.name)
+				t.Fatalf("/ did not focus the search field from the %s zone", tt.name)
 			}
 			playerViewText(t, m, "Search:")
 			if len(out) != 0 {
@@ -321,6 +322,12 @@ func TestSearchFieldReachableFromEveryPanel(t *testing.T) {
 			}
 		})
 	}
+	t.Run("el campo se queda con la barra", func(t *testing.T) {
+		m, _ := playerViewModel(t, 120, 40, playerState{Connected: true})
+		m, _ = m.Update(playerViewKey("/"))
+		m, _ = m.Update(playerViewKey("/"))
+		playerViewText(t, m, "Search: /_")
+	})
 }
 
 func TestSearchBounds(t *testing.T) {
