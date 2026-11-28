@@ -749,7 +749,7 @@ func TestRemoveKeepsPreExistingKeys(t *testing.T) {
 		{"menos volumen", playerViewKey("-"), saveTrackState(), []playerCommand{{Name: "set_volume", Volume: 45}}},
 		{"aleatorio", playerViewKey("s"), saveTrackState(), []playerCommand{{Name: "set_shuffle", Shuffle: true}, {Name: "get_state"}}},
 		{"repetición", playerViewKey("r"), saveTrackState(), []playerCommand{{Name: "set_repeat", Repeat: "context"}, {Name: "get_state"}}},
-		{"reproducir la fila", tea.KeyMsg{Type: tea.KeyEnter}, saveTrackState(), []playerCommand{{Name: "play", URI: "spotify:track:one"}}},
+		{"reproducir la lista desde la fila", tea.KeyMsg{Type: tea.KeyEnter}, saveTrackState(), []playerCommand{{Name: "play", URI: "spotify:playlist:rock"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			api := newSaveFake(libraryPlaylistsFixture())

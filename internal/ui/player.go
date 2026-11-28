@@ -989,8 +989,12 @@ func (m *playerModel) activateSelection(key tea.KeyMsg) (tea.Cmd, bool) {
 		if m.library.notice == libraryNoticeLoadFailed && !m.library.loadedTracks {
 			return m.library.fetchTracks(0), true
 		}
-		if track, ok := m.library.selectedTrack(); ok {
-			m.playURI(track.URI)
+		// Enter sobre una fila de la lista reproduce la lista, no la pista
+		// suelta: Soloist acepta un solo URI por `play`, así que el contexto de
+		// la lista es lo único que mantiene `n` y `b` dentro de ella. Con el
+		// aleatorio activo Spotify elige una pista de comienzo al azar.
+		if m.library.selectedTrackURI() != "" {
+			m.playURI(m.library.playlist.URI)
 		}
 		return nil, true
 	}
