@@ -807,7 +807,9 @@ func TestPlayerViewSeekKeys(t *testing.T) {
 		if len(out) != 0 {
 			t.Fatal("a disconnected session accepted a seek")
 		}
-		playerViewText(t, m, "1:00")
+		// La caja caída tampoco conserva la posición: la tecla no movió nada y el
+		// tiempo no puede afirmar una pista que la sesión ya no informa.
+		playerViewText(t, m, "0:00 / --:--")
 	})
 	t.Run("seeks from the interpolated playhead", func(t *testing.T) {
 		anchor := time.Unix(1700000000, 0)
@@ -1988,6 +1990,23 @@ func TestPlayerBoxMarksDisconnectedOverStaleTrack(t *testing.T) {
 		}
 	}
 	playerViewText(t, m, "Disconnected")
+}
+
+// TestPlayerBoxDisconnectedProgressHasNoStaleTime fija que la línea de tiempo
+// vuelva a cero con el resto de la caja: una sesión caída no puede dejar la
+// última posición junto a un total que ya no existe.
+func TestPlayerBoxDisconnectedProgressHasNoStaleTime(t *testing.T) {
+	m, _ := playerViewModel(t, 120, 40, playerState{
+		Connected:  false,
+		PositionMS: 134000,
+		Track:      playerTrack{Title: "Estrechez de Corazón", DurationMS: 381000},
+	})
+	view := playerViewText(t, m, "0:00 / --:--")
+	for _, stale := range []string{"2:14", "6:21"} {
+		if strings.Contains(view, stale) {
+			t.Fatalf("disconnected box kept the stale time %q:\n%s", stale, view)
+		}
+	}
 }
 
 // TestPlayerBoxFitsShortWideViewport fija que una ventana ancha y baja conserve

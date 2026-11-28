@@ -1,99 +1,199 @@
-# Pulso workspace UI plan
+# Pulso workspace UI
 
-Turn the current playback screen plus modal overlays into one keyboard-first workspace: search on top, library on the left, a song table in the middle, and a live now-playing bar above the key hints. Unicode glyphs only, playlists first.
+The workspace as it ships: one screen, three zones — library, table and queue — and the player as a box at the bottom whose top border carries the play state, shuffle, repeat and volume. Keyboard first, Unicode glyphs only, playlists first.
 
-## Target layout
+## Layout
+
+The screen is two header rows, one rule, the zones, one rule and the player box. Every row measures the window width exactly; the table is the only zone that gives up rows.
+
+- **Banner:** `Pulso` on the left and the session word — playing, paused, connected, disconnected or loading — on the right.
+- **Search row:** the `Search:` field with its cursor or its placeholder, and the Spotify account label (`@name`) on the right until it does not fit.
+- **Zones:** each one is a box with its title on the top border and an accented border while it has the focus. The library box lists playlists with the owner when the name leaves room; the table box names what it shows — the open playlist and its total, the submitted query and its total, or `Playback` with the queue length — and carries the number, title, artist and duration columns; the queue box lists what comes next, each track with its artist below it, and ends with the `CONTEXT` block: the playlist that plays — or the open one when nothing is playing — and the shuffle and repeat modes.
+- **Player box:** the top border carries the status line; inside are the cover — or the initials block when there is no image — the title, the artist, the album, the time bar and a context line naming the playlist, which names the device too only when playback runs on another one. The session notice stays as one row under the box.
+
+In the bands that have zones — wide and medium — a session sentence that does not fit inside its zone — a long authorization or confirmation notice — is promoted to the full width above the player box, wrapped rather than truncated, and the zone keeps only its state mark. The compact and minimum bands have no boxes: there the notice is an ordinary full-width row, and one wider than the window is clipped.
+
+The mockups below are the app's own render at the size each heading names, not a drawing of an intended screen.
+
+### Wide band — 120×34
+
+Library (25 columns), the table (the rest) and the queue (30 columns) share one height, from 120 columns and 30 rows up.
 
 ```
-┌ Pulso ─────────────────────────────────────────────────────────────────┐
-│ Buscar: ______________________                          @usuario        │
-├──────────────────┬─────────────────────────────────────────────────────┤
-│ BIBLIOTECA       │ Rock Chileno & Clásicos · 42 canciones              │
-│ > Playlists      │  #   Título                 Artista          Duración│
-│   Playlist A     │  ───────────────────────────────────────────────────│
-│   Playlist B     │  1   Tren al Sur            Los Prisioneros    5:36 │
-│   Playlist C     │ >2   Estrechez de Corazón   Los Prisioneros    6:21 │
-│                  │  3   Llueve sobre la Ciudad Los Bunkers        3:56 │
-├──────────────────┴─────────────────────────────────────────────────────┤
-│ ▶ Estrechez de Corazón · Los Prisioneros   ⇄ off  ↻ all  vol 85%       │
-│ 2:14 ━━━━━━━━━━╸──────────────── 6:21                  Dispositivo Desk│
-├────────────────────────────────────────────────────────────────────────┤
-│ Tab: panel  Enter: reproducir  Space: pausa  /: buscar  F2/F3  q: salir │
-└────────────────────────────────────────────────────────────────────────┘
+Pulso                                                                                                            playing
+Search: type to search                                                                                             @user
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌─ LIBRARY ─────────────┐ ┌─ Rock Chileno · 42 tracks ──────────────────────────────────┐ ┌─ UP NEXT ──────────────────┐
+│> Rock Chileno · ana   │ │#  Title                    Artist                   Duration│ │1 Huelga de Dolores         │
+│  Jazz · beto          │ │─────────────────────────────────────────────────────────────│ │  Los Miserables            │
+│                       │ │>1 Tren al Sur              Los Prisioneros          5:36    │ │                            │
+│                       │ │ 2 Estrechez de Corazón     Los Prisioneros          6:21    │ │                            │
+│                       │ │ 3 Llueve sobre la Ciudad   Los Bunkers              3:56    │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │CONTEXT                     │
+│                       │ │                                                             │ │Rock Chileno                │
+│                       │ │                                                             │ │⇄ on · ↻ all                │
+└───────────────────────┘ └─────────────────────────────────────────────────────────────┘ └────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+├─ ▶ Playing  ▸  ⇄ on  ▸  ↻ all  ▸  Volume 37% ────────────────────────────────────────────────────────────────────────┤
+│                                                                                                                      │
+│  ┌────────┐  Estrechez de Corazón                                                                                    │
+│  │        │  Los Prisioneros                                                                                         │
+│  │   EC   │  La Cultura de la Basura                                                                                 │
+│  │        │                                                                                                          │
+│  └────────┘                                                                                                          │
+│              2:14 ━━━━━━━╸──────────── 6:21                                                                          │
+│                                                                                                                      │
+│              Playlist: Rock Chileno                                                                                  │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Wide terminals (≥100×30): three regions, sidebar 26–32 columns, table flexible.
-- Breakpoint (80×24): sidebar collapses to a one-row library switcher; table keeps title and artist.
-- Narrow (<80): only focus and playing track; keys move between views.
-- One accent, glyph roles `▶ ⏸ ⏮ ⏭ ⇄ ↻ ●` and `[x]`-free state words; no color-only meaning.
-- Every row is budgeted: no blank spacer rows between regions, one rule per separation.
+### Medium band — 100×30
 
-## Interaction model
+From 100 columns and 26 rows: the same two boxes as the wide band without the queue column, so the table takes its width. `c` brings the queue into the table and gives it the focus.
 
-| Key | Action |
-| --- | --- |
-| `Tab` / `Shift+Tab` | Cycle sidebar → table → search → now-playing bar |
-| `↑` `↓` / `j` `k` | Move selection in the focused region |
-| `Enter` | Play selection or open the playlist under the cursor |
-| `/` | Focus search, `Enter` submits, `Esc` cancels typing only |
-| `Space` | Play/pause |
-| `n` `p` | Next/previous track |
-| `←` `→` | Seek 10 s inside the now-playing bar |
-| `+` `-` | Volume |
-| `s` | Toggle shuffle for current playback |
-| `S` | Start and shuffle the selected or open playlist by URI, including restricted playlists; not available in search results |
-| `a` | Save the playing track to a chosen playlist: `↑` `↓` / `j` `k` choose, `Enter` saves, `Esc` cancels; only with a writable catalog and a track URI from Soloist |
-| `x` | Remove the highlighted track from the open playlist's track page: the prompt names the track and the playlist, `Enter` confirms, `Esc` cancels; only with a writable catalog, a track URI and the listing's snapshot |
-| `r` | Cycle repeat: off → context → track |
-| `F2` / `F3` | Language / theme |
-| `Esc` | Leave the focused input or panel, then quit |
-| `q` | Quit when no text input is focused |
+### Compact band — 80×24
 
-## Data and gaps
+From 80 columns and 20 rows: no boxes. A one-row library switcher names the current playlist and the `l` key, and the table drops from beneath it.
 
-| UI element | Source | Status |
+```
+Pulso                                                                    playing
+Search: type to search                                                     @user
+────────────────────────────────────────────────────────────────────────────────
+LIBRARY: Rock Chileno                                                  l library
+Rock Chileno · 42 tracks                                                        
+#  Title                             Artist                             Duration
+────────────────────────────────────────────────────────────────────────────────
+>1 Tren al Sur                       Los Prisioneros                    5:36    
+ 2 Estrechez de Corazón              Los Prisioneros                    6:21    
+ 3 Llueve sobre la Ciudad            Los Bunkers                        3:56    
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+                                                                                
+├─ ▶ Playing  ▸  ⇄ on  ▸  ↻ all  ▸  Volume 37% ────────────────────────────────┤
+│                                                                              │
+│  ┌────────┐  Estrechez de Corazón                                            │
+│  │        │  Los Prisioneros                                                 │
+│  │   EC   │  La Cultura de la Basura                                         │
+│  │        │                                                                  │
+│  └────────┘  2:14 ━━━━━━━╸──────────── 6:21                                  │
+│                                                                              │
+│              Playlist: Rock Chileno                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Minimum band — 40×12
+
+From 40 columns and 12 rows: the library switcher and the player box, and the table too when the height leaves rows for its header and one track; at 40×12 it does not, so only the switcher row is drawn.
+
+```
+Pulso                            playing
+Search: type to search             @user
+────────────────────────────────────────
+LIBRARY: Rock Chileno          l library
+                                        
+────────────────────────────────────────
+                                        
+├─ ▶ ▸ ⇄ on ▸ ↻ all ▸ Volume 37% ──────┤
+│                                      │
+│  Estrechez de Corazón                │
+│  2:14 ━━━━━━━╸──────────── 6:21      │
+└──────────────────────────────────────┘
+```
+
+### Insufficient band
+
+Below 40 columns or 12 rows one centred row says `Minimum 40×12 · now 39×11`; there is no frame.
+
+## Sizes (one matrix)
+
+The width conditions are floors and the height decides, so the first band in the ladder whose floor the window reaches wins: a height that misses a band falls to the next richer shape that fits, never to the poorest. That is why 120×29 uses the medium band and 100×25 the compact one. This matrix is the single source of truth and is copied from the feature document.
+
+| Band | Condition | Zones | Player box | Cover | Proof |
+| --- | --- | --- | --- | --- | --- |
+| Wide | width ≥ 120 and height ≥ 30 | library + table + queue/context | 10 interior rows | yes | 140×40, 120×34 |
+| Medium | width ≥ 100 and height ≥ 26, also above 120 columns when the height misses the wide band | library + table; queue with `c` | 10 rows | yes | 100×30 |
+| Compact | width ≥ 80 and height ≥ 20 | library switcher + table | 8 rows | yes | 80×24 |
+| Minimum | width ≥ 40 and height ≥ 12 | library switcher and the player box, and the table when the height leaves rows for its header | 6 rows | no | 40×12, 79×23 |
+| Insufficient | width < 40 or height < 12 | size message, no frame | — | — | 39×11 |
+
+Rules that do not change with the band: the status line always lives on the player box's top border; the box never grows past its band height and, when the window is short, is cropped below it so the bottom border is never lost; the table cedes its rows first; no row overflows the width.
+
+## Controls (one key, one action)
+
+`q` is the application exit: it only quits while no text field has the focus; `Ctrl+C` always quits. Inside the workspace `Esc` never quits: it returns to the table or cancels what has the focus, and the setup wizard is the one surface that still exits on `Esc`.
+
+| Scope | Key | Action |
 | --- | --- | --- |
-| Playlist names | `GET /v1/me/playlists` | exists |
-| Playlist tracks and durations | `GET /v1/playlists/{id}/items` | exists; `total` needs keeping, restricted playlists need the existing fallback |
-| Playlist snapshot for removal | `GET /v1/playlists/{id}?fields=snapshot_id` | new; the items page does not return `snapshot_id`, so the snapshot is read from the playlist object next to the page, and a failed or missing snapshot only leaves removal unavailable |
-| Search results | `GET /v1/search?type=track` | exists, currently the only view |
-| User handle | `GET /me` `display_name` | new, no extra scope |
-| Shuffle, repeat, device, volume | Soloist `playback_state.options` and `device_changed` | partially mapped; add shuffle/repeat |
-| Confirmed playlist context | Soloist `playback_state.context` and `context_changed` | show only a validated playlist entity, independent of the library selection |
-| Seek | `seek` command, `position_sync` | transport exists, UI key is new |
-| Skipping to a track in a playlist | `play` with URI starts the context | exists |
-| Saving the playing track | `POST /v1/playlists/{id}/items` with `uris` and Soloist's `item.uri` | new; needs `playlist-modify-private` and `playlist-modify-public`, recovered with one explicit reauthorization when an older session approved read-only or the refusal names no cause |
-| Removing a playlist track | `DELETE /v1/playlists/{id}/items` with `items` (the row's URI) and the playlist's `snapshot_id` | new; removes one occurrence, reads the listing again when Spotify reports a stale snapshot, and reuses the same single explicit reauthorization |
+| Global | `q` / `Ctrl+C` | Quit |
+| Global | `Space` | Play / pause |
+| Global | `n` / `b` | Next / previous track |
+| Global | `+` / `-` | Volume |
+| Global | `←` / `→` | Back / forward 10 s |
+| Global | `r` | Repeat: off → all → one |
+| Global | `F2` / `F3` | Language / theme |
+| Global | `?` | Help: the only key reference |
+| Global | `Esc` | Back to the table or cancel what has the focus |
+| Zone | `l` | Library |
+| Zone | `/` | Search (the field swallows `q`, `s`, `r`, `+`, `-`) |
+| Zone | `c` | The table shows the queue and takes the focus (the wide band's column is informative only) |
+| Library | `j` / `k`, `Enter` | Move the cursor, open the playlist |
+| Library | `s` | Play the selected playlist shuffled |
+| Table | `j` / `k`, `Enter` | Move the cursor, play the row |
+| Table | `a` / `x` | Save the playing track / remove the highlighted row |
+
+`?` opens the full-screen help, the only key reference: it groups every control by scope — global, zones, library, table, search — and `?` or `Esc` closes it. Focus moves only with the zone keys: there is no focus cycle and no hint line. `s` outside the library is shuffle for the current playback; in the library it plays the selected playlist shuffled.
+
+## Cover
+
+The cover fills a slot of 10 columns by 5 rows: half blocks `▀` with 24-bit colour, where each cell paints two pixels of a 10×10 reduction of the album image. The initials block — two letters of the title in a box — stands in whenever there is no image.
+
+- The URL comes from `album.images` in the responses the app already requests (`/v1/search` and `/v1/playlists/…/items`); the playing track that no loaded page brought is resolved with one narrow `GET /v1/tracks/…?fields=album.images`.
+- Download and decode use `image/png` and `image/jpeg` from the standard library: no new dependency and no new scope. The download is capped at 4 MiB and the header at one million pixels before decoding; the image is reduced by block average and drawn with 24-bit colour.
+- The first paint shows the initials block and never waits for the image; the result is cached in memory per URL and a failed download is remembered as well, leaving the initials with no notice and no error row.
+- The slot rule is one and shared by drawing and requesting — at least 80 columns and 8 interior rows — so a window without a slot downloads nothing, and a window that grows into the slot asks for the image then.
+
+## Data
+
+| Element | Source | State |
+| --- | --- | --- |
+| Playlists and owners | `GET /v1/me/playlists` | delivered, paged |
+| Tracks, durations and total | `GET /v1/playlists/…/items` | delivered, paged; a restricted playlist says its contents are unavailable and plays by URI with `Enter` |
+| Playlist snapshot for removal | `GET /v1/playlists/…?fields=snapshot_id` | delivered; the items page does not return it, so it is read from the playlist object next to the page, and a missing snapshot only leaves `x` unavailable |
+| Search results | `GET /v1/search?type=track` | delivered, ten per request |
+| Account handle | `/me` `display_name` | delivered; a missing name shows no label |
+| Shuffle, repeat, volume and playing state | Soloist `playback_state.options` and its events | delivered; the box shows what Soloist reported, never an optimistic guess beyond the pending intent |
+| Confirmed playlist context | Soloist `playback_state.context` and `context_changed` | delivered; only a validated playlist entity is named |
+| Queue | Soloist `get_queue` | delivered; the wide band's column and the table's `c` view read it |
+| Seek | `seek` command and `position_sync` | delivered; the bar moves at once and Soloist corrects it |
+| Saving the playing track | `POST /v1/playlists/…/items` with `uris` and Soloist's `item.uri` | delivered; needs the write scopes, recovered with one explicit reauthorization |
+| Removing a playlist track | `DELETE /v1/playlists/…/items` with `items` and the playlist's `snapshot_id` | delivered; removes one occurrence, reads the listing again on a stale snapshot and reuses the same single reauthorization |
+| Album cover | `album.images` in the responses above, plus one narrow track query | delivered; standard library decode, 24-bit half blocks |
 
 Playlist shuffle sends `play` with the playlist URI, waits for acceptance and confirmation of that playlist on the current Soloist session, then sends `set_shuffle`. An intervening observed change away from the confirmed context cancels the pending action. The commands are not atomic: an unobserved context switch between confirmation and command execution can still affect different playback. The first track is not guaranteed to be random. Spotify manages Autoplay; Pulso does not modify or simulate it.
 
-Save to playlist reads Soloist's `item.uri` and keeps it only when it is a track URI, so a missing or non-track item leaves the action unavailable instead of saving the wrong thing. Both write paths use Spotify's current playlist-items route: adding keeps the `uris` body and removing sends `items` with the playlist's `snapshot_id`, which the library reads from the playlist object because the items page does not return it. The chooser reuses the playlist page the library already loads, including its paging; `Enter` sends one request and the success notice appears only after Spotify accepts it. A `403` that does not clearly state that this account cannot change that particular playlist offers one explicit reauthorization with the wizard's browser-and-link presentation and retries the save once, because reapproving can fix a missing grant; a refusal that names the playlist the account cannot edit is reported as such without a retry. Any other failure is one non-blocking notice named for the playlist, with no cause invented. Playback is never touched and Spotify response bodies are never rendered.
+Save keeps Soloist's `item.uri` only when it is a track URI, so a missing or non-track item leaves the action unavailable instead of saving the wrong thing. Both write paths use Spotify's current playlist-items route: adding keeps the `uris` body and removing sends `items` with the playlist's `snapshot_id`. A `403` that does not clearly state that this account cannot change that particular playlist offers one explicit reauthorization with the wizard's browser-and-link presentation and retries once; a refusal that names the playlist the account cannot edit is reported as such without a retry. Playback is never touched and Spotify response bodies are never rendered.
 
-Remove from playlist is the mirror image on the browsed playlist's track page: every row carries the snapshot of the playlist it came from, read from the playlist object because the items page does not return `snapshot_id`, and `x` asks for an explicit confirmation that names the track and the playlist, and only the chosen occurrence is sent. Because the snapshot describes the playlist the person acted on, a duplicated track loses exactly one entry. A failed or missing snapshot is not invented as a version: it just leaves `x` unavailable. When Spotify reports that the snapshot is stale, Pulso reads the playlist again and asks again instead of guessing which occurrence to drop; a missing write scope, and any rejection that does not clearly name a playlist this account cannot edit, reuses the same single explicit reauthorization and retry. Success names the track and the playlist and reloads the listing so the row disappears; any other failure is one non-blocking notice. Playback, the queue and Spotify response bodies stay untouched.
+## Out of this slice
 
-Albums, artists, liked songs and podcasts are still out of this slice: they need new scopes and re-authorization.
-
-## Slices
-
-| Slice | Content | Acceptance |
-| --- | --- | --- |
-| U1 Shell | Frame, top bar, sidebar, table region, now-playing bar, key hints, focus model, `Tab` routing, i18n and theme applied | Renders inside 120×40, 100×30, 80×24 and 40×12 with no overflow; focus cycles and never traps typing; `q` quits only outside text input |
-| U2 Library | Sidebar playlists from the Web API, table of tracks with `#`, title, artist, duration, header with total, restricted-playlist fallback, loading and empty states | Selecting a playlist loads its tracks; `Enter` plays it; a restricted playlist says so and still plays by URI; paging reaches more than one page |
-| U3 Playing bar | Title, artist, progress interpolated from `position_sync`, shuffle/repeat/volume/device, seek and mode keys wired to Soloist | Bar reflects Soloist state pushed from another device within one event; seek lands within a second; shuffle/repeat round-trip |
-| U4 Search | `/` focuses the top bar, results replace the table, `Enter` plays, `Esc` returns to the playlist | Search is reachable from any panel; returning restores the previous table and cursor |
-| U5 Polish | Narrow layouts, empty/error copy in both languages, palette contrast, keyboard hints that follow focus, removal of the old modal overlay | All prior tests still pass; no emoji; each state has a glyph or word, not color alone |
-| U6 Save | `a` opens a chooser over the library's playlist page, one save request, success notice only after Spotify accepts, one explicit reauthorization for a missing write scope | Chooser names the targeted playlist, `Enter` saves, `Esc` cancels; a read-only catalog hides the action; failures stay non-blocking and playback is untouched |
-| U7 Remove | `x` on a playlist's track page asks to remove the highlighted track, sending the listing's snapshot so only the chosen occurrence goes | The prompt names the track and playlist; `Enter` confirms and `Esc` cancels; a stale snapshot reads the listing again and asks again, a missing write scope reuses the one explicit reauthorization, the list reloads after success and playback is untouched |
-
-Each slice is one reviewable commit; U1–U3 are the visible change, U4 removes the overlay, U5 closes the polish, U6 adds saving and U7 adds removal, none of them touching playback.
+Albums, artists, liked songs and podcasts need new scopes and a new authorization, so they stay out. There is no device selection either: Pulso always plays in this console, which is why the box spends no column on a device and only names a remote one in its context line. No endpoint, payload or scope was added for the cover beyond the single narrow track query.
 
 ## Constraints and risks
 
 - Playlist contents stay limited to owned or collaborative playlists in Spotify development mode; the fallback is part of the design, not an error.
-- Saving a track depends on the Web API write scopes: an older read-only session is recovered with one explicit reauthorization, and any rejection that does not clearly name a playlist the account cannot edit offers that same single reauthorization instead of claiming the playlist cannot be changed. Only a refusal that names the missing permission on that playlist is reported without a retry.
-- Removing a track needs the snapshot of the playlist the row came from, read from the playlist object because the items page does not return it; a failed or missing snapshot leaves removal unavailable instead of inventing a version, a stale snapshot makes Pulso read the listing again and ask again instead of guessing which occurrence to drop, and duplicates are removed one at a time. The rows of a browsed playlist carry that snapshot, so a search result or a catalog that cannot write offers no removal.
-- Search is capped at 10 results per request; the table must page instead of truncating silently.
-- Seek and mode commands are best-effort: Soloist confirms dispatch, not the resulting state; the bar must show the event, never an optimistic guess for longer than one event.
-- Text entry must swallow `q`, `s`, `r`, `+` and `-` so a search query can contain them.
-- Unicode glyph width is fixed at one cell; no emoji, no CJK in chrome.
-- Keep the transport, setup wizard, pause-on-exit, preferences and theme system unchanged; the UI consumes them.
+- Saving and removing a track depend on the Web API write scopes: an older read-only session is recovered with one explicit reauthorization, and a rejection that does not clearly name a playlist the account cannot edit offers that same single reauthorization instead of claiming the playlist cannot be changed.
+- Removing a track needs the snapshot of the playlist the row came from; a failed or missing snapshot leaves removal unavailable, a stale snapshot makes Pulso read the listing again and ask again, and duplicates are removed one at a time.
+- Search is capped at 10 results per request; the table pages instead of truncating silently.
+- Seek and mode commands are best-effort: Soloist confirms dispatch, not the resulting state; the box shows the reported event.
+- Text entry swallows `q`, `s`, `r`, `+` and `-` so a search query can contain them.
+- Unicode glyph width is fixed at one cell; no emoji, and every state is a glyph plus a word, never colour alone.
+- The transport, the setup wizard, pause-on-exit, preferences and the theme system are unchanged; the workspace only consumes them.

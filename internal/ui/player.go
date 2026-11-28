@@ -2093,11 +2093,14 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 
 	title, artist, album := m.playerBoxText()
 	layout := playerBoxLayoutFor(interior)
-	duration := int64(0)
+	// Una caja que no está viva no afirma nada de la sesión, y el tiempo es
+	// parte de esa afirmación: el total en cero y la posición en cero, para que
+	// la línea no deje una última posición junto a un total que ya no existe.
+	var position, duration int64
 	if m.playerBoxCondition() == playerBoxLive {
-		duration = m.state.Track.DurationMS
+		position, duration = m.playhead(), m.state.Track.DurationMS
 	}
-	progress := playerProgress(m.playhead(), duration, textWidth)
+	progress := playerProgress(position, duration, textWidth)
 
 	// Las filas se reparten por prioridad: el título y el tiempo sobreviven a
 	// cualquier altura; el artista y el álbum solo cuando hay sitio para ellos.
