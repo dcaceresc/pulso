@@ -11,7 +11,6 @@ import (
 	"image/png"
 	"net/http"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -632,34 +631,26 @@ func TestCoverAnsiRowsAreStripped(t *testing.T) {
 // coverSixelPlayer construye el espacio de trabajo con la carátula ya
 // decodificada y el modo gráfico inyectado: el terminal es un búfer y la celda
 // la decide la prueba, así que nada toca un terminal real.
-func coverSixelPlayer(t *testing.T, width, height int) (*playerModel, *bytes.Buffer) {
+func coverSixelPlayer(t *testing.T, width, height int) *playerModel {
 	t.Helper()
 	fetch := &coverFetchFake{serve: func(context.Context, string) ([]byte, error) {
 		return coverImagePNG(t, 40, 40, color.RGBA{R: 0x10, G: 0x80, B: 0x30, A: 0xFF}), nil
 	}}
 	m := coverPlayer(t, width, height, nil, fetch)
-	terminal := &bytes.Buffer{}
-	m.sixel = coverGraphics{renderer: coverSixel, cell: coverCell{width: 10, height: 20}, out: terminal}
+	m.sixel = coverGraphics{renderer: coverSixel, cell: coverCell{width: 10, height: 20}}
 	m.covers.urls[coverFixtureURI] = coverFixtureURL
 	m = coverState(t, m, coverTrackState(coverFixtureURI))
-	m = coverSettle(t, m, m.coverRequest())
-	return m, terminal
+	return coverSettle(t, m, m.coverRequest())
 }
 
-// coverFailWriter es el terminal que rechaza la imagen: una emisión que falla
-// devuelve la ranura al medio bloque.
-type coverFailWriter struct{}
-
-func (coverFailWriter) Write([]byte) (int, error) {
-	return 0, errors.New("fixture terminal refused the image")
+// coverSixelImages cuenta las imágenes que viajan en el cuadro.
+func coverSixelImages(view string) int {
+	return strings.Count(view, "\x1bP0;0;8q")
 }
 
-// coverStep entrega un mensaje benigno: el mensaje siguiente es el que escribe la
-// carátula que el cuadro anterior dejó pendiente.
-func coverStep(t *testing.T, m *playerModel) *playerModel {
-	t.Helper()
-	model, _ := m.Update(playerTickMsg{})
-	return model.(*playerModel)
+// coverSixelLastLine es la última línea del cuadro: la única que puede llevar la imagen.
+func coverSixelLastLine(view string) string {
+	return view[strings.LastIndex(view, "\n")+1:]
 }
 
 // coverPlacement es la fila y la columna donde la vista deja la ranura: el borde
@@ -752,7 +743,7 @@ func TestCoverSixelScalesToTheSlotInPixels(t *testing.T) {
 		{120, 34, 200},
 		{80, 24, 100},
 	} {
-		m, _ := coverSixelPlayer(t, tt.width, tt.height)
+		m := coverSixelPlayer(t, tt.width, tt.height)
 		art, ok := m.coverSixelArt()
 		if !ok {
 			t.Fatalf("%dx%d has no graphic cover", tt.width, tt.height)
@@ -777,284 +768,122 @@ func TestCoverSixelScalesToTheSlotInPixels(t *testing.T) {
 // TestCoverSixelLeavesTheSlotBlank fija la vista del modo gráfico: la ranura se
 // queda en blanco —ni medios bloques ni iniciales— y todo lo demás es la misma
 // caja, con cada fila del ancho exacto de la ventana.
-func TestCoverSixelLeavesTheSlotBlank(t *testing.T) {
-	blocks, _ := coverSixelPlayer(t, 120, 40)
-	blocks.sixel.renderer = coverBlocks
-	graphic, _ := coverSixelPlayer(t, 120, 40)
-
-	want := playerViewRows(t, blocks, 120, 40)
-	got := playerViewRows(t, graphic, 120, 40)
-	slot := playerArtSlot(120, 40)
-	drawn := 0
-	for index := 0; index < len(want); index++ {
-		if lipgloss.Width(got[index]) != 120 {
-			t.Fatalf("row %d measures %d cells, want 120: %q", index, lipgloss.Width(got[index]), got[index])
+// TestCoverSixelRidesTheLastLine fija la colocación: la imagen viaja una sola vez,
+// en la última línea del cuadro, y el cuadro conserva su alto y el ancho de cada
+// fila; con la misma clave, el cuadro siguiente no la repite.
+func TestCoverSixelRidesTheLastLine(t *testing.T) {
+	for _, size := range [][2]int{{120, 40}, {120, 34}, {100, 30}, {80, 24}} {
+		m := coverSixelPlayer(t, size[0], size[1])
+		view := m.View()
+		if got := coverSixelImages(view); got != 1 {
+			t.Fatalf("%dx%d carries %d images, want one: %q", size[0], size[1], got, view)
 		}
-		if strings.Contains(got[index], coverUpperHalf) {
-			t.Fatalf("the graphic cover still draws half blocks on row %d: %q", index, got[index])
+		if last := coverSixelLastLine(view); !strings.HasPrefix(last, "\x1b[") {
+			t.Fatalf("%dx%d does not carry the image in its last line: %q", size[0], size[1], last)
+		} else if lipgloss.Width(last) != size[0] {
+			t.Fatalf("%dx%d the escape widened its line to %d cells", size[0], size[1], lipgloss.Width(last))
 		}
-		if !strings.Contains(want[index], coverUpperHalf) {
-			if got[index] != want[index] {
-				t.Fatalf("row %d changed outside the slot:\nblocks:  %q\nsixel:   %q", index, want[index], got[index])
+		rows := playerViewRows(t, m, size[0], size[1])
+		if len(rows) != size[1] {
+			t.Fatalf("%dx%d fills %d rows, want %d", size[0], size[1], len(rows), size[1])
+		}
+		for index, row := range rows {
+			if lipgloss.Width(row) != size[0] {
+				t.Fatalf("%dx%d row %d measures %d cells, want %d: %q", size[0], size[1], index, lipgloss.Width(row), size[0], row)
 			}
-			continue
 		}
-		drawn++
-		if expected := coverBlankSlotRow(want[index], slot); got[index] != expected {
-			t.Fatalf("row %d is not the blank slot:\nwant: %q\ngot:  %q", index, expected, got[index])
-		}
-	}
-	if drawn != slot.rows {
-		t.Fatalf("the blocks view draws the cover in %d rows, want %d", drawn, slot.rows)
-	}
-	if strings.Contains(strings.Join(got, "\n"), coverInitialsTop(slot)) {
-		t.Fatalf("the initials block survived the graphic cover:\n%s", strings.Join(got, "\n"))
-	}
-	if art, ok := graphic.coverSixelArt(); !ok || graphic.sixel.painted != art.key {
-		t.Fatal("the view did not reserve the slot for the graphic cover")
-	}
-}
-
-// coverBlankSlotRow sustituye por espacios las celdas de la ranura en una fila
-// ya sin color: la misma fila que la vista deja en blanco.
-func coverBlankSlotRow(row string, slot artSlot) string {
-	runes := []rune(row)
-	for index := coverSixelColumn - 1; index < coverSixelColumn-1+slot.columns; index++ {
-		if index < len(runes) {
-			runes[index] = ' '
+		// El cuadro siguiente tiene la misma clave: no repite la imagen.
+		if again := m.View(); coverSixelImages(again) != 0 {
+			t.Fatalf("%dx%d repeated the image without a change", size[0], size[1])
 		}
 	}
-	return string(runes)
 }
 
-// TestCoverSixelWritesAfterTheBlankFrame fija el orden: la vista deja la ranura
-// en blanco, el tic vuelve después de ese cuadro y solo entonces se escribe la
-// imagen, de modo que el repintado que la reservó no puede borrarla.
-func TestCoverSixelWritesAfterTheBlankFrame(t *testing.T) {
-	m, terminal := coverSixelPlayer(t, 120, 40)
-	// La imagen ya está decodificada y la vista todavía no reservó su lugar.
-	m = coverStep(t, m)
-	playerViewRows(t, m, 120, 40)
-	if terminal.Len() != 0 {
-		t.Fatalf("the reserving frame wrote the image: %q", terminal.String())
+// TestCoverSixelKeepsTheSlotContent fija que la ranura sigue llevando su medio
+// bloque como contenido inmediato: la imagen se dibuja encima, en la última línea.
+func TestCoverSixelKeepsTheSlotContent(t *testing.T) {
+	m := coverSixelPlayer(t, 120, 40)
+	view := m.View()
+	if got, want := strings.Count(view, coverUpperHalf), playerArtWide.columns*playerArtWide.rows; got != want {
+		t.Fatalf("the slot draws %d half blocks, want %d", got, want)
 	}
-	// El mensaje siguiente llega con la ranura ya dibujada: escribe.
-	m = coverStep(t, m)
-	if terminal.Len() == 0 || m.sixel.emitted == "" {
-		t.Fatal("the reserved slot was not written on the next message")
+	if strings.Contains(view, coverInitialsTop(playerArtWide)) {
+		t.Fatal("the initials block survived the cover")
 	}
 }
 
-// coverSixelWriter es el terminal de la prueba: guarda lo escrito y la goroutine
-// que lo escribió.
-type coverSixelWriter struct {
-	written   bytes.Buffer
-	goroutine string
-}
-
-func (w *coverSixelWriter) Write(p []byte) (int, error) {
-	w.written.Write(p)
-	w.goroutine = coverGoroutine()
-	return len(p), nil
-}
-
-// coverGoroutine es la cabecera del volcado de la goroutine actual: lo único que
-// distingue el hilo de la interfaz de una goroutine aparte.
-func coverGoroutine() string {
-	buffer := make([]byte, 64)
-	line, _, _ := strings.Cut(string(buffer[:runtime.Stack(buffer, false)]), "\n")
-	return line
-}
-
-// TestCoverSixelEmitsOncePerChange fija cuándo se escribe la imagen: una vez por
-// pista, por tamaño de ventana y por tamaño de la imagen, y nunca en un
-// repintado, porque sus filas no cambian y Bubble Tea no las vuelve a escribir.
-func TestCoverSixelEmitsOncePerChange(t *testing.T) {
-	m, terminal := coverSixelPlayer(t, 120, 40)
-	rows := playerViewRows(t, m, 120, 40)
-	if terminal.Len() != 0 {
-		t.Fatalf("the first paint wrote to the terminal: %q", terminal.String())
-	}
-	row, column := coverPlacement(t, rows)
-	m = coverStep(t, m)
-	if !bytes.HasPrefix(terminal.Bytes(), []byte(fmt.Sprintf("\x1b[%d;%dH", row, column))) {
-		t.Fatalf("the image is not placed at its slot (%d;%d): %q", row, column, terminal.String())
-	}
-	if !bytes.Contains(terminal.Bytes(), []byte("\x1bP")) {
-		t.Fatalf("the emission carries no sixel block: %q", terminal.String())
-	}
-	written := terminal.Len()
-
-	// Un repintado y un estado nuevo de la misma pista no la escriben otra vez.
-	for i := 0; i < 3; i++ {
-		playerViewRows(t, m, 120, 40)
-		m = coverState(t, m, coverTrackState(coverFixtureURI))
-		m = coverStep(t, m)
-	}
-	if terminal.Len() != written {
-		t.Fatalf("the repaints wrote %d bytes more", terminal.Len()-written)
-	}
-
-	// Otro tamaño de ventana la escribe otra vez, en la ranura nueva.
-	rows = playerViewRows(t, m, 80, 24)
-	row, column = coverPlacement(t, rows)
-	m = coverStep(t, m)
-	second := terminal.Bytes()[written:]
-	if !bytes.HasPrefix(second, []byte(fmt.Sprintf("\x1b[%d;%dH", row, column))) {
-		t.Fatalf("the resized image is not placed at its slot (%d;%d): %q", row, column, second)
-	}
-	if !bytes.Contains(second, []byte(`"1;1;100;100`)) {
-		t.Fatalf("the compact slot is not 100x100 pixels: %q", second)
-	}
-
-	// Otra pista la escribe otra vez.
-	written = terminal.Len()
+// TestCoverSixelReplacesTheImageOnAChange fija que un cambio de estado reemplaza la
+// imagen: cada cuadro nuevo lleva la secuencia de la pista y del tamaño nuevos.
+func TestCoverSixelReplacesTheImageOnAChange(t *testing.T) {
+	m := coverSixelPlayer(t, 120, 40)
+	view := m.View()
+	first := coverSixelImages(view)
 	m.covers.urls["spotify:track:otra"] = coverFixtureURL
 	m = coverState(t, m, coverTrackState("spotify:track:otra"))
-	playerViewRows(t, m, 80, 24)
-	m = coverStep(t, m)
-	if terminal.Len() == written {
-		t.Fatal("the new track did not write its cover")
+	view = m.View()
+	if first != 1 || coverSixelImages(view) != 1 {
+		t.Fatalf("the new track carries %d images", coverSixelImages(view))
+	}
+	if !strings.Contains(view, "spotify") && !strings.Contains(coverSixelLastLine(view), "\x1b[") {
+		t.Fatalf("the new image does not ride the last line: %q", view)
+	}
+	// Otro tamaño lleva la imagen del tamaño nuevo.
+	m = coverState(t, m, coverTrackState(coverFixtureURI))
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = model.(*playerModel)
+	if last := coverSixelLastLine(m.View()); !strings.Contains(last, `"1;1;100;100`) {
+		t.Fatalf("the compact image is not 100x100 pixels: %q", last)
 	}
 }
 
-// TestCoverSixelFailureFallsBackToBlocks fija el respaldo: una escritura que falla
-// deja esa imagen en el medio bloque, sin ranura vacía y sin reintentos.
-func TestCoverSixelFailureFallsBackToBlocks(t *testing.T) {
-	m, _ := coverSixelPlayer(t, 120, 40)
-	m.sixel.out = coverFailWriter{}
-	playerViewRows(t, m, 120, 40)
-	m = coverStep(t, m)
-	if m.sixel.emitted != "" || m.sixel.failed == "" {
-		t.Fatalf("a failed write left emitted=%q failed=%q", m.sixel.emitted, m.sixel.failed)
-	}
-	view := strings.Join(playerViewRows(t, m, 120, 40), "\n")
-	if !strings.Contains(view, coverUpperHalf) {
-		t.Fatalf("a failed write left the slot blank:\n%s", view)
-	}
-	// No se reintenta: esa misma imagen ya falló.
-	writer := &coverSixelWriter{}
-	m.sixel.out = writer
-	m = coverStep(t, m)
-	if writer.written.Len() != 0 {
-		t.Fatal("a failed image was retried")
-	}
-}
-
-// TestCoverSixelForgetsAHiddenScreen fija que una pantalla que tapa la caja —la
-// ayuda, el mensaje de tamaño mínimo— olvida la imagen escrita: al volver, la
-// ranura se reserva de nuevo y la imagen se escribe otra vez.
+// TestCoverSixelForgetsAHiddenScreen fija que una pantalla que tapa la caja olvida
+// la imagen: al volver, el cuadro la escribe otra vez.
 func TestCoverSixelForgetsAHiddenScreen(t *testing.T) {
-	m, terminal := coverSixelPlayer(t, 120, 40)
-	playerViewRows(t, m, 120, 40)
-	m = coverStep(t, m)
-	written := terminal.Len()
-
+	m := coverSixelPlayer(t, 120, 40)
+	if coverSixelImages(m.View()) != 1 {
+		t.Fatal("the first frame carries no image")
+	}
 	m.help = true
-	m.View()
-	if m.sixel.emitted != "" {
-		t.Fatalf("the help kept the image as written: %q", m.sixel.emitted)
+	if view := m.View(); coverSixelImages(view) != 0 {
+		t.Fatalf("the help carries an image: %q", view)
 	}
 	m.help = false
-	playerViewRows(t, m, 120, 40)
-	m = coverStep(t, m)
-	if terminal.Len() == written {
+	if coverSixelImages(m.View()) != 1 {
 		t.Fatal("the cover was not written again after the help")
 	}
-
 	// La banda sin caja también la olvida y la recupera al volver.
-	written = terminal.Len()
 	playerViewRows(t, m, 30, 10)
-	if m.sixel.emitted != "" {
-		t.Fatalf("the minimum size kept the image as written: %q", m.sixel.emitted)
-	}
-	playerViewRows(t, m, 120, 40)
-	m = coverStep(t, m)
-	if terminal.Len() == written {
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	if coverSixelImages(model.(*playerModel).View()) != 1 {
 		t.Fatal("the cover was not written again after the minimum size")
-	}
-}
-
-// TestCoverSixelSkipsAStalePendingWrite fija que una escritura pendiente no sale si
-// entre la reserva y el mensaje siguiente la pantalla cambió: sigue pendiente, y el
-// mensaje con el estado nuevo escribe la imagen nueva.
-func TestCoverSixelSkipsAStalePendingWrite(t *testing.T) {
-	m, terminal := coverSixelPlayer(t, 120, 40)
-	playerViewRows(t, m, 120, 40)
-	m.covers.urls["spotify:track:otra"] = coverFixtureURL
-	m = coverState(t, m, coverTrackState("spotify:track:otra"))
-	if terminal.Len() != 0 || m.sixel.emitted != "" {
-		t.Fatalf("a stale pending write wrote %q and marked %q", terminal.String(), m.sixel.emitted)
-	}
-	if m.sixel.pending == nil {
-		t.Fatal("the pending image was dropped instead of kept")
-	}
-	playerViewRows(t, m, 120, 40)
-	m = coverStep(t, m)
-	art, ok := m.coverSixelArt()
-	if terminal.Len() == 0 || !ok || m.sixel.emitted != art.key {
-		t.Fatal("the new image was never written")
 	}
 }
 
 // TestCoverSixelWritesAgainAfterTheSlotReturns fija que una ranura que dejó de
 // dibujarse olvida la imagen: la misma pista que vuelve la escribe otra vez.
 func TestCoverSixelWritesAgainAfterTheSlotReturns(t *testing.T) {
-	m, terminal := coverSixelPlayer(t, 120, 40)
-	playerViewRows(t, m, 120, 40)
-	m = coverStep(t, m)
+	m := coverSixelPlayer(t, 120, 40)
+	if coverSixelImages(m.View()) != 1 {
+		t.Fatal("the first frame carries no image")
+	}
 	// La caja deja de afirmar la sesión: la ranura pierde la carátula.
 	m = coverState(t, m, playerState{})
-	playerViewRows(t, m, 120, 40)
-	written := terminal.Len()
+	if view := m.View(); coverSixelImages(view) != 0 {
+		t.Fatalf("an unavailable slot carries an image: %q", view)
+	}
 	// La misma pista y el mismo tamaño vuelven: la imagen se escribe otra vez.
 	m = coverState(t, m, coverTrackState(coverFixtureURI))
-	playerViewRows(t, m, 120, 40)
-	m = coverStep(t, m)
-	if terminal.Len() == written {
+	if coverSixelImages(m.View()) != 1 {
 		t.Fatal("the returning slot was never written again")
 	}
 }
 
-// TestCoverSixelQuitSkipsThePendingWrite fija que una salida procesada antes de la
-// escritura pendiente no escribe nada ni marca la imagen.
-func TestCoverSixelQuitSkipsThePendingWrite(t *testing.T) {
-	m, terminal := coverSixelPlayer(t, 120, 40)
-	playerViewRows(t, m, 120, 40)
-	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if terminal.Len() != 0 || m.sixel.emitted != "" {
-		t.Fatalf("a quit wrote %q and marked %q", terminal.String(), m.sixel.emitted)
-	}
-}
-
-// TestCoverSixelWritesOnTheUpdateGoroutine fija que la escritura ocurre dentro de
-// Update y en su misma goroutine: no hay comando, ni canal, ni candado que ordenar,
-// así que una salida nunca puede cruzarse con ella.
-func TestCoverSixelWritesOnTheUpdateGoroutine(t *testing.T) {
-	m, _ := coverSixelPlayer(t, 120, 40)
-	writer := &coverSixelWriter{}
-	m.sixel.out = writer
-	playerViewRows(t, m, 120, 40)
-	here := coverGoroutine()
-	before := writer.written.Len()
-	m.Update(playerTickMsg{})
-	if writer.written.Len() == before {
-		t.Fatal("the pending image was not written by the message")
-	}
-	if writer.goroutine != here {
-		t.Fatalf("the write ran on %q, want the Update goroutine %q", writer.goroutine, here)
-	}
-}
-
-// TestCoverBlocksViewIsTheFallback fija que sin Sixel la vista es la de siempre:
-// la detección en una prueba —sin terminal— elige el medio bloque, y el modo
-// forzado dibuja exactamente los mismos bytes a los dos tamaños.
 func TestCoverBlocksViewIsTheFallback(t *testing.T) {
 	t.Setenv(coverOverrideEnv, "blocks")
-	blocks, _ := coverSixelPlayer(t, 120, 40)
+	blocks := coverSixelPlayer(t, 120, 40)
 	blocks.sixel.renderer = coverBlocks
 
-	detected, _ := coverSixelPlayer(t, 120, 40)
+	detected := coverSixelPlayer(t, 120, 40)
 	// La detección real, con el modo impuesto por el entorno, no mide la celda ni
 	// pregunta nada al terminal.
 	detected.sixel = newCoverSixel()

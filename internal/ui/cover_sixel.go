@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"image"
-	"io"
 	"os"
 	"strings"
 
@@ -16,10 +15,10 @@ import (
 // lugar de reducirla a medios bloques. El medio bloque sigue siendo el respaldo
 // de todo lo que no sea Sixel y de cualquier emisión que falle.
 //
-// La escritura corre en el hilo de la interfaz, dentro de Update: no hay goroutine,
-// ni candado, ni mensaje que ordenar, así que una salida nunca puede cruzarse con
-// ella. El precio es que un terminal lento retrasa el teclado mientras dura esa
-// escritura, unos pocos kilobytes.
+// La imagen viaja dentro del cuadro: la secuencia se antepone a la última línea de
+// la vista, así el renderizador la escribe después de todas las filas que cubre y
+// ninguna de ellas la pinta encima. Es de ancho cero, así que no cambia el tamaño
+// de la vista.
 //
 // La detección es una heurística y el usuario puede imponer el modo con
 // PULSO_COVER: un terminal que no conteste a la consulta no pierde la carátula,
@@ -62,8 +61,8 @@ type coverCell struct{ width, height int }
 // de diez por cinco mide 100×100.
 var coverCellFallback = coverCell{width: 10, height: 20}
 
-// coverSixelPlan es la imagen que la caja acaba de dejar en blanco y el lugar
-// exacto del terminal donde hay que escribirla.
+// coverSixelPlan es la imagen que este cuadro lleva y el lugar exacto del
+// terminal donde hay que dibujarla.
 type coverSixelPlan struct {
 	key    string
 	image  image.Image
@@ -77,20 +76,11 @@ type coverSixelPlan struct {
 type coverGraphics struct {
 	renderer coverRenderer
 	cell     coverCell
-	// out es el terminal. Es un campo para que una prueba escriba en un búfer y
-	// ninguna prueba toque uno real.
-	out io.Writer
-	// painted es la clave de la imagen cuyas filas en blanco ya devolvió la
-	// vista: solo con esas filas en pantalla se puede escribir la imagen sin que
-	// el repintado que sigue la borre.
-	painted string
-	// emitted es la clave de la imagen que ya está escrita en el terminal.
+	// emitted es la clave de la imagen que ya viaja en el cuadro.
 	emitted string
-	// failed es la clave cuya emisión falló: esa imagen, y solo esa, vuelve al
-	// medio bloque.
+	// failed es la clave cuya codificación falló: esa imagen, y solo esa, no se
+	// vuelve a intentar.
 	failed string
-	// pending es la imagen en blanco que espera su emisión, con su lugar.
-	pending *coverSixelPlan
 }
 
 // coverRendererFor decide el modo una sola vez al arrancar. Un PULSO_COVER
@@ -145,37 +135,11 @@ func newCoverSixel() coverGraphics {
 // active distingue el modo gráfico del medio bloque.
 func (s *coverGraphics) active() bool { return s.renderer == coverSixel }
 
-// output es el terminal donde se escribe la imagen; sin escritor inyectado es la
-// salida del programa.
-func (s *coverGraphics) output() io.Writer {
-	if s.out != nil {
-		return s.out
-	}
-	return os.Stdout
-}
-
-// hidden dice si la ranura de esta clave se deja en blanco: solo cuando hay modo
-// gráfico y esa imagen no falló.
-func (s *coverGraphics) hidden(key string) bool {
-	return s.active() && key != "" && s.failed != key
-}
-
-// forget olvida la imagen ya escrita. Una pantalla que la tapa —la ayuda, el
-// mensaje de tamaño mínimo— la habrá borrado, así que se vuelve a escribir en
-// cuanto la caja regrese.
+// forget olvida la imagen que viajaba en el cuadro. Una pantalla que la tapa —la
+// ayuda, el mensaje de tamaño mínimo— o una ranura que deja de dibujarse la habrá
+// borrado, así que la misma pista y el mismo tamaño que vuelvan la escriben otra vez.
 func (s *coverGraphics) forget() {
-	s.painted, s.pending, s.emitted = "", nil, ""
-}
-
-// coverSixelBlank son las filas que la caja reserva a la imagen: espacio del
-// ancho de la ranura, para que la geometría de la caja no cambie y el terminal
-// tenga una superficie limpia donde dibujar.
-func coverSixelBlank(slot artSlot) []string {
-	rows := make([]string, 0, slot.rows)
-	for row := 0; row < slot.rows; row++ {
-		rows = append(rows, strings.Repeat(" ", slot.columns))
-	}
-	return rows
+	s.emitted = ""
 }
 
 // coverSixelArt es la imagen que la caja coloca en su ranura, con la clave que
@@ -213,51 +177,47 @@ func (m *playerModel) coverSixelArt() (coverSixelArt, bool) {
 	return coverSixelArt{key: key, image: img}, true
 }
 
-// coverSixelPaint anota la carátula gráfica que la vista acaba de dejar en
-// blanco y dónde empieza la ranura en la pantalla. boxTop es la fila de la
-// ventana del borde superior de la caja; el reparto es fijo —borde, título y
-// hueco—, así que la primera fila de la imagen se cuenta desde ahí. Una vista
-// sin carátula gráfica olvida lo anotado y la imagen escrita, que el texto borró.
-func (m *playerModel) coverSixelPaint(boxTop int) {
+// coverSixelPlan es la imagen que este cuadro debe llevar y dónde: la ranura que la
+// banda resuelta pide, contada desde el borde superior de la caja.
+func (m *playerModel) coverSixelPlan(boxTop int) (coverSixelPlan, bool) {
 	art, ok := m.coverSixelArt()
 	if !ok || boxTop < 0 {
-		m.sixel.forget()
-		return
+		return coverSixelPlan{}, false
 	}
-	m.sixel.painted = art.key
-	m.sixel.pending = &coverSixelPlan{
+	return coverSixelPlan{
 		key:    art.key,
 		image:  art.image,
 		row:    boxTop + coverSixelRowOffset,
 		column: coverSixelColumn,
-	}
+	}, true
 }
 
-// coverSixelWrite escribe la imagen en la ranura, en el hilo de la interfaz, una
-// sola vez por cambio: al cambiar de pista, al cambiar el tamaño de la ventana y
-// al cambiar el tamaño de la imagen. Nunca en cada repintado, porque Bubble Tea,
-// en la pantalla alternativa, reescribe solo las líneas que cambian: las filas en
-// blanco de la ranura no cambian entre mensajes y la imagen sobrevive. Se llama al
-// final de cada mensaje del modelo, así que el cuadro que reservó esas filas ya se
-// dibujó; escribir en el mismo mensaje que las reserva las borraría. Como corre en
-// este hilo, una salida o una tecla no pueden cruzarse con la escritura: no hay
-// goroutine, ni candado, ni mensaje que ordenar.
-func (m *playerModel) coverSixelWrite() {
-	plan := m.sixel.pending
-	art, ok := m.coverSixelArt()
-	if !ok || plan == nil || art.key != plan.key || m.sixel.painted != plan.key || m.sixel.emitted == plan.key {
-		return
+// coverSixelFrame mete la imagen en el cuadro: la secuencia se antepone a la última
+// línea, que se escribe después de todas las filas que la imagen cubre, y vuelve el
+// cursor a esa línea para que su texto no caiga sobre la ranura. Sin ranura, la
+// imagen escrita se olvida; con la misma clave, el cuadro no la repite.
+func (m *playerModel) coverSixelFrame(last string, lastRow, boxTop int) string {
+	plan, ok := m.coverSixelPlan(boxTop)
+	if !ok {
+		m.sixel.forget()
+		return last
+	}
+	if m.sixel.emitted == plan.key || m.sixel.failed == plan.key {
+		return last
 	}
 	data, err := coverSixelEncode(plan.image)
-	if err == nil {
-		_, err = m.sixel.output().Write(coverSixelPlace(plan.row, plan.column, data))
-	}
 	if err != nil {
-		// Un fallo deja esa imagen en el medio bloque, y no se reintenta.
 		m.sixel.failed = plan.key
-		return
+		return last
 	}
 	m.sixel.emitted = plan.key
+	return coverSixelSequence(plan.row, plan.column, data, lastRow) + last
+}
+
+// coverSixelSequence es la imagen precedida de su esquina y seguida de la vuelta a
+// la última fila, donde va el texto de la línea que la transporta.
+func coverSixelSequence(row, column int, data []byte, lastRow int) string {
+	return fmt.Sprintf("\x1b[%d;%dH%s\x1b[%d;1H", row, column, data, lastRow)
 }
 
 // coverSixelEncode codifica la imagen ya escalada al tamaño de la ranura. El
@@ -269,16 +229,4 @@ func coverSixelEncode(img image.Image) ([]byte, error) {
 		return nil, err
 	}
 	return buffer.Bytes(), nil
-}
-
-// coverSixelPlace lleva el cursor a la esquina de la ranura y escribe la imagen
-// ahí, en una sola llamada: el repintado de Bubble Tea escribe en el mismo
-// terminal y no debe meterse entre la posición y la imagen. La pantalla
-// alternativa empieza cada repintado en la esquina superior izquierda, así que la
-// posición del cursor tras la imagen no descoloca al resto de la vista.
-func coverSixelPlace(row, column int, data []byte) []byte {
-	place := fmt.Sprintf("\x1b[%d;%dH", row, column)
-	out := make([]byte, 0, len(place)+len(data))
-	out = append(out, place...)
-	return append(out, data...)
 }

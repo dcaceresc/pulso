@@ -508,21 +508,9 @@ func (m *playerModel) awaitState() tea.Cmd {
 }
 
 func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	model, cmd := m.update(msg)
-	// La carátula gráfica se escribe aquí, en el hilo de la interfaz y ya procesado
-	// el mensaje: el cuadro anterior fue el que reservó su ranura, y una salida
-	// procesada arriba impide la escritura en vez de cruzarse con ella.
-	m.coverSixelWrite()
-	return model, cmd
-}
-
-func (m *playerModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		// Una ventana nueva mueve la caja: la colocación anotada para la anterior
-		// ya no sirve, así que la vista que sigue es la que la vuelve a anotar.
-		m.sixel.painted, m.sixel.pending = "", nil
 		// Una ventana que crece hasta la ranura de la carátula pide lo que antes
 		// no cabía; mientras no quepa, la petición no se hace.
 		return m, m.coverRequest()
@@ -2028,12 +2016,13 @@ func (m *playerModel) View() string {
 	if len(rows) > height {
 		rows = rows[:height]
 	}
-	// La carátula gráfica se coloca en la ranura que esta misma vista dejó en
-	// blanco; una caja que no llegó a la ventana no tiene dónde escribirla.
+	// La imagen viaja en la última línea: se escribe después de todas las filas que
+	// cubre, así ninguna la pinta encima. Una caja que no llegó a la ventana no
+	// tiene dónde dibujarla.
 	if boxTop >= len(rows) {
 		boxTop = -1
 	}
-	m.coverSixelPaint(boxTop)
+	rows[len(rows)-1] = m.coverSixelFrame(rows[len(rows)-1], len(rows), boxTop)
 	return strings.Join(rows, "\n")
 }
 
@@ -2265,12 +2254,6 @@ func (m *playerModel) playerBoxState(width int) string {
 // iniciales. El segundo valor dice si las filas ya traen su color, porque la
 // carátula usa 24 bits por celda.
 func (m *playerModel) playerBoxArtLines(slot artSlot) ([]string, bool) {
-	// Con Sixel la ranura se deja en blanco y la imagen real se escribe encima,
-	// en su lugar y en píxeles; un terminal sin el protocolo, o una emisión que
-	// falló, siguen recibiendo el medio bloque.
-	if art, ok := m.coverSixelArt(); ok && m.sixel.hidden(art.key) {
-		return coverSixelBlank(slot), false
-	}
 	if rows, ok := m.covers.rows(playerText(m.state.Track.URI), slot); ok {
 		return rows, true
 	}
