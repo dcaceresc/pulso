@@ -64,12 +64,12 @@ type coverCell struct{ width, height int }
 // de diez por cinco mide 100×100.
 var coverCellFallback = coverCell{width: 10, height: 20}
 
-// coverSixelMsg es el resultado de una emisión: la clave escrita, el fallo o la
-// cancelación de una emisión que ya no corresponde a la pantalla.
+// coverSixelMsg es el resultado de una emisión: la clave escrita, el fallo, la cancelación o el desfase.
 type coverSixelMsg struct {
 	key       string
 	err       error
 	cancelled bool
+	stale     bool
 }
 
 // coverSixelReadyMsg es el tic que vuelve después del cuadro que dejó la ranura
@@ -249,6 +249,13 @@ func (m *playerModel) coverSixelPaint(boxTop int) {
 	}
 }
 
+// coverSixelWanted lee la clave que la pantalla espera; el candado nunca cubre la escritura.
+func (m *playerModel) coverSixelWanted() string {
+	m.coverMu.Lock()
+	defer m.coverMu.Unlock()
+	return m.sixel.wanted
+}
+
 // coverSixelEmit escribe la imagen en la ranura una sola vez por cambio: al
 // cambiar de pista, al cambiar el tamaño de la ventana y al cambiar el tamaño
 // de la imagen. No se escribe en cada repintado porque Bubble Tea, en la
@@ -275,14 +282,15 @@ func (m *playerModel) coverSixelEmit() tea.Cmd {
 		if err != nil {
 			return coverSixelMsg{key: key, err: err}
 		}
-		// La pantalla pudo cambiar mientras se codificaba: con el candado tomado se
-		// comprueba justo antes de escribir, y comprobar y escribir son un paso solo.
-		m.coverMu.Lock()
-		defer m.coverMu.Unlock()
-		if m.ctx.Err() != nil || m.sixel.wanted != key {
+		// Antes de escribir: si la pantalla cambió mientras se codificaba, no se escribe.
+		if m.coverSixelWanted() != key || m.ctx.Err() != nil {
 			return coverSixelMsg{key: key, cancelled: true}
 		}
 		_, err = out.Write(coverSixelPlace(row, column, data))
+		// Después de escribir: si la clave cambió, la imagen es vieja y la ranura se repinta.
+		if m.coverSixelWanted() != key {
+			return coverSixelMsg{key: key, stale: true}
+		}
 		return coverSixelMsg{key: key, err: err}
 	}
 }

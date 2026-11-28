@@ -1014,6 +1014,54 @@ func TestCoverSixelDropsAnEmissionThatNoLongerMatches(t *testing.T) {
 	}
 }
 
+// coverSixelWriter es el terminal de la prueba: guarda lo escrito y provoca, durante la escritura, el cambio pedido.
+type coverSixelWriter struct {
+	written bytes.Buffer
+	during  func()
+}
+
+func (w *coverSixelWriter) Write(p []byte) (int, error) {
+	w.written.Write(p)
+	w.during()
+	return len(p), nil
+}
+
+// TestCoverSixelChecksTheScreenAroundTheWrite fija la comprobación antes y después de escribir.
+func TestCoverSixelChecksTheScreenAroundTheWrite(t *testing.T) {
+	help := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}
+	for _, during := range []func(*playerModel){
+		func(m *playerModel) { m.Update(help) }, func(m *playerModel) { m.quitApp() },
+	} {
+		m, _ := coverSixelPlayer(t, 120, 40)
+		playerViewRows(t, m, 120, 40)
+		writer := &coverSixelWriter{during: func() { during(m) }}
+		m.sixel.out = writer
+		message := m.coverSixelEmit()()
+		if msg, ok := message.(coverSixelMsg); !ok || !msg.stale || msg.err != nil {
+			t.Fatalf("a changed screen was not reported as stale: %#v", message)
+		}
+		model, _ := m.Update(message)
+		stale := model.(*playerModel)
+		if writer.written.Len() == 0 || stale.sixel.emitted != "" || stale.sixel.pending != nil || stale.sixel.painted != "" {
+			t.Fatalf("a changed screen was not respected: wrote=%d emitted=%q", writer.written.Len(), stale.sixel.emitted)
+		}
+	}
+
+	// Un terminal atascado no detiene el modelo: la ayuda se procesa igual.
+	m, _ := coverSixelPlayer(t, 120, 40)
+	playerViewRows(t, m, 120, 40)
+	blocked, release := make(chan struct{}), make(chan struct{})
+	m.sixel.out = &coverSixelWriter{during: func() { close(blocked); <-release }}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- m.coverSixelEmit()() }()
+	<-blocked
+	m.Update(help)
+	close(release)
+	if model, _ := m.Update(<-done); !m.help || model.(*playerModel).sixel.emitted != "" {
+		t.Fatal("the write blocked the model or left the cover marked")
+	}
+}
+
 // TestCoverBlocksViewIsTheFallback fija que sin Sixel la vista es la de siempre:
 // la detección en una prueba —sin terminal— elige el medio bloque, y el modo
 // forzado dibuja exactamente los mismos bytes a los dos tamaños.

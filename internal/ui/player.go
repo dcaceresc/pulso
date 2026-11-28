@@ -567,11 +567,15 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// tamaño vuelve a pedirlo y un reintento sin fin solo gastaría cuadros.
 		return m, m.coverSixelEmit()
 	case coverSixelMsg:
-		// Cancelada, la emisión no escribe ni marca la imagen; fallida, esa imagen
-		// vuelve al medio bloque.
-		if msg.err != nil {
+		// Cancelada, no se escribió nada; desfasada, la pantalla cambió mientras se
+		// escribía y la ranura se repinta; fallida, esa imagen vuelve al medio bloque.
+		switch {
+		case msg.err != nil:
 			m.sixel.failed = msg.key
-		} else if !msg.cancelled && m.ctx.Err() == nil && m.sixel.wanted == msg.key {
+		case msg.cancelled:
+		case msg.stale || m.coverSixelWanted() != msg.key:
+			m.sixel.painted, m.sixel.pending = "", nil
+		default:
 			m.sixel.emitted = msg.key
 		}
 		return m, nil
@@ -2524,7 +2528,11 @@ func (m *playerModel) statusRows() []playerRow {
 // quitApp sale de la aplicación: `q` sin campo de texto y `Ctrl+C` siempre.
 func (m *playerModel) quitApp() tea.Cmd {
 	m.quit = true
-	// Salir deja sin efecto el `d` que quedó en vuelo.
+	// Salir deja sin efecto el `d` en vuelo y la carátula gráfica: una emisión no
+	// puede escribir ni darse por escrita tras la salida.
+	m.coverMu.Lock()
+	m.sixel.wanted = ""
+	m.coverMu.Unlock()
 	m.invalidateDiscover()
 	m.cancel()
 	return tea.Quit
