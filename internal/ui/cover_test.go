@@ -997,6 +997,25 @@ func TestCoverSixelSkipsAStalePendingWrite(t *testing.T) {
 	}
 }
 
+// TestCoverSixelWritesAgainAfterTheSlotReturns fija que una ranura que dejó de
+// dibujarse olvida la imagen: la misma pista que vuelve la escribe otra vez.
+func TestCoverSixelWritesAgainAfterTheSlotReturns(t *testing.T) {
+	m, terminal := coverSixelPlayer(t, 120, 40)
+	playerViewRows(t, m, 120, 40)
+	m = coverStep(t, m)
+	// La caja deja de afirmar la sesión: la ranura pierde la carátula.
+	m = coverState(t, m, playerState{})
+	playerViewRows(t, m, 120, 40)
+	written := terminal.Len()
+	// La misma pista y el mismo tamaño vuelven: la imagen se escribe otra vez.
+	m = coverState(t, m, coverTrackState(coverFixtureURI))
+	playerViewRows(t, m, 120, 40)
+	m = coverStep(t, m)
+	if terminal.Len() == written {
+		t.Fatal("the returning slot was never written again")
+	}
+}
+
 // TestCoverSixelQuitSkipsThePendingWrite fija que una salida procesada antes de la
 // escritura pendiente no escribe nada ni marca la imagen.
 func TestCoverSixelQuitSkipsThePendingWrite(t *testing.T) {

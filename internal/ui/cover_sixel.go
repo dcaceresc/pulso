@@ -217,11 +217,11 @@ func (m *playerModel) coverSixelArt() (coverSixelArt, bool) {
 // blanco y dónde empieza la ranura en la pantalla. boxTop es la fila de la
 // ventana del borde superior de la caja; el reparto es fijo —borde, título y
 // hueco—, así que la primera fila de la imagen se cuenta desde ahí. Una vista
-// sin carátula gráfica olvida lo anotado.
+// sin carátula gráfica olvida lo anotado y la imagen escrita, que el texto borró.
 func (m *playerModel) coverSixelPaint(boxTop int) {
 	art, ok := m.coverSixelArt()
 	if !ok || boxTop < 0 {
-		m.sixel.painted, m.sixel.pending = "", nil
+		m.sixel.forget()
 		return
 	}
 	m.sixel.painted = art.key
