@@ -59,8 +59,9 @@ func e6DeclaredWorkspace(t *testing.T) tea.Model {
 }
 
 // TestE6CapturesMatchTheRecord fija la verificación visual: cada captura mide el
-// ancho de su banda y las tres del estado entregado son idénticas a lo que la
-// vista dibuja con el estado que el registro declara.
+// ancho de su banda, las cuatro del antes y el después son idénticas a lo que la
+// vista dibuja con el estado que el registro declara, y la quinta es la carátula
+// dibujada y no el bloque de iniciales.
 func TestE6CapturesMatchTheRecord(t *testing.T) {
 	blocks := e6Captures(t)
 	for i, block := range blocks {
@@ -85,5 +86,25 @@ func TestE6CapturesMatchTheRecord(t *testing.T) {
 		if got != want {
 			t.Errorf("la captura %dx%d no coincide con el estado declarado:\n--- registro\n%s\n--- vista\n%s", size.width, size.height, want, got)
 		}
+	}
+}
+
+// TestE6CoverCaptureDrawsTheCover fija que la quinta captura muestra la imagen y
+// no las iniciales: cinco filas de diez medios bloques con color de 24 bits.
+func TestE6CoverCaptureDrawsTheCover(t *testing.T) {
+	block := e6Captures(t)[4]
+	rows, cells := 0, 0
+	for _, line := range block {
+		if !strings.Contains(line, "▀") {
+			continue
+		}
+		rows++
+		cells += strings.Count(line, "▀")
+		if strings.Contains(line, "EC") || strings.Contains(line, "┌────────┐") {
+			t.Fatalf("la captura con carátula muestra las iniciales: %q", line)
+		}
+	}
+	if rows != 5 || cells != 50 {
+		t.Fatalf("la captura con carátula dibuja %d filas y %d medios bloques; se esperaban 5 y 50", rows, cells)
 	}
 }
