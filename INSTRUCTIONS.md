@@ -122,7 +122,7 @@ La pantalla es un único espacio de trabajo con tres zonas y el reproductor al p
 - **Biblioteca:** tus listas de reproducción, con el cursor y la letra `l` que lleva el foco ahí.
 - **Tabla:** las canciones de la lista elegida, los resultados de la búsqueda o la cola, con número, título, artista y duración.
 - **Cola:** en las ventanas anchas una tercera caja muestra lo que sigue y el contexto de la reproducción; `c` devuelve la cola a la tabla y le da el foco.
-- **Reproductor:** una caja al pie. Su borde superior lleva el estado —reproduciendo, en pausa, sin conexión—, el aleatorio, la repetición y el volumen; dentro van la carátula de la pista en reproducción —o un bloque con sus iniciales cuando no hay imagen—, el título, el artista, el álbum, el tiempo con su barra y la lista o el dispositivo remoto que informa Soloist.
+- **Reproductor:** una caja al pie. Su borde superior lleva el estado —reproduciendo, en pausa, sin conexión—, el aleatorio, la repetición y el volumen; dentro van la carátula de la pista en reproducción —o un bloque con sus iniciales cuando no hay imagen—, el título, el artista, el álbum, el tiempo con la forma `transcurrido / total (restante)` justo debajo del álbum, la barra, que llega hasta el borde de la caja, y la lista o el dispositivo remoto que informa Soloist.
 
 El foco se mueve solo con la letra de cada zona: `l` lleva a la biblioteca, `/` a la búsqueda y `c` a la cola. Dentro del espacio de trabajo `Esc` nunca cierra Pulso: vuelve a la tabla o cancela lo enfocado; el asistente, en cambio, sí sale con `Esc`. Tampoco hay ciclo de foco ni línea de pistas al pie: cada zona tiene su tecla y `?` abre la ayuda, la única referencia de teclas, que las enumera por ámbitos —global, zonas, biblioteca, tabla y búsqueda—.
 
@@ -130,17 +130,19 @@ El tamaño de la ventana decide la forma de la pantalla; las condiciones de anch
 
 | Tamaño | Qué se ve | Reproductor | Carátula |
 | --- | --- | --- | --- |
-| ancho ≥ 120 y alto ≥ 30 | biblioteca, tabla y cola con su contexto | 10 filas interiores | sí |
-| ancho ≥ 100 y alto ≥ 26, también con más de 120 columnas si el alto no llega a la banda amplia | biblioteca y tabla; la cola se abre con `c` | 10 filas | sí |
-| ancho ≥ 80 y alto ≥ 20 | una fila con la biblioteca encima de la tabla | 8 filas | sí |
+| ancho ≥ 120 y alto ≥ 30 | biblioteca, tabla y cola con su contexto | 12 filas interiores | sí (20×10) |
+| ancho ≥ 100 y alto ≥ 26, también con más de 120 columnas si el alto no llega a la banda amplia | biblioteca y tabla; la cola se abre con `c` | 12 filas | sí (20×10) |
+| ancho ≥ 80 y alto ≥ 20 | una fila con la biblioteca encima de la tabla | 8 filas | sí (10×5) |
 | ancho ≥ 40 y alto ≥ 12 | la fila de la biblioteca y el reproductor, y la tabla cuando el alto deja filas para su encabezado | 6 filas | no |
 | ancho < 40 o alto < 12 | un mensaje con el tamaño mínimo, sin marco | — | — |
 
-La tabla es la que cede filas y ninguna fila desborda el ancho. En la banda mínima la caja del reproductor declara seis filas interiores y una ventana baja las recorta —a 40×12 dibuja tres— para que su borde inferior no se pierda. Solo las bandas con zonas, la amplia y la media, promueven a todo el ancho una frase de estado que no cabe en su caja —un aviso de autorización largo, por ejemplo—; en la compacta y la mínima el aviso es una fila normal y, si es más ancho que la ventana, se recorta.
+La tabla es la que cede filas y ninguna fila desborda el ancho. La carátula se dibuja en dos tamaños y la banda resuelta decide cuál: las bandas amplia y media gastan veinte columnas por diez filas y la compacta diez columnas por cinco filas. La banda mínima no gasta ninguna, por muchas filas que su caja recortada conserve. En la banda mínima la caja del reproductor declara seis filas interiores y una ventana baja las recorta —a 40×12 dibuja tres: título, artista y álbum, sin tiempo— para que su borde inferior no se pierda. Solo las bandas con zonas, la amplia y la media, promueven a todo el ancho una frase de estado que no cabe en su caja —un aviso de autorización largo, por ejemplo—; en la compacta y la mínima el aviso es una fila normal y, si es más ancho que la ventana, se recorta.
 
 `a` abre el selector de lista para guardar la canción que suena: `↑` `↓` o `j` `k` eligen la lista, el título del panel nombra la lista apuntada, `Enter` guarda y `Esc` cancela. El aviso de éxito aparece solo cuando Spotify confirmó la lista, y un fallo se muestra como una línea que no interrumpe la reproducción.
 
 `x` pide quitar de la lista abierta la canción marcada: la confirmación nombra la canción y la lista, `Enter` la quita y `Esc` cancela. Cuando Spotify acepta, el aviso nombra la canción y la lista, y la lista se vuelve a leer para que la fila desaparezca. La reproducción y la cola no se tocan.
+
+Cuando el terminal habla el protocolo gráfico Sixel —foot y Windows Terminal lo hacen—, la carátula se dibuja con la imagen real, escalada al tamaño de la ranura en píxeles y no al número de celdas, que es lo que quita el pixelado; sin ese protocolo, o mientras la imagen no llega, la caja dibuja el medio bloque de siempre. La detección se hace una sola vez al arrancar y es una heurística, así que `PULSO_COVER=sixel` la fuerza y `PULSO_COVER=blocks` la apaga —y de paso evita la consulta de arranque en un terminal que no contesta—.
 
 Con la búsqueda enfocada puedes escribir `q`, `s`, `r`, `+` y `-` sin que se disparen atajos; `Enter` busca y `Esc` sale del campo. `q` y `Ctrl+C` cierran Pulso: `q` sale cuando ningún campo de texto tiene el foco y `Ctrl+C` sale siempre.
 
@@ -158,6 +160,7 @@ Cada tecla hace una sola cosa. `?` abre la ayuda, la referencia completa por ám
 | Global | `+` / `-` | Volumen |
 | Global | `←` / `→` | Retroceder o avanzar 10 segundos |
 | Global | `r` | Repetir: apagado, lista, pista |
+| Global | `d` | Descubrir canciones parecidas a la que suena |
 | Global | `F2` / `F3` | Idioma o tema |
 | Global | `?` | Ayuda: la única referencia de teclas |
 | Global | `Esc` | Volver a la tabla o cancelar lo enfocado |
@@ -175,7 +178,9 @@ Las flechas `↑` `↓` mueven el cursor igual que `j` `k`. `s` alterna el aleat
 
 `s` en la biblioteca funciona con la URI de la lista aunque no se puedan consultar sus canciones. Pulso espera a que Soloist acepte la reproducción y confirme la lista antes de enviar una segunda orden para activar el aleatorio. No se garantiza que la primera canción sea aleatoria, y otro cliente de Spotify puede cambiar el contexto entre la confirmación y la segunda orden. Si la confirmación no llega a tiempo, Pulso no envía la segunda orden; la lista aún puede empezar a reproducirse.
 
-Pulso no cambia Autoplay. Si está activado y Spotify continúa la reproducción al terminar una lista, Spotify elige las canciones.
+Pulso no cambia Autoplay. Entrar en una lista la reproduce en orden y, cuando termina, la reproducción continúa con lo que Spotify agregue; `s` en la biblioteca mezcla la lista y, al agotarse, continúa igual. Si Autoplay está activado y Spotify continúa la reproducción al terminar una lista, Spotify elige las canciones.
+
+`d` pide a Spotify canciones parecidas a la que suena y empieza a reproducir una de ellas, elegida al azar, para que Spotify siga desde ahí con lo que corresponda. Usa la misma autorización que la búsqueda y las listas: no pide un permiso nuevo. Si esta aplicación de Spotify no conserva acceso a las recomendaciones, Pulso lo explica en una línea —«Esta aplicación de Spotify no tiene acceso a las recomendaciones.»— y no toca la reproducción; tampoco inventa una lista ni reintenta. Sin una pista de Spotify sonando, la tecla solo dice por qué no puede.
 
 `a` solo aparece con una canción en reproducción y un catálogo de Spotify que puede escribir. Después de `Enter`, Pulso espera la respuesta de Spotify: si la acepta, muestra «Guardada en …» con el nombre de la lista; si falla, muestra una línea como «No se pudo guardar en …» y la reproducción sigue igual. Cuando Spotify responde que falta el permiso de escritura (por ejemplo, una sesión aprobada antes de existir esta acción), Pulso ofrece aprobar otra vez, abre el navegador, muestra el enlace de aprobación y reintenta el guardado una sola vez. Si la lista es de otra cuenta y no se puede editar, o si la aprobación no se completa, no hay reintento. El texto de la respuesta de Spotify nunca se muestra.
 
@@ -250,6 +255,7 @@ Las pruebas usan servidores y transportes locales simulados: no hacen peticiones
 - La búsqueda devuelve diez resultados por página y exige paginar.
 - La barra de progreso se interpola entre los informes de Soloist; puede desviarse menos de un segundo.
 - El emparejamiento inicial requiere la aplicación oficial de Spotify una vez.
+- La carátula usa el protocolo Sixel o el medio bloque: los protocolos de Kitty y de iTerm2 no se usan, y un terminal que no declara Sixel al arrancar se queda en el medio bloque, salvo que `PULSO_COVER` diga otra cosa.
 
 ## Estructura del repositorio
 

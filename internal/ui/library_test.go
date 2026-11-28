@@ -369,12 +369,12 @@ func TestLibraryPlaysPlaylistAndTrackForSession(t *testing.T) {
 		t.Fatal("opening a playlist sent a playback command")
 	}
 
-	// Enter on a track plays that track for the session on screen.
+	// Enter on a row plays the open playlist: the context keeps `n` inside it.
 	m, _ = m.Update(playerViewKey("j"))
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	select {
 	case got := <-out:
-		if want := (playerCommand{Name: "play", URI: "spotify:track:two", SessionID: 21}); got != want {
+		if want := (playerCommand{Name: "play", URI: "spotify:playlist:rock", SessionID: 21}); got != want {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
 	default:
@@ -699,7 +699,7 @@ func TestLibraryUsesTheAuthorizedCatalog(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	select {
 	case got := <-out:
-		if want := (playerCommand{Name: "play", URI: "spotify:track:one", SessionID: 31}); got != want {
+		if want := (playerCommand{Name: "play", URI: "spotify:playlist:rock", SessionID: 31}); got != want {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
 	default:

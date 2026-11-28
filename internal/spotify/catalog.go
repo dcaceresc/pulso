@@ -20,10 +20,13 @@ const (
 	spotifyAPIURL = "https://api.spotify.com"
 	// Consumers advance offsets by this page size, not by the number of playable items.
 	CatalogPageSize = 10
+	// RecommendationLimit es cuántas pistas pide de una vez la tecla de
+	// descubrir: el máximo documentado para una sola semilla de pista.
+	RecommendationLimit = 20
 	// CoverWidth es el ancho de la carátula en celdas de la caja del reproductor.
 	// Elegir con él la imagen que la cubre evita descargar 640 px para dibujar
-	// diez columnas; la caja toma su ranura de aquí, así no hay dos números.
-	CoverWidth = 10
+	// veinte columnas; la caja toma su ranura de aquí, así no hay dos números.
+	CoverWidth = 20
 )
 
 var (
@@ -40,11 +43,15 @@ var (
 	// ErrPlaylistSnapshotConflict significa que la lista cambió desde que se
 	// leyó: hay que volver a leerla antes de reintentar la retirada.
 	ErrPlaylistSnapshotConflict = errors.New("Spotify playlist changed since it was read; read it again")
-	errSpotifyOffset            = errors.New("Invalid Spotify catalog offset")
-	errSpotifyPlaylistURI       = errors.New("Invalid Spotify playlist URI")
-	errSpotifyTrackURI          = errors.New("Invalid Spotify track URI")
-	errSpotifySnapshot          = errors.New("Invalid Spotify playlist snapshot")
-	spotifyID                   = regexp.MustCompile(`^[A-Za-z0-9]+$`)
+	// ErrRecommendationsUnavailable significa que esta aplicación de Spotify no
+	// conserva acceso a /v1/recommendations. No hay lista que ofrecer y la tecla
+	// que lo pidió no reintenta.
+	ErrRecommendationsUnavailable = errors.New("Spotify recommendations are unavailable for this app")
+	errSpotifyOffset              = errors.New("Invalid Spotify catalog offset")
+	errSpotifyPlaylistURI         = errors.New("Invalid Spotify playlist URI")
+	errSpotifyTrackURI            = errors.New("Invalid Spotify track URI")
+	errSpotifySnapshot            = errors.New("Invalid Spotify playlist snapshot")
+	spotifyID                     = regexp.MustCompile(`^[A-Za-z0-9]+$`)
 )
 
 type Item struct {
@@ -102,9 +109,18 @@ type spotifyTrack struct {
 // ya trae: la más pequeña que alcanza el ancho de la ranura en celdas y, cuando
 // ninguna llega, la más grande. Ante dos anchos iguales gana la primera imagen
 // que los declara, para que la elección sea siempre la misma.
-func CoverImage(images []Image, minWidth int) string {
-	smallest, largest := "", ""
-	smallestWidth, largestWidth := 0, 0
+// coverSourceWidth es el ancho de origen que se prefiere pedir a Spotify. La
+// ranura dibuja pocos píxeles, pero reducir desde una imagen grande conserva el
+// detalle; partir de un original diminuto lo pierde para siempre.
+const coverSourceWidth = 640
+
+// CoverImage elige la imagen de la que se reduce la carátula: la más cercana por
+// encima de coverSourceWidth y, si ninguna llega, la mayor publicada. Antes se
+// pedía la más pequeña que cubriera la ranura, que es exactamente lo que se veía
+// pixelado.
+func CoverImage(images []Image) string {
+	best, bestWidth := "", 0
+	largest, largestWidth := "", 0
 	for _, image := range images {
 		if image.URL == "" {
 			continue
@@ -112,15 +128,15 @@ func CoverImage(images []Image, minWidth int) string {
 		if largest == "" || image.Width > largestWidth {
 			largest, largestWidth = image.URL, image.Width
 		}
-		if image.Width < minWidth {
+		if image.Width < coverSourceWidth {
 			continue
 		}
-		if smallest == "" || image.Width < smallestWidth {
-			smallest, smallestWidth = image.URL, image.Width
+		if best == "" || image.Width < bestWidth {
+			best, bestWidth = image.URL, image.Width
 		}
 	}
-	if smallest != "" {
-		return smallest
+	if best != "" {
+		return best
 	}
 	return largest
 }
@@ -140,7 +156,7 @@ func (c *Catalog) TrackCover(ctx context.Context, uri string) (string, error) {
 	if err := c.request(ctx, "/v1/tracks/"+id+"?fields=album.images", &response, false); err != nil {
 		return "", err
 	}
-	return CoverImage(response.Album.Images, CoverWidth), nil
+	return CoverImage(response.Album.Images), nil
 }
 
 func (c *Catalog) Search(ctx context.Context, query string, offset int) ([]Item, bool, error) {
@@ -159,6 +175,31 @@ func (c *Catalog) Search(ctx context.Context, query string, offset int) ([]Item,
 		items = appendSpotifyTrack(items, track)
 	}
 	return items, response.Tracks.more(offset), nil
+}
+
+// Recommendations pide a Spotify pistas parecidas a la semilla, que es la pista
+// en reproducción. Devuelve la misma forma de pista que los resultados de la
+// búsqueda y usa los permisos de lista que la sesión ya tiene: ningún permiso
+// nuevo. Un 403 significa que esta aplicación de Spotify no conserva acceso al
+// endpoint, así que se reporta tal cual y no se reintenta; una semilla que no es
+// una pista de Spotify no llega a la red.
+func (c *Catalog) Recommendations(ctx context.Context, seedURI string) ([]Track, error) {
+	id := spotifyURIID(seedURI, "track")
+	if id == "" {
+		return nil, errSpotifyTrackURI
+	}
+	var response struct {
+		Tracks []*librarySpotifyTrack `json:"tracks"`
+	}
+	params := url.Values{"seed_tracks": {id}, "limit": {strconv.Itoa(RecommendationLimit)}}
+	if err := c.requestWith(ctx, "/v1/recommendations?"+params.Encode(), &response, ErrRecommendationsUnavailable); err != nil {
+		return nil, err
+	}
+	tracks := make([]Track, 0, len(response.Tracks))
+	for _, track := range response.Tracks {
+		tracks = appendLibraryTrack(tracks, track)
+	}
+	return tracks, nil
 }
 
 func (c *Catalog) Playlists(ctx context.Context, offset int) ([]Item, bool, error) {
@@ -452,8 +493,21 @@ func (c *Catalog) get(ctx context.Context, path string, params url.Values, offse
 
 // request hace una sola petición GET autenticada al host fijado de la API y
 // traduce cada fallo a un error seguro: ni el cuerpo de la respuesta ni el
-// token llegan al llamador.
+// token llegan al llamador. Un 403 se reporta como lista restringida cuando la
+// lectura son los elementos de una lista.
 func (c *Catalog) request(ctx context.Context, target string, dst any, playlistContents bool) error {
+	forbidden := error(nil)
+	if playlistContents {
+		forbidden = ErrPlaylistUnavailable
+	}
+	return c.requestWith(ctx, target, dst, forbidden)
+}
+
+// requestWith es la misma petición GET; cada lectura nombra con forbidden el
+// rechazo por permisos que sabe explicar. Sin ese error, un 403 es un fallo más
+// del catálogo, que es lo que hacen las lecturas que no dependen de un permiso
+// concreto.
+func (c *Catalog) requestWith(ctx context.Context, target string, dst any, forbidden error) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, spotifyAPIURL+target, nil)
 	if err != nil {
 		return ErrSpotifyCatalog
@@ -474,8 +528,8 @@ func (c *Catalog) request(ctx context.Context, target string, dst any, playlistC
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusForbidden:
-		if playlistContents {
-			return ErrPlaylistUnavailable
+		if forbidden != nil {
+			return forbidden
 		}
 	case http.StatusTooManyRequests:
 		return errSpotifyRateLimited

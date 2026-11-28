@@ -183,3 +183,97 @@ func TestSpotifyCatalogProfileFailure(t *testing.T) {
 		})
 	}
 }
+
+// TestSpotifyCatalogRecommendations fija la petición de descubrir: la ruta, la
+// semilla que viaja y la forma de pista que se lee de la respuesta, la misma de
+// los resultados de la búsqueda.
+func TestSpotifyCatalogRecommendations(t *testing.T) {
+	calls := 0
+	c := spotifyFixtureCatalog(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.Method != http.MethodGet || r.URL.Scheme != "https" || r.URL.Host != "api.spotify.com" || r.URL.Path != "/v1/recommendations" || r.Header.Get("Authorization") != "Bearer fixture-access" {
+			t.Fatal("unexpected recommendations request")
+		}
+		q := r.URL.Query()
+		// La semilla es el id de la pista en reproducción y el tope es el del endpoint.
+		if q.Get("seed_tracks") != "seed1" || q.Get("limit") != "20" || q.Has("offset") || len(q) != 2 {
+			t.Fatalf("recommendations query = %v", q)
+		}
+		return spotifyFixtureResponse(200, `{"tracks":[{"name":"Like it","artists":[{"name":"A"},{"name":"B"}],"duration_ms":210000,"uri":"spotify:track:one","is_playable":true,"album":{"images":[{"url":"https://img/64","width":64,"height":64},{"url":"https://img/20","width":20,"height":20}]}},{"name":"Not playable","uri":"spotify:track:two","is_playable":false},null]}`), nil
+	})
+	tracks, err := c.Recommendations(context.Background(), "spotify:track:seed1")
+	want := []Track{{Name: "Like it", Artist: "A, B", DurationMS: 210000, URI: "spotify:track:one", Cover: "https://img/64"}}
+	if err != nil || !reflect.DeepEqual(tracks, want) || calls != 1 {
+		t.Fatalf("recommendations = %#v, %v; calls=%d", tracks, err, calls)
+	}
+}
+
+// TestSpotifyCatalogRecommendationsForbidden fija que un 403 significa que esta
+// aplicación de Spotify no conserva acceso al endpoint: una sola petición, sin
+// reintento y sin cuerpo de Spotify en el mensaje visible.
+func TestSpotifyCatalogRecommendationsForbidden(t *testing.T) {
+	calls := 0
+	c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
+		calls++
+		return spotifyFixtureResponse(403, `{"error":{"message":"fixture secret body"}}`), nil
+	})
+	tracks, err := c.Recommendations(context.Background(), "spotify:track:seed1")
+	if !errors.Is(err, ErrRecommendationsUnavailable) || strings.Contains(err.Error(), "fixture secret body") || tracks != nil || calls != 1 {
+		t.Fatalf("forbidden recommendations = %#v, %v; calls=%d", tracks, err, calls)
+	}
+	if err.Error() != "Spotify recommendations are unavailable for this app" {
+		t.Fatalf("forbidden message = %q", err.Error())
+	}
+}
+
+// TestSpotifyCatalogRecommendationsSeed fija que una semilla que no nombra una
+// pista de Spotify no llega a la red: nunca se envía un seed vacío ni ajeno.
+func TestSpotifyCatalogRecommendationsSeed(t *testing.T) {
+	for _, seed := range []string{"", "spotify:track:", "spotify:album:seed1", "spotify:track:../seed", "seed1"} {
+		t.Run(seed, func(t *testing.T) {
+			calls := 0
+			c := spotifyFixtureCatalog(func(*http.Request) (*http.Response, error) {
+				calls++
+				return spotifyFixtureResponse(200, `{"tracks":[]}`), nil
+			})
+			tracks, err := c.Recommendations(context.Background(), seed)
+			if !errors.Is(err, errSpotifyTrackURI) || tracks != nil || calls != 0 {
+				t.Fatalf("seed %q = %#v, %v; calls=%d", seed, tracks, err, calls)
+			}
+		})
+	}
+}
+
+// TestSpotifyCatalogForbiddenWithoutAPlaylistRead conserva el 403 compartido de
+// las lecturas que no nombran un rechazo propio: la búsqueda y el perfil siguen
+// respondiendo un fallo del catálogo, sin cuerpo de Spotify.
+func TestSpotifyCatalogForbiddenWithoutAPlaylistRead(t *testing.T) {
+	for _, read := range []struct {
+		name string
+		path string
+		call func(*Catalog) (string, error)
+	}{
+		{"search", "/v1/search", func(c *Catalog) (string, error) {
+			items, _, err := c.Search(context.Background(), "test", 0)
+			return fmt.Sprint(items), err
+		}},
+		{"profile", "/v1/me", func(c *Catalog) (string, error) {
+			name, err := c.Profile(context.Background())
+			return name, err
+		}},
+	} {
+		t.Run(read.name, func(t *testing.T) {
+			calls := 0
+			c := spotifyFixtureCatalog(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.URL.Path != read.path {
+					t.Fatalf("unexpected path %q", r.URL.Path)
+				}
+				return spotifyFixtureResponse(403, `{"error":{"message":"fixture secret body"}}`), nil
+			})
+			if _, err := read.call(c); !errors.Is(err, ErrSpotifyCatalog) || strings.Contains(err.Error(), "fixture secret body") || calls != 1 {
+				t.Fatalf("forbidden %s = %v; calls=%d", read.name, err, calls)
+			}
+		})
+	}
+}

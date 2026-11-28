@@ -162,5 +162,5 @@ func appendLibraryTrack(tracks []Track, track *librarySpotifyTrack) []Track {
 	}
 	item := usable[0]
 	return append(tracks, Track{Name: item.Name, Artist: item.Detail, DurationMS: track.DurationMS, URI: item.URI,
-		Cover: CoverImage(track.Album.Images, CoverWidth)})
+		Cover: CoverImage(track.Album.Images)})
 }

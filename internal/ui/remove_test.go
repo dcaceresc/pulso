@@ -244,6 +244,28 @@ func TestRemoveConfirmsWithTrackAndPlaylist(t *testing.T) {
 	})
 }
 
+// removeListingRows devuelve las filas de la lista abierta que dibuja la tabla:
+// las que quedan entre su encabezado y la caja del reproductor.
+func removeListingRows(t *testing.T, m tea.Model, width, height int) string {
+	t.Helper()
+	rows := playerViewRows(t, m, width, height)
+	start := -1
+	for i, row := range rows {
+		plain := ansi.Strip(row)
+		if start < 0 && strings.Contains(plain, "#") && strings.Contains(plain, "Title") {
+			start = i
+		}
+		if strings.HasPrefix(plain, "├─") {
+			if start < 0 {
+				t.Fatalf("the player box came before the listing header:\n%s", strings.Join(rows, "\n"))
+			}
+			return strings.Join(rows[start:i], "\n")
+		}
+	}
+	t.Fatalf("the view drew no player box:\n%s", strings.Join(rows, "\n"))
+	return ""
+}
+
 // TestRemoveSuccessNotifiesAndReloads proves one accepted removal names the
 // track and the playlist, reloads the browsed listing so the row disappears and
 // leaves playback and the queue untouched.
@@ -279,6 +301,12 @@ func TestRemoveSuccessNotifiesAndReloads(t *testing.T) {
 		t.Fatalf("removed = %+v, want one removal of the chosen occurrence", got)
 	}
 	view := playerViewText(t, m, "Removed Estrechez de Corazón from Rock Chileno.")
+	// La fila quitada ya no está en la lista abierta: el nombre solo sobrevive en
+	// el aviso. Una recarga perdida volvería a dibujar la fila y esta comprobación
+	// falla, aunque el aviso siga nombrando la canción.
+	if listing := removeListingRows(t, m, 120, 40); strings.Contains(listing, "Estrechez de Corazón") {
+		t.Fatalf("the removed track is still a row of the open list:\n%s", listing)
+	}
 	if strings.Contains(view, "Estrechez de Corazón") && strings.Count(view, "Estrechez de Corazón") != 1 {
 		// La fila se fue de la tabla; el título del panel ya no la nombra.
 		t.Logf("view still names the track once:\n%s", view)
@@ -404,6 +432,83 @@ func TestRemoveStaleSnapshotReadsAgainAndAsks(t *testing.T) {
 	playerViewText(t, m, "Removed Estrechez de Corazón from Rock Chileno.")
 	if len(out) != 0 {
 		t.Fatal("recovering from a stale snapshot touched playback")
+	}
+}
+
+// TestRemoveAfterAddUsesTheFreshlyReadSnapshot reproduce el defecto de R1: una
+// escritura aceptada publica una versión nueva de la lista, así que las filas de
+// la lista abierta conservan el snapshot de la lectura anterior. Si la
+// aplicación no relee la lista tras guardar, la retirada siguiente viaja con un
+// snapshot viejo y Spotify la rechaza; la persona tendría que salir de la lista
+// y volver a entrar para poder quitar una pista.
+func TestRemoveAfterAddUsesTheFreshlyReadSnapshot(t *testing.T) {
+	// La lista ficticia se comporta como Spotify: cada lectura informa la versión
+	// vigente de la lista y cada escritura aceptada publica una nueva.
+	rows, version := libraryTracksFor("spotify:playlist:rock"), 0
+	snapshot := func() string { return fmt.Sprintf("snapshot-%d", version) }
+	added := libraryTrack{Name: "Nueva Canción", Artist: "Artista Nueva", DurationMS: 200000, URI: "spotify:track:new"}
+	api := newSaveFake(libraryPlaylistsFixture())
+	api.items = func(_ context.Context, _ string, _ int) (spotify.PlaylistItemsPage, error) {
+		return spotify.PlaylistItemsPage{Tracks: rows, Total: len(rows), Snapshot: snapshot()}, nil
+	}
+	api.add = func(_ int, _, trackURI string) (string, error) {
+		rows, version = append(rows, added), version+1
+		return snapshot(), nil
+	}
+	api.remove = func(_ int, _, trackURI, sent string) error {
+		// Spotify rechaza una retirada que nombra una versión que ya no es la actual.
+		if sent != snapshot() {
+			return spotify.ErrPlaylistSnapshotConflict
+		}
+		for i, track := range rows {
+			if track.URI == trackURI {
+				rows = append(rows[:i:i], rows[i+1:]...)
+				break
+			}
+		}
+		version++
+		return nil
+	}
+	state := saveTrackState()
+	state.Track = playerTrack{Title: added.Name, Artist: added.Artist, DurationMS: added.DurationMS, URI: added.URI}
+	m, out, _ := removeWorkspace(t, preferences{}, state, api)
+	playerViewText(t, m, "Tren al Sur", "Estrechez de Corazón")
+
+	// Guardar la pista en la lista abierta publica la versión 1 de Spotify.
+	m, _ = m.Update(playerViewKey("a"))
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter on the chooser started no save")
+	}
+	m = librarySettle(t, m, cmd)
+	if got := api.saved(); len(got) != 1 ||
+		got[0] != (saveCall{playlistURI: "spotify:playlist:rock", trackURI: added.URI}) {
+		t.Fatalf("saved = %+v, want one add to the open playlist", got)
+	}
+	// El guardado aceptado relee la lista: la fila nueva solo existe en la página
+	// que Spotify sirve después de la escritura.
+	playerViewText(t, m, "Saved to Rock Chileno.", added.Name)
+
+	// Sin cambiar de lista, la retirada siguiente usa la lectura nueva: ni un
+	// rechazo ni una segunda pregunta.
+	m, _ = m.Update(playerViewKey("j"))
+	m, _ = m.Update(playerViewKey("x"))
+	playerViewText(t, m, "Remove Estrechez de Corazón from Rock Chileno?")
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter on the confirmation started no removal")
+	}
+	m = librarySettle(t, m, cmd)
+	if got := api.removed(); len(got) != 1 || got[0] != (removeCall{
+		playlistURI: "spotify:playlist:rock", trackURI: "spotify:track:two", snapshot: "snapshot-1"}) {
+		t.Fatalf("removed = %+v, want the removal to name the listing read after the save", got)
+	}
+	view := playerViewText(t, m, "Removed Estrechez de Corazón from Rock Chileno.", added.Name, "Tren al Sur")
+	if strings.Contains(view, "from Rock Chileno?") {
+		t.Fatalf("the removal was asked again instead of using the refreshed snapshot:\n%s", view)
+	}
+	if len(out) != 0 {
+		t.Fatal("saving and removing in the same playlist touched playback")
 	}
 }
 
@@ -644,7 +749,7 @@ func TestRemoveKeepsPreExistingKeys(t *testing.T) {
 		{"menos volumen", playerViewKey("-"), saveTrackState(), []playerCommand{{Name: "set_volume", Volume: 45}}},
 		{"aleatorio", playerViewKey("s"), saveTrackState(), []playerCommand{{Name: "set_shuffle", Shuffle: true}, {Name: "get_state"}}},
 		{"repetición", playerViewKey("r"), saveTrackState(), []playerCommand{{Name: "set_repeat", Repeat: "context"}, {Name: "get_state"}}},
-		{"reproducir la fila", tea.KeyMsg{Type: tea.KeyEnter}, saveTrackState(), []playerCommand{{Name: "play", URI: "spotify:track:one"}}},
+		{"reproducir la lista desde la fila", tea.KeyMsg{Type: tea.KeyEnter}, saveTrackState(), []playerCommand{{Name: "play", URI: "spotify:playlist:rock"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			api := newSaveFake(libraryPlaylistsFixture())

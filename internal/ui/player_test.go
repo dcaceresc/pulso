@@ -310,7 +310,7 @@ func TestPlayerViewSearchInputSwallowsCommands(t *testing.T) {
 	m, out := playerViewModel(t, 100, 30, playerState{Connected: true, Status: "paused", Volume: 50})
 	m, _ = m.Update(playerViewKey("/"))
 	playerViewText(t, m, "Search: _")
-	for _, key := range []string{"q", "s", "r", "+", "-"} {
+	for _, key := range []string{"q", "s", "r", "+", "-", "d"} {
 		var cmd tea.Cmd
 		m, cmd = m.Update(playerViewKey(key))
 		if cmd != nil {
@@ -320,14 +320,14 @@ func TestPlayerViewSearchInputSwallowsCommands(t *testing.T) {
 			t.Fatalf("%q sent a playback command while typing", key)
 		}
 	}
-	view := playerViewText(t, m, "Search: qsr+-_")
+	view := playerViewText(t, m, "Search: qsr+-d_")
 	if strings.Contains(view, "Search tracks") {
 		t.Fatalf("typing opened the catalog overlay:\n%s", view)
 	}
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-	playerViewText(t, m, "Search: qsr+_")
+	playerViewText(t, m, "Search: qsr+-_")
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
-	playerViewText(t, m, "Search: qsr+ _")
+	playerViewText(t, m, "Search: qsr+- _")
 	if len(out) != 0 {
 		t.Fatal("typing space toggled playback")
 	}
@@ -2009,6 +2009,168 @@ func TestPlayerBoxDisconnectedProgressHasNoStaleTime(t *testing.T) {
 	}
 }
 
+// playerBoxInteriorRows devuelve las filas interiores de la caja del
+// reproductor, sin sus bordes laterales: las que quedan entre el borde superior
+// —el que lleva la línea de estado— y el inferior.
+func playerBoxInteriorRows(t *testing.T, m tea.Model, width, height int) []string {
+	t.Helper()
+	rows := playerViewRows(t, m, width, height)
+	top := -1
+	for i, row := range rows {
+		if strings.HasPrefix(ansi.Strip(row), "├─") {
+			top = i
+			break
+		}
+	}
+	if top < 0 {
+		t.Fatalf("the %dx%d view drew no player box:\n%s", width, height, strings.Join(rows, "\n"))
+	}
+	interior := playerBoxInterior(width, height)
+	if top+1+interior > len(rows) {
+		t.Fatalf("the %dx%d box declares %d interior rows but draws %d", width, height, interior, len(rows)-top-1)
+	}
+	inside := make([]string, 0, interior)
+	for _, row := range rows[top+1 : top+1+interior] {
+		cells := []rune(ansi.Strip(row))
+		if len(cells) < 2 {
+			t.Fatalf("the %dx%d box row %q has no borders", width, height, row)
+		}
+		inside = append(inside, string(cells[1:len(cells)-1]))
+	}
+	return inside
+}
+
+// playerArtIndent es el hueco que la ranura de la carátula deja a las líneas de
+// texto: dos columnas, la imagen y otras dos.
+func playerArtIndent(slot artSlot) string {
+	return "  " + strings.Repeat(" ", slot.columns) + "  "
+}
+
+// playerBarFixture arma la barra con la regla declarada —lo recorrido en `━`, la
+// cabeza en `╸` y el resto en `─`— para que la prueba compare la fila entera y
+// no una parte.
+func playerBarFixture(position, duration int64, width int) string {
+	filled := int(float64(position) / float64(duration) * float64(width))
+	return strings.Repeat("━", filled) + "╸" + strings.Repeat("─", width-filled-1)
+}
+
+// TestPlayerTimeAndBar fija las dos formas de R3: el tiempo dice el transcurrido,
+// el total y lo que queda, y la barra ocupa el ancho que se le da. Sin duración
+// conocida el tiempo degrada a la forma de siempre y la barra no se dibuja.
+func TestPlayerTimeAndBar(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		position, duration int64
+		want               string
+	}{
+		{"elapsed, total and remaining", 134000, 381000, "2:14 / 6:21 (-4:07)"},
+		{"start of the track", 0, 381000, "0:00 / 6:21 (-6:21)"},
+		{"end of the track", 381000, 381000, "6:21 / 6:21 (-0:00)"},
+		{"hour-long track", 3723000, 7200000, "1:02:03 / 2:00:00 (-57:57)"},
+		{"unknown duration", 62000, 0, "1:02 / --:--"},
+		{"position past the end is clamped", 500000, 381000, "6:21 / 6:21 (-0:00)"},
+		{"negative position", -5000, 381000, "0:00 / 6:21 (-6:21)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := playerTime(tt.position, tt.duration); got != tt.want {
+				t.Fatalf("playerTime(%d, %d) = %q, want %q", tt.position, tt.duration, got, tt.want)
+			}
+		})
+	}
+	for _, tt := range []struct {
+		name               string
+		position, duration int64
+		width              int
+		want               string
+	}{
+		{"start", 0, 381000, 6, "╸─────"},
+		{"middle", 134000, 381000, 6, "━━╸───"},
+		{"end", 381000, 381000, 6, "━━━━━╸"},
+		{"narrower than the minimum", 134000, 381000, playerBarMinCells - 1, ""},
+		{"unknown duration", 134000, 0, 6, ""},
+	} {
+		t.Run("bar/"+tt.name, func(t *testing.T) {
+			if got := playerBar(tt.position, tt.duration, tt.width); got != tt.want {
+				t.Fatalf("playerBar(%d, %d, %d) = %q, want %q", tt.position, tt.duration, tt.width, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPlayerBoxTimeUnderTheAlbumAndBarToTheEdge fija R3 en la matriz: las doce
+// filas interiores de las bandas amplia y media y las ocho de la compacta, el
+// tiempo justo debajo del álbum con la forma `transcurrido / total (restante)`, la
+// barra en la fila siguiente llegando hasta el borde interior y ninguna fila
+// interior vacía en la banda amplia.
+func TestPlayerBoxTimeUnderTheAlbumAndBarToTheEdge(t *testing.T) {
+	const position, duration = 134000, 381000
+	for _, size := range []struct {
+		width, height, interior int
+		art                     artSlot
+	}{
+		{120, 34, playerBoxWide, playerArtWide},
+		{100, 30, playerBoxWide, playerArtWide},
+		{80, 24, playerBoxCompact, playerArtCompact},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
+			m, _ := playerViewModel(t, size.width, size.height, playerState{
+				Connected: true, Status: "playing", Volume: 37, PositionMS: position,
+				PlaylistContext: "Rock Chileno",
+				Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros",
+					Album: "La Cultura de la Basura", DurationMS: duration},
+			})
+			rows := playerBoxInteriorRows(t, m, size.width, size.height)
+			if len(rows) != size.interior {
+				t.Fatalf("the %dx%d box declares %d interior rows, want %d", size.width, size.height, len(rows), size.interior)
+			}
+			// El orden: título, artista, álbum, tiempo y barra, con el contexto al
+			// final de la caja.
+			for row, want := range []string{"Estrechez de Corazón", "Los Prisioneros", "La Cultura de la Basura", "2:14 / 6:21 (-4:07)"} {
+				if !strings.Contains(rows[row], want) {
+					t.Fatalf("%dx%d interior row %d = %q, want %q", size.width, size.height, row, rows[row], want)
+				}
+			}
+			if want := "Rock Chileno"; !strings.Contains(rows[size.interior-1], want) {
+				t.Fatalf("the context line is not the last interior row: %q", rows[size.interior-1])
+			}
+			// La barra empieza donde empieza el texto y no deja margen derecho: ocupa
+			// todas las celdas que quedan hasta el borde interior.
+			left := "  "
+			if size.art.ok() {
+				left = playerArtIndent(size.art)
+			}
+			barWidth := size.width - 2 - lipgloss.Width(left)
+			bar := playerBarFixture(position, duration, barWidth)
+			if !strings.HasSuffix(rows[4], bar) {
+				t.Fatalf("%dx%d bar row = %q, want it to end with %q", size.width, size.height, rows[4], bar)
+			}
+			if got, want := lipgloss.Width(rows[4][:len(rows[4])-len(bar)]), lipgloss.Width(left); got != want {
+				t.Fatalf("the bar starts at column %d, want the text column at %d", got, want)
+			}
+			if got := lipgloss.Width(rows[4]); got != size.width-2 {
+				t.Fatalf("the bar row measures %d cells, want the %d of the box interior", got, size.width-2)
+			}
+		})
+	}
+	// La banda amplia no deja ninguna fila interior vacía: la carátula ocupa de la
+	// uno a la diez, el título la cero y el contexto la once.
+	m, _ := playerViewModel(t, 120, 34, playerState{
+		Connected: true, Status: "playing", Volume: 37, PositionMS: position,
+		PlaylistContext: "Rock Chileno",
+		Track: playerTrack{Title: "Estrechez de Corazón", Artist: "Los Prisioneros",
+			Album: "La Cultura de la Basura", DurationMS: duration},
+	})
+	rows := playerBoxInteriorRows(t, m, 120, 34)
+	if len(rows) != playerBoxWide {
+		t.Fatalf("the wide box draws %d interior rows, want %d", len(rows), playerBoxWide)
+	}
+	for i, row := range rows {
+		if strings.TrimSpace(row) == "" {
+			t.Fatalf("interior row %d of the wide box stays empty:\n%s", i, strings.Join(rows, "\n"))
+		}
+	}
+}
+
 // TestPlayerBoxFitsShortWideViewport fija que una ventana ancha y baja conserve
 // la caja completa: la altura interior cede antes de que el borde inferior se
 // pierda.
@@ -2682,4 +2844,318 @@ func TestPlayerViewRemoveConfirmationKeepsItsText(t *testing.T) {
 			_ = library
 		})
 	}
+}
+
+// discoverFake es el catálogo de la tecla `d`: registra cada semilla que recibió
+// y responde con las recomendaciones o el fallo que elija la prueba.
+type discoverFake struct {
+	*libraryFake
+	mu        sync.Mutex
+	seeds     []string
+	recommend func(call int, seed string) ([]libraryTrack, error)
+}
+
+func newDiscoverFake(tracks ...libraryTrack) *discoverFake {
+	fake := &discoverFake{libraryFake: &libraryFake{playlists: libraryPlaylistsFixture()}}
+	fake.recommend = func(int, string) ([]libraryTrack, error) { return tracks, nil }
+	return fake
+}
+
+func (f *discoverFake) Recommendations(_ context.Context, seed string) ([]libraryTrack, error) {
+	f.mu.Lock()
+	f.seeds = append(f.seeds, seed)
+	call, recommend := len(f.seeds), f.recommend
+	f.mu.Unlock()
+	return recommend(call, seed)
+}
+
+func (f *discoverFake) requestedSeeds() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.seeds...)
+}
+
+// discoverStateFixture is a playing session whose Soloist item is one track: the
+// only seed `d` accepts.
+func discoverStateFixture() playerState {
+	return playerState{
+		Connected: true, SessionID: 9, Status: "playing", Volume: 40,
+		Track: playerTrack{Title: "Seed", Artist: "Artist", DurationMS: 180000, URI: "spotify:track:seed"},
+	}
+}
+
+// discoverPlayer builds the workspace over a catalog that can recommend, with a
+// deterministic pick so the played row is observable.
+func discoverPlayer(t *testing.T, p preferences, state playerState, api CatalogAPI, pick int) (tea.Model, chan playerCommand) {
+	t.Helper()
+	model, out, _ := libraryNewPlayer(t, 120, 40, p, state, api.(librarySource), nil, "")
+	model.(*playerModel).discover.pick = func(int) int { return pick }
+	return model, out
+}
+
+// discoverPlayed runs `d` and the request it schedules, and returns the playback
+// command that fit through the channel, if any.
+func discoverPlayed(t *testing.T, m tea.Model, out chan playerCommand) (tea.Model, *playerCommand) {
+	t.Helper()
+	m, cmd := m.Update(playerViewKey("d"))
+	if cmd != nil {
+		m, _ = m.Update(playerViewRun(t, cmd))
+	}
+	select {
+	case command := <-out:
+		return m, &command
+	default:
+		return m, nil
+	}
+}
+
+// TestDiscoverPlaysARecommendationFromThePlayingSeed fija la tecla `d`: una sola
+// petición con la pista en reproducción como semilla y una reproducción por el
+// camino de siempre, con una de las pistas recomendadas elegida al azar.
+func TestDiscoverPlaysARecommendationFromThePlayingSeed(t *testing.T) {
+	fake := newDiscoverFake(
+		libraryTrack{Name: "One", Artist: "A", URI: "spotify:track:one"},
+		libraryTrack{Name: "Two", Artist: "B", URI: "spotify:track:two"},
+	)
+	m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 1)
+	m, played := discoverPlayed(t, m, out)
+	if played == nil {
+		t.Fatal("d sent no playback command")
+	}
+	if played.Name != "play" || played.URI != "spotify:track:two" || played.SessionID != 9 {
+		t.Fatalf("d played %#v", *played)
+	}
+	if seeds := fake.requestedSeeds(); len(seeds) != 1 || seeds[0] != "spotify:track:seed" {
+		t.Fatalf("seeds = %v", seeds)
+	}
+	if view := ansi.Strip(m.View()); strings.Contains(view, "recommendations") || strings.Contains(view, "Discover") {
+		t.Fatalf("a successful discovery left a notice:\n%s", view)
+	}
+}
+
+// TestDiscoverExplainsForbiddenWithoutTouchingPlayback fija que un 403 se
+// explica en una línea localizada, la reproducción no se toca, no se inventa una
+// lista y no se reintenta.
+func TestDiscoverExplainsForbiddenWithoutTouchingPlayback(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		p    preferences
+		want string
+	}{
+		{"english", preferences{}, "This Spotify app has no access to recommendations."},
+		{"spanish", preferences{Language: "es", Theme: "standard"}, "Esta aplicación de Spotify no tiene acceso a las recomendaciones."},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newDiscoverFake()
+			fake.recommend = func(int, string) ([]libraryTrack, error) { return nil, spotify.ErrRecommendationsUnavailable }
+			m, out := discoverPlayer(t, tt.p, discoverStateFixture(), fake, 0)
+			m, played := discoverPlayed(t, m, out)
+			if played != nil {
+				t.Fatalf("the forbidden answer touched playback: %#v", *played)
+			}
+			playerViewText(t, m, tt.want)
+			if seeds := fake.requestedSeeds(); len(seeds) != 1 {
+				t.Fatalf("recommendations were requested %d times, want one", len(seeds))
+			}
+		})
+	}
+}
+
+// TestDiscoverWithoutASeedOnlyExplainsWhy fija que ninguna sesión sin una pista
+// de Spotify sonando envía una semilla vacía: la tecla deja de hacer y lo dice.
+func TestDiscoverWithoutASeedOnlyExplainsWhy(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		state playerState
+	}{
+		{"nothing playing", playerState{Connected: true, SessionID: 9}},
+		{"not a track", func() playerState {
+			state := discoverStateFixture()
+			state.Track.URI = "spotify:episode:one"
+			return state
+		}()},
+		{"disconnected", func() playerState {
+			state := discoverStateFixture()
+			state.Connected = false
+			return state
+		}()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newDiscoverFake(libraryTrack{Name: "One", URI: "spotify:track:one"})
+			m, out := discoverPlayer(t, preferences{}, tt.state, fake, 0)
+			m, cmd := m.Update(playerViewKey("d"))
+			if cmd != nil {
+				t.Fatal("a session without a seed scheduled a request")
+			}
+			playerViewText(t, m, "Play a Spotify track to discover similar songs.")
+			if len(out) != 0 {
+				t.Fatal("a session without a seed sent a playback command")
+			}
+			if seeds := fake.requestedSeeds(); len(seeds) != 0 {
+				t.Fatalf("sent the seed %v", seeds)
+			}
+		})
+	}
+}
+
+// TestDiscoverWithoutACatalogSaysSo fija que una sesión sin catálogo no pide
+// nada y nombra lo que falta en lugar de quedarse muda.
+func TestDiscoverWithoutACatalogSaysSo(t *testing.T) {
+	m, out := playerViewModel(t, 120, 40, discoverStateFixture())
+	m, cmd := m.Update(playerViewKey("d"))
+	if cmd != nil {
+		t.Fatal("a session without a catalog scheduled a request")
+	}
+	playerViewText(t, m, "Discover needs Spotify. Connect it in the library.")
+	if len(out) != 0 {
+		t.Fatal("a session without a catalog sent a playback command")
+	}
+}
+
+// TestDiscoverReportsOtherAnswers fija el resto de respuestas: un fallo no
+// repite el cuerpo de Spotify y una respuesta vacía no inventa una lista.
+func TestDiscoverReportsOtherAnswers(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		tracks   []libraryTrack
+		err      error
+		want     string
+		playback bool
+	}{
+		{"failure", nil, errors.New("fixture secret body"), "Could not read recommendations.", false},
+		{"empty", nil, nil, "Spotify returned no recommendations.", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newDiscoverFake()
+			fake.recommend = func(int, string) ([]libraryTrack, error) { return tt.tracks, tt.err }
+			m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 0)
+			m, played := discoverPlayed(t, m, out)
+			if (played != nil) != tt.playback {
+				t.Fatalf("playback = %v, want %v", played, tt.playback)
+			}
+			view := playerViewText(t, m, tt.want)
+			if strings.Contains(view, "fixture secret body") {
+				t.Fatalf("the notice repeated Spotify's answer:\n%s", view)
+			}
+		})
+	}
+}
+
+// TestDiscoverDropsALateAnswerAfterANewerAction fija la regla de invalidación:
+// un `d` en vuelo se descarta en cuanto algo lo reemplaza —un comando de
+// reproducción del teclado, otra sesión o pista de Soloist, o la salida—, así
+// que su respuesta tardía no reproduce nada ni deja aviso.
+func TestDiscoverDropsALateAnswerAfterANewerAction(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		apply func(t *testing.T, m tea.Model, out chan playerCommand) tea.Model
+	}{
+		{"playback command", func(t *testing.T, m tea.Model, out chan playerCommand) tea.Model {
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+			select {
+			case command := <-out:
+				if command.Name != "pause" {
+					t.Fatalf("the pause key sent %#v", command)
+				}
+			default:
+				t.Fatal("the pause key sent no command")
+			}
+			return m
+		}},
+		{"new state", func(t *testing.T, m tea.Model, _ chan playerCommand) tea.Model {
+			m.(*playerModel).pending = true
+			changed := discoverStateFixture()
+			changed.Track = playerTrack{Title: "Next", Artist: "Artist", URI: "spotify:track:next"}
+			m, _ = m.Update(playerViewState{state: changed, ok: true})
+			return m
+		}},
+		{"quit", func(t *testing.T, m tea.Model, _ chan playerCommand) tea.Model {
+			m, _ = m.Update(playerViewKey("q"))
+			return m
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newDiscoverFake(libraryTrack{Name: "One", Artist: "A", URI: "spotify:track:one"})
+			m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 0)
+			m, pending := m.Update(playerViewKey("d"))
+			if pending == nil {
+				t.Fatal("d scheduled no recommendations request")
+			}
+			m = tt.apply(t, m, out)
+			m, _ = m.Update(playerViewRun(t, pending))
+			if len(out) != 0 {
+				t.Fatalf("a late answer still played after a newer action (%d commands)", len(out))
+			}
+			if view := ansi.Strip(m.View()); strings.Contains(view, "recommendation") || strings.Contains(view, "Discover") {
+				t.Fatalf("a late answer left a notice:\n%s", view)
+			}
+		})
+	}
+}
+
+// TestDiscoverDropsTheOlderOfTwoRequests conserva la regla que ya existía: dos
+// `d` seguidas solo dejan reproducir la respuesta de la última.
+func TestDiscoverDropsTheOlderOfTwoRequests(t *testing.T) {
+	fake := newDiscoverFake(libraryTrack{Name: "One", Artist: "A", URI: "spotify:track:one"})
+	m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 0)
+	m, first := m.Update(playerViewKey("d"))
+	m, second := m.Update(playerViewKey("d"))
+	if first == nil || second == nil {
+		t.Fatal("d scheduled no recommendations request")
+	}
+	m, _ = m.Update(playerViewRun(t, first))
+	if len(out) != 0 {
+		t.Fatal("the older request played")
+	}
+	m, _ = m.Update(playerViewRun(t, second))
+	select {
+	case command := <-out:
+		if command.Name != "play" || command.URI != "spotify:track:one" {
+			t.Fatalf("the newest request played %#v", command)
+		}
+	default:
+		t.Fatal("the newest request played nothing")
+	}
+}
+
+// TestDiscoverAndSaveShareOneNotice fija la precedencia de los dos avisos de
+// acción: se dibuja el último resultado producido, uno nuevo reemplaza al
+// anterior y empezar un descubrimiento no borra el aviso de guardado ya visible.
+func TestDiscoverAndSaveShareOneNotice(t *testing.T) {
+	t.Run("un descubrimiento en vuelo conserva el aviso de guardado", func(t *testing.T) {
+		fake := newDiscoverFake(libraryTrack{Name: "One", Artist: "A", URI: "spotify:track:one"})
+		m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 0)
+		m, _ = m.Update(saveResultMsg{generation: m.(*playerModel).saveTo.generation, name: "Rock Chileno", err: nil})
+		playerViewText(t, m, "Saved to Rock Chileno.")
+		// La petición de `d` queda en vuelo: el aviso de guardado sigue en su fila.
+		m, pending := m.Update(playerViewKey("d"))
+		if pending == nil {
+			t.Fatal("d scheduled no recommendations request")
+		}
+		playerViewText(t, m, "Saved to Rock Chileno.")
+		// El resultado del descubrimiento es más nuevo y reemplaza al de guardado.
+		fake.recommend = func(int, string) ([]libraryTrack, error) { return nil, spotify.ErrRecommendationsUnavailable }
+		m, _ = m.Update(playerViewRun(t, pending))
+		view := playerViewText(t, m, "This Spotify app has no access to recommendations.")
+		if strings.Contains(view, "Saved to Rock Chileno.") {
+			t.Fatalf("both action notices share the row:\n%s", view)
+		}
+		if len(out) != 0 {
+			t.Fatal("the discover answer touched playback")
+		}
+	})
+
+	t.Run("un guardado que termina reemplaza al aviso de descubrir", func(t *testing.T) {
+		fake := newDiscoverFake()
+		fake.recommend = func(int, string) ([]libraryTrack, error) { return nil, spotify.ErrRecommendationsUnavailable }
+		m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 0)
+		m, _ = discoverPlayed(t, m, out)
+		playerViewText(t, m, "This Spotify app has no access to recommendations.")
+		// Un guardado completa después: su resultado es el más nuevo.
+		m, _ = m.Update(saveResultMsg{generation: m.(*playerModel).saveTo.generation, name: "Rock Chileno", err: nil})
+		view := playerViewText(t, m, "Saved to Rock Chileno.")
+		if strings.Contains(view, "no access to recommendations") {
+			t.Fatalf("the older discover notice is still drawn:\n%s", view)
+		}
+	})
 }

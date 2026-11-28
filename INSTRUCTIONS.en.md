@@ -122,7 +122,7 @@ The screen is one workspace with three zones and the player at the bottom:
 - **Library:** your playlists, with the cursor and the `l` key that brings the focus there.
 - **Table:** tracks of the selected playlist, search results, or the queue, with number, title, artist and duration.
 - **Queue:** in wide windows a third box shows what comes next and the playback context; `c` brings the queue back into the table and gives it the focus.
-- **Player:** a box at the bottom. Its top border carries the state — playing, paused, disconnected —, shuffle, repeat and volume; inside are the cover of the playing track — or a block with its initials when there is no image —, the title, the artist, the album, the time with its bar and the playlist or remote device Soloist reports.
+- **Player:** a box at the bottom. Its top border carries the state — playing, paused, disconnected —, shuffle, repeat and volume; inside are the cover of the playing track — or a block with its initials when there is no image —, the title, the artist, the album, the time line `elapsed / total (remaining)` right under the album, the bar, which reaches the box's edge, and the playlist or remote device Soloist reports.
 
 Focus moves only with the zone keys: `l` goes to the library, `/` to search and `c` to the queue. Inside the workspace `Esc` never quits Pulso: it returns to the table or cancels what has the focus; the wizard, in turn, does quit on `Esc`. There is no focus cycle and no key hint line at the bottom either: every zone has its letter, and `?` opens help, the only key reference, which lists them by scope — global, zones, library, table and search.
 
@@ -130,17 +130,19 @@ The window size decides the shape of the screen; the width conditions are floors
 
 | Size | What you see | Player | Cover |
 | --- | --- | --- | --- |
-| width ≥ 120 and height ≥ 30 | library, table and queue with its context | 10 interior rows | yes |
-| width ≥ 100 and height ≥ 26, also above 120 columns when the height misses the wide band | library and table; the queue opens with `c` | 10 rows | yes |
-| width ≥ 80 and height ≥ 20 | one library row above the table | 8 rows | yes |
+| width ≥ 120 and height ≥ 30 | library, table and queue with its context | 12 interior rows | yes (20×10) |
+| width ≥ 100 and height ≥ 26, also above 120 columns when the height misses the wide band | library and table; the queue opens with `c` | 12 rows | yes (20×10) |
+| width ≥ 80 and height ≥ 20 | one library row above the table | 8 rows | yes (10×5) |
 | width ≥ 40 and height ≥ 12 | the library row and the player, and the table when the height leaves rows for its header | 6 rows | no |
 | width < 40 or height < 12 | one message with the minimum size, no frame | — | — |
 
-The table is the zone that gives up rows and no row overflows the width. In the minimum band the player box declares six interior rows and a low window crops them — at 40×12 it draws three — so its bottom border is never lost. Only the bands with zones, wide and medium, promote a session sentence that does not fit inside its box — a long authorization notice, for example — to the full width; in the compact and minimum bands the notice is an ordinary row and, when it is wider than the window, it is clipped.
+The table is the zone that gives up rows and no row overflows the width. The cover is drawn in two sizes and the resolved band decides which: the wide and medium bands spend twenty columns by ten rows and the compact band ten columns by five rows. The minimum band spends none, however many rows its cropped box keeps. In the minimum band the player box declares six interior rows and a low window crops them — at 40×12 it draws three: title, artist and album, with no time — so its bottom border is never lost. Only the bands with zones, wide and medium, promote a session sentence that does not fit inside its box — a long authorization notice, for example — to the full width; in the compact and minimum bands the notice is an ordinary row and, when it is wider than the window, it is clipped.
 
 `a` opens the playlist chooser for the playing track: `↑` `↓` or `j` `k` choose the playlist, the panel title names the targeted playlist, `Enter` saves and `Esc` cancels. The success notice appears only once Spotify confirmed the playlist, and a failure shows as one row that does not interrupt playback.
 
 `x` asks to remove the highlighted track from the open playlist: the confirmation names the track and the playlist, `Enter` removes it and `Esc` cancels. When Spotify accepts, the notice names the track and the playlist, and the playlist is read again so the row disappears. Playback and the queue are never touched.
+
+When the terminal speaks the Sixel graphics protocol — foot and Windows Terminal do — the cover is drawn with the real image, scaled to the slot in pixels rather than to the number of cells, which is what removes the pixelation; without that protocol, or while the image has not arrived, the box draws the usual half blocks. Detection happens once at start and is a heuristic, so `PULSO_COVER=sixel` forces it and `PULSO_COVER=blocks` turns it off — and skips the startup query in a terminal that never answers.
 
 With the search field focused you can type `q`, `s`, `r`, `+` and `-` without triggering shortcuts; `Enter` searches and `Esc` leaves the field. `q` and `Ctrl+C` quit Pulso: `q` quits while no text field has the focus and `Ctrl+C` always quits.
 
@@ -158,6 +160,7 @@ Every key does one thing. `?` opens help, the complete reference by scope: it re
 | Global | `+` / `-` | Volume |
 | Global | `←` / `→` | Seek back or forward 10 seconds |
 | Global | `r` | Repeat: off, context, track |
+| Global | `d` | Discover songs similar to the playing track |
 | Global | `F2` / `F3` | Language or theme |
 | Global | `?` | Help: the only key reference |
 | Global | `Esc` | Back to the table or cancel what has the focus |
@@ -175,7 +178,9 @@ The arrows `↑` `↓` move the cursor just like `j` `k`. `s` toggles shuffle fo
 
 `s` in the library works by playlist URI even when the tracks cannot be listed. Pulso waits for Soloist to accept playback and confirm the playlist context before sending a separate shuffle command. The first track is not guaranteed to be random, and another Spotify client can change the context between confirmation and shuffle. If confirmation does not arrive in time, Pulso does not send shuffle; the playlist may still start playing.
 
-Pulso does not change Autoplay. If it is enabled and Spotify continues playback after a playlist ends, Spotify chooses the tracks.
+Pulso does not change Autoplay. Entering a playlist plays it in order and, when it ends, playback continues with what Spotify adds; `s` in the library shuffles the list and, when it runs out, continues the same way. When Autoplay is enabled and Spotify continues playback after a playlist ends, Spotify chooses the tracks.
+
+`d` asks Spotify for songs similar to the playing track and starts one of them, chosen at random, so Spotify continues from there with what it hands over next. It uses the same authorization as search and playlists: no new permission. When this Spotify app no longer has access to recommendations, Pulso explains it in one line — “This Spotify app has no access to recommendations.” — and leaves playback untouched; it neither invents a list nor retries. With no Spotify track playing, the key only says why it cannot.
 
 `a` appears only with a track playing and a Spotify catalog that can write. After `Enter`, Pulso waits for Spotify's answer: when it accepts, it shows “Saved to …” with the playlist name; on failure it shows one row such as “Could not save to …” and playback stays as it was. When Spotify answers that the write permission is missing (for example, a session approved before this action existed), Pulso offers to approve again, opens the browser, shows the approval link and retries the save once. A playlist this account cannot edit, or an approval that does not complete, gets no retry. Spotify's response text is never shown.
 
@@ -250,6 +255,7 @@ Tests use local fixtures and fake transports: no real Spotify requests and no cr
 - Search returns ten results per page and requires paging.
 - The progress bar interpolates between Soloist reports; it can drift by under a second.
 - The first pairing requires the official Spotify app once.
+- The cover uses the Sixel protocol or the half block: Kitty's and iTerm2's protocols are not used, and a terminal that does not declare Sixel at startup stays on half blocks unless `PULSO_COVER` says otherwise.
 
 ## Repository layout
 

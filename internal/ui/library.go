@@ -389,6 +389,15 @@ func (l *libraryState) selectedPlaylist() (libraryPlaylist, bool) {
 }
 
 // selectedTrack is the track under the table cursor.
+// selectedTrackURI es la URI de la fila resaltada, vacía cuando no hay fila:
+// Enter comprueba que haya algo que reproducir antes de arrancar la lista.
+func (l *libraryState) selectedTrackURI() string {
+	if track, ok := l.selectedTrack(); ok {
+		return track.URI
+	}
+	return ""
+}
+
 func (l *libraryState) selectedTrack() (libraryTrack, bool) {
 	if l == nil || l.tableSelected < 0 || l.tableSelected >= len(l.tracks) {
 		return libraryTrack{}, false

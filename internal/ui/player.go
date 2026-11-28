@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"reflect"
 	"strings"
 	"sync"
@@ -79,17 +80,48 @@ const (
 
 // La caja del reproductor ocupa el borde inferior: su línea superior lleva el
 // estado y dentro van la carátula —o sus iniciales cuando no hay imagen—, el
-// título, el álbum con el artista y el tiempo con su barra. La altura interior
+// título, el artista, el álbum, el tiempo con lo que queda debajo del álbum y la
+// barra en la fila siguiente, que llega hasta el borde. La altura interior
 // depende del ancho, para que la tabla sea siempre la que cede filas.
 const (
-	playerBoxWide    = 10 // Filas interiores desde 100 columnas.
+	// Las bandas amplia y media dibujan doce filas interiores: las de la carátula
+	// grande más el título por encima y la línea de contexto por debajo.
+	playerBoxWide    = 12 // Filas interiores desde 100 columnas.
 	playerBoxCompact = 8  // Filas interiores desde 80 columnas.
 	playerBoxMinimum = 6  // Filas interiores por debajo de 80 columnas.
-	// El ancho de la ranura es el que el catálogo usa para elegir la imagen.
-	playerArtWidth   = spotify.CoverWidth
-	playerArtRows    = 5
-	playerBoxGutter  = 80 // Por debajo de este ancho la caja no gasta carátula.
-	playerBoxMinRoom = 8  // Por debajo de este ancho no hay caja que dibujar.
+	// Las dos carátulas de la caja: la grande de las bandas amplia y media,
+	// veinte celdas por diez filas, y la pequeña de la compacta, diez celdas por
+	// cinco filas. El ancho de la grande es el que el catálogo usa para elegir la
+	// imagen (spotify.CoverWidth), así no hay dos números.
+	playerArtWideColumns    = spotify.CoverWidth
+	playerArtWideRows       = 10
+	playerArtCompactColumns = 10
+	playerArtCompactRows    = 5
+	// playerBarMinCells es el ancho mínimo de la línea de la barra: por debajo
+	// no se dibuja y la fila queda vacía, con el tiempo igual de completo.
+	playerBarMinCells = 4
+	playerBoxGutter   = 80 // Por debajo de este ancho la caja no gasta carátula.
+	playerBoxMinRoom  = 8  // Por debajo de este ancho no hay caja que dibujar.
+)
+
+// artSlot es la ranura de la carátula: las celdas que ocupa en la caja. La
+// ranura vacía —cero columnas— es la de una caja que no gasta carátula.
+type artSlot struct{ columns, rows int }
+
+// ok distingue la ranura de una caja con sitio de la de una que no lo tiene.
+func (s artSlot) ok() bool { return s.columns > 0 && s.rows > 0 }
+
+// pixelWidth y pixelHeight son los píxeles que la ranura dibuja: uno por celda a
+// lo ancho y dos por celda a lo alto, porque cada celda lleva un medio bloque.
+func (s artSlot) pixelWidth() int  { return s.columns }
+func (s artSlot) pixelHeight() int { return s.rows * coverPixelRows }
+
+var (
+	playerArtWide    = artSlot{columns: playerArtWideColumns, rows: playerArtWideRows}
+	playerArtCompact = artSlot{columns: playerArtCompactColumns, rows: playerArtCompactRows}
+	// playerArtSlots son las ranuras de la caja, de la mayor a la menor: la regla
+	// elige la primera que cabe en las filas interiores de la banda.
+	playerArtSlots = []artSlot{playerArtWide, playerArtCompact}
 )
 
 type playerViewState struct {
@@ -219,6 +251,69 @@ type playerProfileMsg struct {
 	err        error
 }
 
+// discoverNotice es el resultado de la tecla `d`: la única fila que explica por
+// qué no hubo reproducción, nunca con un texto de Spotify.
+type discoverNotice uint8
+
+const (
+	discoverNoticeNone discoverNotice = iota
+	// discoverNoticeNoSource significa que esta sesión no tiene un catálogo que
+	// sepa pedir recomendaciones.
+	discoverNoticeNoSource
+	// discoverNoticeNoSeed significa que no hay una pista de Spotify sonando.
+	discoverNoticeNoSeed
+	// discoverNoticeUnavailable significa que la aplicación de Spotify no conserva
+	// acceso a /v1/recommendations.
+	discoverNoticeUnavailable
+	// discoverNoticeFailed informa de un fallo sin inventar un motivo.
+	discoverNoticeFailed
+	// discoverNoticeEmpty significa que Spotify no devolvió ninguna pista.
+	discoverNoticeEmpty
+)
+
+// recommendationSource es la lectura del catálogo que `d` necesita: pistas
+// parecidas a la que suena. Es opcional, como el resto de lecturas, así que un
+// catálogo que no sabe responder deja la tecla con su explicación.
+type recommendationSource interface {
+	Recommendations(context.Context, string) ([]libraryTrack, error)
+}
+
+// recommendationSourceOf acepta el catálogo solo cuando sabe pedir
+// recomendaciones; un catálogo nulo tipado queda ausente.
+func recommendationSourceOf(api CatalogAPI) recommendationSource {
+	if api == nil {
+		return nil
+	}
+	source, ok := api.(recommendationSource)
+	if !ok {
+		return nil
+	}
+	if value := reflect.ValueOf(source); value.Kind() == reflect.Pointer && value.IsNil() {
+		return nil
+	}
+	return source
+}
+
+// discoverResultMsg carries the recommendations one `d` asked for, fenced by the
+// generation of the request.
+type discoverResultMsg struct {
+	generation uint64
+	tracks     []libraryTrack
+	err        error
+}
+
+// discoverState es la tecla `d`: el catálogo que sabe pedir recomendaciones, la
+// generación que descarta una respuesta vieja, el aviso del último intento y la
+// elección de la pista con la que empieza lo que Spotify continúe.
+type discoverState struct {
+	source     recommendationSource
+	notice     discoverNotice
+	generation uint64
+	// pick elige una pista del resultado: empezar por una elegida al azar es lo
+	// que mezcla el descubrimiento. Las pruebas lo reemplazan.
+	pick func(int) int
+}
+
 type playerModel struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -262,10 +357,18 @@ type playerModel struct {
 	// sentido con un catálogo que puede escribir; el resto del tiempo la acción
 	// no se anuncia ni responde.
 	saveTo savePanel
+	// discover es la tecla global `d`: pistas parecidas a la que suena, con su
+	// propio aviso de una línea.
+	discover discoverState
 	// covers guarda el mapa URI → URL que anuncian las páginas ya cargadas, la
 	// consulta de respaldo y la imagen decodificada: la caja dibuja la carátula
 	// cuando llega y, mientras tanto, sus iniciales.
 	covers *coverArt
+	// sixel es la carátula gráfica: el modo decidido al arrancar con su tamaño de
+	// celda, o el medio bloque como respaldo.
+	sixel coverGraphics
+	// coverMu es el candado de lo que la emisión lee desde su propia goroutine.
+	coverMu sync.Mutex
 	// openBrowser presenta el enlace de aprobación; las pruebas lo reemplazan.
 	openBrowser func(string) error
 }
@@ -301,13 +404,17 @@ func NewPlayerModelWithCatalog(ctx context.Context, states <-chan soloist.State,
 	m.search = newSearchState(ctx, m.library.source)
 	m.profile = profileSourceOf(api)
 	m.saveTo.writer = playlistWriterOf(api)
+	m.discover = discoverState{source: recommendationSourceOf(api), pick: rand.IntN}
 	m.covers = newCoverArt(coverSourceOf(api))
+	m.sixel = newCoverSixel()
 	m.openBrowser = spotify.OpenBrowser
 	return m
 }
 
 // playURI sends a catalog selection to the session currently on screen.
 func (m *playerModel) playURI(uri string) {
+	// Elegir otra cosa para reproducir reemplaza al `d` que quedó en vuelo.
+	m.invalidateDiscover()
 	if m.commands == nil || m.ctx.Err() != nil || !m.state.Connected || uri == "" {
 		return
 	}
@@ -375,6 +482,14 @@ func (m *playerModel) installProfile(api CatalogAPI) tea.Cmd {
 	return m.fetchProfile()
 }
 
+// installDiscoverSource adopta el catálogo recién aprobado para `d`; uno que no
+// sepa pedir recomendaciones no borra al que ya sabía.
+func (m *playerModel) installDiscoverSource(api CatalogAPI) {
+	if source := recommendationSourceOf(api); source != nil {
+		m.discover.source = source
+	}
+}
+
 func (m *playerModel) awaitState() tea.Cmd {
 	if m.pending || m.ended || m.quit {
 		return nil
@@ -398,9 +513,12 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		// Una ventana nueva mueve la caja: la colocación anotada para la anterior
+		// ya no sirve, así que la vista que sigue es la que la vuelve a anotar.
+		m.sixel.painted, m.sixel.pending = "", nil
 		// Una ventana que crece hasta la ranura de la carátula pide lo que antes
 		// no cabía; mientras no quepa, la petición no se hace.
-		return m, m.coverRequest()
+		return m, m.coverCommands()
 	case libraryAuthMsg, libraryPageMsg:
 		auth, isAuth := msg.(libraryAuthMsg)
 		// Una autorización solo instala el catálogo si la generación sigue viva.
@@ -420,11 +538,15 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.saveTo.writer = playlistWriterOf(auth.api)
 			// Y con él la consulta de carátula que antes no podía hacerse.
 			m.covers.installSource(coverSourceOf(auth.api))
-			return m, playerCommands(cmd, m.installProfile(auth.api), m.coverRequest())
+			// Y las recomendaciones que la tecla `d` pide.
+			m.installDiscoverSource(auth.api)
+			return m, playerCommands(cmd, m.installProfile(auth.api), m.coverCommands())
 		}
-		return m, playerCommands(cmd, m.coverRequest())
+		return m, playerCommands(cmd, m.coverCommands())
 	case saveResultMsg, saveAuthMsg:
 		return m, m.updateSave(msg)
+	case discoverResultMsg:
+		return m, m.updateDiscover(msg)
 	case coverURLMsg:
 		// La respuesta de la consulta de respaldo: con URL se sigue con la
 		// descarga; sin ella el intento ya quedó recordado.
@@ -434,10 +556,33 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && msg.url != "" {
 			m.covers.urls[msg.uri] = msg.url
 		}
-		return m, m.coverRequest()
+		return m, m.coverCommands()
 	case coverBytesMsg:
 		// Una descarga fallida deja las iniciales: no hay aviso ni fila de error.
 		m.covers.land(msg)
+		return m, m.coverSixelSoon()
+	case coverSixelReadyMsg:
+		// El cuadro que dejó la ranura en blanco ya salió: se escribe la imagen.
+		// No se reprograma nada: un tic por imagen, porque un cambio de pista o de
+		// tamaño vuelve a pedirlo y un reintento sin fin solo gastaría cuadros.
+		return m, m.coverSixelEmit()
+	case coverSixelMsg:
+		// Cancelada, no se escribió nada; desfasada, la pantalla cambió mientras se
+		// escribía y la ranura se repinta; fallida, esa imagen vuelve al medio bloque.
+		switch {
+		case msg.err != nil:
+			m.sixel.failed = msg.key
+		case msg.cancelled:
+		case msg.stale || m.coverSixelWanted() != msg.key:
+			m.sixel.painted, m.sixel.pending = "", nil
+			// Una salida restaura el terminal: no se repinta lo que ya no está.
+			if m.quit || m.ctx.Err() != nil {
+				return m, nil
+			}
+			return m, coverSixelRepaint()
+		default:
+			m.sixel.emitted = msg.key
+		}
 		return m, nil
 	case playerProfileMsg:
 		if m.quit || msg.generation != m.profileGeneration || m.ctx.Err() != nil {
@@ -454,7 +599,7 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.search.update(msg)
 		// Los resultados de la búsqueda también anuncian carátulas.
 		m.covers.remember(m.search.tracks)
-		return m, playerCommands(cmd, m.coverRequest())
+		return m, playerCommands(cmd, m.coverCommands())
 	case playerViewState:
 		if m.quit || !m.pending {
 			break
@@ -466,9 +611,15 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel()
 			break
 		}
-		// Un aviso nuevo de Soloist no queda escondido por el último guardado.
+		// Un aviso nuevo de Soloist no queda escondido por el último guardado ni
+		// por la explicación del último descubrimiento.
 		if playerText(msg.state.Notice) != playerText(m.state.Notice) {
-			m.saveTo.notice = saveNoticeNone
+			m.saveTo.notice, m.discover.notice = saveNoticeNone, discoverNoticeNone
+		}
+		// Una sesión o una pista distinta es otra reproducción: el `d` que quedó en
+		// vuelo ya no corresponde a lo que suena y se descarta.
+		if msg.state.SessionID != m.state.SessionID || playerText(msg.state.Track.URI) != playerText(m.state.Track.URI) {
+			m.invalidateDiscover()
 		}
 		m.state = msg.state
 		// Sin una pista en reproducción el selector de guardado se queda sin qué
@@ -479,14 +630,14 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reconcileModes()
 		m.clampSelections()
 		// A playing session needs a second of wall time to advance its playhead.
-		return m, playerCommands(m.awaitState(), m.armTick(), m.coverRequest())
+		return m, playerCommands(m.awaitState(), m.armTick(), m.coverCommands())
 	case playerTickMsg:
 		return m, m.tick()
 	case tea.KeyMsg:
 		// La ayuda se queda con toda tecla, salvo las de salir: `?` y `Esc` la
 		// cierran y las globales de salida siguen funcionando.
 		if m.help {
-			return m, m.handleHelpKey(msg)
+			return m, playerCommands(m.handleHelpKey(msg), m.coverSixelSoon())
 		}
 		if msg.Type == tea.KeyF2 {
 			m.changePreferences(true)
@@ -496,7 +647,9 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.changePreferences(false)
 			return m, nil
 		}
-		return m, m.handleKey(msg)
+		// Cerrar la ayuda devuelve la caja a la pantalla: la carátula gráfica que
+		// se olvidó vuelve a pedir su turno con la primera tecla.
+		return m, playerCommands(m.handleKey(msg), m.coverSixelSoon())
 	}
 	return m, nil
 }
@@ -563,6 +716,11 @@ func (m *playerModel) handleKey(key tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		return m.openRemove()
+	}
+	// `d` es global, como el transporte: descubre canciones parecidas a la que
+	// suena desde cualquier zona.
+	if key.String() == "d" {
+		return m.discoverTracks()
 	}
 	// El transporte es global: salto, aleatorio y repetición valen desde
 	// cualquier zona; después va el cursor de la zona y al final la fila.
@@ -662,9 +820,100 @@ func (m *playerModel) playPlaylistShuffle(uri string) {
 	}
 }
 
+// discoverTracks es la tecla `d`: pide recomendaciones para la pista en
+// reproducción y empieza a reproducir una de ellas, elegida al azar, por el
+// camino de reproducción de siempre; Spotify continúa desde ahí. Sin catálogo o
+// sin una pista de Spotify sonando la tecla solo explica el motivo, y ningún
+// caso envía una semilla vacía. Empezar un descubrimiento no borra el aviso que
+// ya estaba: solo el resultado que llegue después puede reemplazarlo.
+func (m *playerModel) discoverTracks() tea.Cmd {
+	m.discover.notice = discoverNoticeNone
+	m.discover.generation++
+	seed := ""
+	if m.state.Connected && soloist.IsTrackURI(m.state.Track.URI) {
+		seed = m.state.Track.URI
+	}
+	switch {
+	case m.discover.source == nil:
+		m.discover.notice = discoverNoticeNoSource
+	case seed == "":
+		m.discover.notice = discoverNoticeNoSeed
+	case m.ctx.Err() != nil:
+		m.discover.notice = discoverNoticeFailed
+	default:
+		ctx, generation, source := m.ctx, m.discover.generation, m.discover.source
+		return func() tea.Msg {
+			if ctx.Err() != nil {
+				return nil
+			}
+			tracks, err := source.Recommendations(ctx, seed)
+			return discoverResultMsg{generation: generation, tracks: tracks, err: err}
+		}
+	}
+	return nil
+}
+
+// invalidateDiscover descarta el `d` que quedó en vuelo: cualquier acción que lo
+// reemplaza —un comando de reproducción del teclado, otra sesión o pista, la
+// salida— sube la generación y su respuesta tardía ya no reproduce nada.
+func (m *playerModel) invalidateDiscover() {
+	m.discover.generation++
+}
+
+// updateDiscover aplica la respuesta de `d`. Un fallo se explica en una línea y
+// la reproducción no se toca: no hay lista inventada ni reintento.
+func (m *playerModel) updateDiscover(msg tea.Msg) tea.Cmd {
+	result, ok := msg.(discoverResultMsg)
+	if !ok || m.quit || m.ctx.Err() != nil || result.generation != m.discover.generation {
+		return nil
+	}
+	switch {
+	case errors.Is(result.err, spotify.ErrRecommendationsUnavailable):
+		m.discover.notice = discoverNoticeUnavailable
+		return nil
+	case result.err != nil:
+		m.discover.notice = discoverNoticeFailed
+		return nil
+	case len(result.tracks) == 0:
+		m.discover.notice = discoverNoticeEmpty
+		return nil
+	}
+	m.discover.notice = discoverNoticeNone
+	// La caja ya conoce las carátulas que la respuesta anuncia.
+	m.covers.remember(result.tracks)
+	pick := m.discover.pick
+	if pick == nil {
+		pick = rand.IntN
+	}
+	track := result.tracks[max(0, min(pick(len(result.tracks)), len(result.tracks)-1))]
+	m.playURI(track.URI)
+	return nil
+}
+
+// discoverNoticeText es la línea que deja `d` cuando no pudo empezar la
+// reproducción.
+func (m *playerModel) discoverNoticeText() string {
+	switch m.discover.notice {
+	case discoverNoticeNoSource:
+		return m.text("Discover needs Spotify. Connect it in the library.", "Descubrir necesita Spotify. Conéctalo en la biblioteca.")
+	case discoverNoticeNoSeed:
+		return m.text("Play a Spotify track to discover similar songs.", "Reproduce una pista de Spotify para descubrir canciones parecidas.")
+	case discoverNoticeUnavailable:
+		return m.text("This Spotify app has no access to recommendations.", "Esta aplicación de Spotify no tiene acceso a las recomendaciones.")
+	case discoverNoticeFailed:
+		return m.text("Could not read recommendations.", "No se pudieron leer las recomendaciones.")
+	case discoverNoticeEmpty:
+		return m.text("Spotify returned no recommendations.", "Spotify no devolvió recomendaciones.")
+	}
+	return ""
+}
+
 // send binds a command to the session on screen and reports whether it fit
 // through the bounded command channel. There is no retry: the bar shows busy.
 func (m *playerModel) send(command playerCommand) bool {
+	// Un comando de reproducción del teclado reemplaza al `d` que quedó en vuelo:
+	// la recomendación ya no es lo que la persona pidió.
+	m.invalidateDiscover()
 	command.SessionID = m.state.SessionID
 	select {
 	case <-m.ctx.Done():
@@ -774,8 +1023,12 @@ func (m *playerModel) activateSelection(key tea.KeyMsg) (tea.Cmd, bool) {
 		if m.library.notice == libraryNoticeLoadFailed && !m.library.loadedTracks {
 			return m.library.fetchTracks(0), true
 		}
-		if track, ok := m.library.selectedTrack(); ok {
-			m.playURI(track.URI)
+		// Enter sobre una fila de la lista reproduce la lista, no la pista
+		// suelta: Soloist acepta un solo URI por `play`, así que el contexto de
+		// la lista es lo único que mantiene `n` y `b` dentro de ella. Con el
+		// aleatorio activo Spotify elige una pista de comienzo al azar.
+		if m.library.selectedTrackURI() != "" {
+			m.playURI(m.library.playlist.URI)
 		}
 		return nil, true
 	}
@@ -892,7 +1145,7 @@ func (m *playerModel) openSave() tea.Cmd {
 // catálogo que pueda escribir en ella.
 func (m *playerModel) explainRemove() {
 	m.saveTo.action = saveActionRemove
-	m.saveTo.notice, m.saveTo.noticeName = saveNoticeNeedsPlaylist, ""
+	m.saveTo.notice, m.saveTo.noticeName, m.discover.notice = saveNoticeNeedsPlaylist, "", discoverNoticeNone
 	if m.saveTo.writer == nil {
 		m.saveTo.noticeName = m.text("no write permission", "sin permiso de escritura")
 	}
@@ -1092,7 +1345,7 @@ func (m *playerModel) reloadRemoval(msg tea.Msg) {
 	}
 	if page.err != nil || snapshot == "" {
 		// La lista releída no ofrece esa fila: se informa y no se quita nada.
-		m.saveTo.phase, m.saveTo.notice = saveIdle, saveNoticeFailed
+		m.saveTo.phase, m.saveTo.notice, m.discover.notice = saveIdle, saveNoticeFailed, discoverNoticeNone
 		m.saveTo.noticeName, m.saveTo.noticeTrack = m.saveTargetName(), m.removeTrackLabel()
 		return
 	}
@@ -1184,11 +1437,13 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 		removing := m.saveTo.action == saveActionRemove
 		switch {
 		case msg.err == nil:
-			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeSaved, msg.name
-			if removing {
-				// La fila ya no existe: se relee la lista abierta para que desaparezca.
-				return m.afterRemove()
-			}
+			m.saveTo.phase, m.saveTo.notice, m.discover.notice = saveIdle, saveNoticeSaved, discoverNoticeNone
+			m.saveTo.noticeName = msg.name
+			// Cualquier escritura aceptada cambia el snapshot de la lista: se relee
+			// para que las filas queden con la versión que Spotify ya conoce. En una
+			// retirada además hace desaparecer la fila.
+			m.saveTo.removeSnapshot = ""
+			return m.afterRemove()
 		case errors.Is(msg.err, spotify.ErrPlaylistSnapshotConflict) && removing:
 			// La lista cambió desde que se leyó: se relee y se pregunta otra vez.
 			m.saveTo.phase, m.saveTo.reloading = saveConfirming, true
@@ -1197,14 +1452,16 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 		case errors.Is(msg.err, spotify.ErrPlaylistNotEditable):
 			// Solo un rechazo que nombra la falta de permiso sobre esa lista llega
 			// aquí: la noticia afirma que esta cuenta no puede cambiarla.
-			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeNotEditable, msg.name
+			m.saveTo.phase, m.saveTo.notice, m.discover.notice = saveIdle, saveNoticeNotEditable, discoverNoticeNone
+			m.saveTo.noticeName = msg.name
 		case errors.Is(msg.err, spotify.ErrSpotifyWriteScope) && !m.saveTo.retried && m.saveTo.target.URI != "":
 			// Falta el permiso de escritura, o Spotify rechazó el cambio sin motivo
 			// clasificable: se ofrece aprobarlo otra vez, una sola vez.
 			m.saveTo.phase = saveScopeOffered
 		default:
 			// Cualquier otra causa se reporta por su nombre y sin inventar un motivo.
-			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeFailed, msg.name
+			m.saveTo.phase, m.saveTo.notice, m.discover.notice = saveIdle, saveNoticeFailed, discoverNoticeNone
+			m.saveTo.noticeName = msg.name
 		}
 		return nil
 	case saveAuthMsg:
@@ -1220,7 +1477,7 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 		}
 		m.saveTo.work, m.saveTo.cancel, m.saveTo.events, m.saveTo.authURL = nil, nil, nil, ""
 		if msg.writer == nil {
-			m.saveTo.phase, m.saveTo.notice = saveIdle, saveNoticeDeclined
+			m.saveTo.phase, m.saveTo.notice, m.discover.notice = saveIdle, saveNoticeDeclined, discoverNoticeNone
 			m.saveTo.noticeName, m.saveTo.noticeTrack = m.saveTargetName(), m.removeTrackLabel()
 			return nil
 		}
@@ -1245,7 +1502,7 @@ func (m *playerModel) installApproved(writer spotify.PlaylistWriter) tea.Cmd {
 		retry = m.requestRemove(writer)
 	}
 	if retry == nil {
-		m.saveTo.phase, m.saveTo.notice = saveIdle, saveNoticeFailed
+		m.saveTo.phase, m.saveTo.notice, m.discover.notice = saveIdle, saveNoticeFailed, discoverNoticeNone
 		m.saveTo.noticeName = m.saveTargetName()
 	}
 	api, ok := writer.(CatalogAPI)
@@ -1255,6 +1512,8 @@ func (m *playerModel) installApproved(writer spotify.PlaylistWriter) tea.Cmd {
 	if source := librarySourceOf(api); source != nil {
 		m.library.source, m.search.source, m.library.started = source, source, true
 	}
+	// Y las recomendaciones que la tecla `d` pide.
+	m.installDiscoverSource(api)
 	return playerCommands(m.installProfile(api), retry)
 }
 
@@ -1509,21 +1768,30 @@ func playerElapsed(ms int64) string {
 	return fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
 }
 
-// playerProgress renders elapsed time, a playhead bar, and total time.
-func playerProgress(position, duration int64, width int) string {
-	start := playerElapsed(max(0, position))
+// playerTime es la línea de tiempo: el transcurrido, el total y lo que queda,
+// con la forma `2:14 / 6:21 (-4:07)`. Sin duración conocida degrada a la forma
+// de siempre, la única que puede afirmar.
+func playerTime(position, duration int64) string {
+	position = max(0, position)
 	if duration <= 0 {
-		return start + " / --:--"
+		return playerElapsed(position) + " / --:--"
+	}
+	position = min(duration, position)
+	return playerElapsed(position) + " / " + playerElapsed(duration) + " (-" + playerElapsed(duration-position) + ")"
+}
+
+// playerBar dibuja la barra de progreso hasta el borde de la caja: lo recorrido
+// en `━`, la cabeza en el glifo de siempre y el resto en `─`, tantas celdas como
+// ancho le den. Por debajo de playerBarMinCells no se dibuja —la fila queda
+// vacía y el tiempo sigue diciendo los tres valores— y sin duración conocida
+// tampoco, porque no hay recorrido que afirmar.
+func playerBar(position, duration int64, width int) string {
+	if width < playerBarMinCells || duration <= 0 {
+		return ""
 	}
 	position = min(duration, max(0, position))
-	end := playerElapsed(duration)
-	cells := min(20, width-lipgloss.Width(start)-lipgloss.Width(end)-2)
-	if cells < 4 {
-		return start + " / " + end
-	}
-	filled := min(cells-1, int(float64(position)/float64(duration)*float64(cells)))
-	bar := strings.Repeat("━", filled) + "╸" + strings.Repeat("─", cells-filled-1)
-	return start + " " + bar + " " + end
+	filled := min(width-1, int(float64(position)/float64(duration)*float64(width)))
+	return strings.Repeat("━", filled) + "╸" + strings.Repeat("─", width-filled-1)
 }
 
 // playerPad fits plain text into exactly width cells.
@@ -1684,12 +1952,14 @@ func (m *playerModel) View() string {
 		return ""
 	}
 	if m.help {
+		m.sixel.forget()
 		return m.helpView()
 	}
 	styles := m.styles()
 	width, height := m.width, m.height
 	band := playerBand(width, height)
 	if band == playerBandInsufficient {
+		m.sixel.forget()
 		return m.playerSizeMessage(width)
 	}
 	rule := styles.muted.Render(strings.Repeat("─", width))
@@ -1763,6 +2033,7 @@ func (m *playerModel) View() string {
 		rows = append(rows, playerRenderRow(row, width))
 	}
 	// La caja ya viene dibujada y ajustada a la ventana.
+	boxTop := len(rows)
 	rows = append(rows, play...)
 	if rules >= 2 && len(status) > 0 {
 		rows = append(rows, rule)
@@ -1773,6 +2044,12 @@ func (m *playerModel) View() string {
 	if len(rows) > height {
 		rows = rows[:height]
 	}
+	// La carátula gráfica se coloca en la ranura que esta misma vista dejó en
+	// blanco; una caja que no llegó a la ventana no tiene dónde escribirla.
+	if boxTop >= len(rows) {
+		boxTop = -1
+	}
+	m.coverSixelPaint(boxTop)
 	return strings.Join(rows, "\n")
 }
 
@@ -1866,32 +2143,49 @@ func playerBoxHeight(width, height int) int {
 
 // playerArtSlot es la única regla de la ranura de la carátula: dibujarla y
 // pedirla usan la misma, así una ventana estrecha no descarga una imagen que
-// nunca podría pintar.
-func playerArtSlot(width, interior int) bool {
-	return width >= playerBoxGutter && interior >= playerArtRows+3
+// nunca podría pintar. La banda resuelta decide: las bandas amplia y media
+// gastan la carátula grande —veinte celdas por diez filas, que caben en sus doce
+// filas interiores— y la compacta la pequeña —diez por cinco, que caben en sus
+// ocho—; la banda mínima y la insuficiente no gastan ninguna, por muchas filas
+// que una ventana baja deje a la caja. La ranura vacía es la de una caja sin
+// carátula.
+func playerArtSlot(width, height int) artSlot {
+	switch playerBand(width, height) {
+	case playerBandWide, playerBandMedium:
+		return playerArtWide
+	case playerBandCompact:
+		return playerArtCompact
+	}
+	return artSlot{}
 }
 
-// playerBoxLayout reparte las filas interiores de la caja. Las filas que no
-// caben quedan en -1 y no se dibujan.
+// playerBoxLayout reparte las filas interiores de la caja: el título la
+// encabeza, le siguen el artista, el álbum, el tiempo y la barra, y la línea de
+// contexto la cierra. La carátula ocupa de la fila 1 a las filas de su ranura,
+// de modo que el título queda por encima de la imagen y el contexto por debajo.
+// Las filas que no caben quedan en -1 y no se dibujan: con cinco filas la caja
+// pierde el contexto, con cuatro la barra, con tres el tiempo y con dos el álbum
+// y el artista, así el título es siempre lo último que cede.
 type playerBoxLayout struct {
-	progress int
-	context  int
+	title, artist, album, time, bar, context int
 }
 
 func playerBoxLayoutFor(interior int) playerBoxLayout {
 	switch {
-	case interior >= playerBoxWide:
-		return playerBoxLayout{progress: 6, context: 8}
-	case interior >= playerBoxCompact:
-		return playerBoxLayout{progress: 5, context: 7}
-	case interior >= playerBoxMinimum:
-		return playerBoxLayout{progress: 4, context: 5}
+	case interior > playerBoxMinimum:
+		return playerBoxLayout{title: 0, artist: 1, album: 2, time: 3, bar: 4, context: interior - 1}
+	case interior == playerBoxMinimum:
+		return playerBoxLayout{title: 0, artist: 1, album: 2, time: 3, bar: 4, context: 5}
 	case interior == 5:
-		return playerBoxLayout{progress: 4, context: -1}
+		return playerBoxLayout{title: 0, artist: 1, album: 2, time: 3, bar: 4, context: -1}
 	case interior == 4:
-		return playerBoxLayout{progress: 3, context: -1}
+		return playerBoxLayout{title: 0, artist: 1, album: 2, time: 3, bar: -1, context: -1}
+	case interior == 3:
+		return playerBoxLayout{title: 0, artist: 1, album: 2, time: -1, bar: -1, context: -1}
+	case interior == 2:
+		return playerBoxLayout{title: 0, artist: 1, album: -1, time: -1, bar: -1, context: -1}
 	}
-	return playerBoxLayout{progress: 2, context: -1}
+	return playerBoxLayout{title: 0, artist: -1, album: -1, time: -1, bar: -1, context: -1}
 }
 
 // Lo que la caja puede afirmar de la sesión: una pista real, una carga en
@@ -1982,34 +2276,41 @@ func (m *playerModel) playerBoxState(width int) string {
 	return playerEllipsis(options[len(options)-1], width)
 }
 
-// playerBoxArtLines devuelve la ranura de la carátula: la imagen ya decodificada
-// cuando llegó y, mientras no esté, el bloque de iniciales. El segundo valor dice
-// si las filas ya traen su color, porque la carátula usa 24 bits por celda.
-func (m *playerModel) playerBoxArtLines() ([]string, bool) {
-	if rows, ok := m.covers.rows(playerText(m.state.Track.URI)); ok {
+// playerBoxArtLines devuelve las filas de la ranura: la imagen ya decodificada a
+// la medida de esa ranura cuando llegó y, mientras no esté, el bloque de
+// iniciales. El segundo valor dice si las filas ya traen su color, porque la
+// carátula usa 24 bits por celda.
+func (m *playerModel) playerBoxArtLines(slot artSlot) ([]string, bool) {
+	// Con Sixel la ranura se deja en blanco y la imagen real se escribe encima,
+	// en su lugar y en píxeles; un terminal sin el protocolo, o una emisión que
+	// falló, siguen recibiendo el medio bloque.
+	if art, ok := m.coverSixelArt(); ok && m.sixel.hidden(art.key) {
+		return coverSixelBlank(slot), false
+	}
+	if rows, ok := m.covers.rows(playerText(m.state.Track.URI), slot); ok {
 		return rows, true
 	}
-	return m.playerBoxArt(), false
+	return m.playerBoxArt(slot), false
 }
 
 // coverRequest pide lo que falte para dibujar la carátula de la pista en
 // reproducción. Se llama al llegar un estado, una página o un tamaño, nunca al
 // dibujar: así la primera pintura muestra las iniciales sin esperar la imagen, y
-// una ventana que no tiene ranura no descarga ni pregunta nada.
+// una banda que no tiene ranura no descarga ni pregunta nada.
 func (m *playerModel) coverRequest() tea.Cmd {
 	if m.covers == nil || m.quit || m.playerBoxCondition() != playerBoxLive {
 		return nil
 	}
-	if !playerArtSlot(m.width, playerBoxInterior(m.width, m.height)) {
+	if !playerArtSlot(m.width, m.height).ok() {
 		return nil
 	}
 	return m.covers.request(m.ctx, playerText(m.state.Track.URI))
 }
 
 // playerBoxArt devuelve el bloque de iniciales de la carátula: dos letras del
-// título mientras no haya imagen que dibujar. playerArtRows es la fuente de la
-// altura y cada cadena mide playerArtWidth celdas.
-func (m *playerModel) playerBoxArt() []string {
+// título mientras no haya imagen que dibujar. La ranura decide la altura y el
+// ancho de cada fila.
+func (m *playerModel) playerBoxArt(slot artSlot) []string {
 	initials := "♪"
 	if title := playerText(m.state.Track.Title); title != "" {
 		letters := make([]rune, 0, 2)
@@ -2029,19 +2330,19 @@ func (m *playerModel) playerBoxArt() []string {
 		}
 		initials = strings.ToUpper(string(letters))
 	}
-	inner := playerArtWidth - 2
+	inner := slot.columns - 2
 	pad := max(0, inner-lipgloss.Width(initials))
 	left := pad / 2
 	middle := strings.Repeat(" ", left) + initials + strings.Repeat(" ", pad-left)
 	blank := "│" + strings.Repeat(" ", inner) + "│"
-	rows := make([]string, 0, playerArtRows)
-	for row := 0; row < playerArtRows; row++ {
+	rows := make([]string, 0, slot.rows)
+	for row := 0; row < slot.rows; row++ {
 		switch {
 		case row == 0:
 			rows = append(rows, "┌"+strings.Repeat("─", inner)+"┐")
-		case row == playerArtRows-1:
+		case row == slot.rows-1:
 			rows = append(rows, "└"+strings.Repeat("─", inner)+"┘")
-		case row == playerArtRows/2:
+		case row == slot.rows/2:
 			rows = append(rows, "│"+middle+"│")
 		default:
 			rows = append(rows, blank)
@@ -2079,17 +2380,21 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 	border += strings.Repeat("─", max(0, inner-lipgloss.Width(border)))
 	rows = append(rows, edge.Render("├")+styles.label.Render(playerFit(border, inner))+edge.Render("┤"))
 
-	hasArt := playerArtSlot(width, interior) && m.playerBoxCondition() == playerBoxLive
+	slot := playerArtSlot(width, m.height)
+	hasArt := slot.ok() && m.playerBoxCondition() == playerBoxLive
 	art := []string{}
 	artColored := false
 	if hasArt {
-		art, artColored = m.playerBoxArtLines()
+		art, artColored = m.playerBoxArtLines(slot)
 	}
 	left := "  "
 	if hasArt {
-		left = "  " + strings.Repeat(" ", playerArtWidth) + "  "
+		left = "  " + strings.Repeat(" ", slot.columns) + "  "
 	}
 	textWidth := max(1, inner-lipgloss.Width(left)-2)
+	// La barra no deja margen derecho: ocupa todas las celdas que quedan hasta el
+	// borde interior de la caja, que es lo que pidió S2.
+	barWidth := max(1, inner-lipgloss.Width(left))
 
 	title, artist, album := m.playerBoxText()
 	layout := playerBoxLayoutFor(interior)
@@ -2100,24 +2405,26 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 	if m.playerBoxCondition() == playerBoxLive {
 		position, duration = m.playhead(), m.state.Track.DurationMS
 	}
-	progress := playerProgress(position, duration, textWidth)
+	progress := playerTime(position, duration)
+	bar := playerBar(position, duration, barWidth)
 
-	// Las filas se reparten por prioridad: el título y el tiempo sobreviven a
-	// cualquier altura; el artista y el álbum solo cuando hay sitio para ellos.
-	showArtist := interior >= 4
-	showAlbum := interior >= 5
+	// Cada fila recibe su línea del reparto: el título, el artista, el álbum, el
+	// tiempo, la barra y el contexto. La carátula ocupa de la fila 1 a la diez y
+	// comparte fila con las líneas de su derecha.
 	for row := 0; row < interior; row++ {
 		text, style := "", lipgloss.Style{}
-		switch {
-		case row == 1:
+		switch row {
+		case layout.title:
 			text, style = title, styles.accent
-		case row == 2 && showArtist:
+		case layout.artist:
 			text, style = artist, styles.muted
-		case row == 3 && showAlbum:
+		case layout.album:
 			text, style = album, styles.muted
-		case row == layout.progress:
+		case layout.time:
 			text, style = progress, styles.muted
-		case row == layout.context:
+		case layout.bar:
+			text, style = bar, styles.muted
+		case layout.context:
 			text, style = m.playerBoxContext(), styles.muted
 		}
 		line := left
@@ -2129,8 +2436,13 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 				cell = styles.muted.Render(cell)
 			}
 			line = "  " + cell + "  "
+		} // Solo la barra usa el ancho completo: las líneas de texto dejan el
+		// margen derecho que las separa del borde.
+		rowWidth := textWidth
+		if row == layout.bar {
+			rowWidth = barWidth
 		}
-		line += playerPad(style.Render(playerEllipsis(text, textWidth)), textWidth)
+		line += playerPad(style.Render(playerEllipsis(text, rowWidth)), rowWidth)
 		rows = append(rows, edge.Render("│")+playerPad(line, inner)+edge.Render("│"))
 	}
 	rows = append(rows, edge.Render("└")+edge.Render(strings.Repeat("─", inner))+edge.Render("┘"))
@@ -2177,10 +2489,16 @@ func (m *playerModel) repeatMode() string {
 }
 
 // playerNoticeText es el aviso de la sesión: la única fila que queda bajo la caja
-// del reproductor, y la última que cede antes de quedarse sin sitio.
+// del reproductor, y la última que cede antes de quedarse sin sitio. Hay un solo
+// aviso de acción: el resultado más nuevo reemplaza al anterior, así que un
+// guardado descarta el aviso de descubrir y un descubrimiento que llega después
+// se dibuja sobre el de guardado, que queda intacto mientras no haya resultado.
 func (m *playerModel) playerNoticeText() string {
 	notice := playerText(m.state.Notice)
 	if text := m.saveNoticeText(); text != "" {
+		notice = text
+	}
+	if text := m.discoverNoticeText(); text != "" {
 		notice = text
 	}
 	switch m.state.PlaylistShuffle {
@@ -2215,6 +2533,12 @@ func (m *playerModel) statusRows() []playerRow {
 // quitApp sale de la aplicación: `q` sin campo de texto y `Ctrl+C` siempre.
 func (m *playerModel) quitApp() tea.Cmd {
 	m.quit = true
+	// Salir deja sin efecto el `d` en vuelo y la carátula gráfica: una emisión no
+	// puede escribir ni darse por escrita tras la salida.
+	m.coverMu.Lock()
+	m.sixel.wanted = ""
+	m.coverMu.Unlock()
+	m.invalidateDiscover()
 	m.cancel()
 	return tea.Quit
 }

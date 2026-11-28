@@ -9,7 +9,7 @@ The screen is two header rows, one rule, the zones, one rule and the player box.
 - **Banner:** `Pulso` on the left and the session word — playing, paused, connected, disconnected or loading — on the right.
 - **Search row:** the `Search:` field with its cursor or its placeholder, and the Spotify account label (`@name`) on the right until it does not fit.
 - **Zones:** each one is a box with its title on the top border and an accented border while it has the focus. The library box lists playlists with the owner when the name leaves room; the table box names what it shows — the open playlist and its total, the submitted query and its total, or `Playback` with the queue length — and carries the number, title, artist and duration columns; the queue box lists what comes next, each track with its artist below it, and ends with the `CONTEXT` block: the playlist that plays — or the open one when nothing is playing — and the shuffle and repeat modes.
-- **Player box:** the top border carries the status line; inside are the cover — or the initials block when there is no image — the title, the artist, the album, the time bar and a context line naming the playlist, which names the device too only when playback runs on another one. The session notice stays as one row under the box.
+- **Player box:** the top border carries the status line; inside are the cover — or the initials block when there is no image — the title, the artist, the album, the time line `elapsed / total (remaining)` right under the album, the bar on the next row, which fills every cell up to the box's right edge, and a context line naming the playlist, which names the device too only when playback runs on another one. The session notice stays as one row under the box.
 
 In the bands that have zones — wide and medium — a session sentence that does not fit inside its zone — a long authorization or confirmation notice — is promoted to the full width above the player box, wrapped rather than truncated, and the zone keeps only its state mark. The compact and minimum bands have no boxes: there the notice is an ordinary full-width row, and one wider than the window is clipped.
 
@@ -26,12 +26,10 @@ Search: type to search                                                          
 ┌─ LIBRARY ─────────────┐ ┌─ Rock Chileno · 42 tracks ──────────────────────────────────┐ ┌─ UP NEXT ──────────────────┐
 │> Rock Chileno · ana   │ │#  Title                    Artist                   Duration│ │1 Huelga de Dolores         │
 │  Jazz · beto          │ │─────────────────────────────────────────────────────────────│ │  Los Miserables            │
+│                       │ │                                                             │ │                            │
 │                       │ │>1 Tren al Sur              Los Prisioneros          5:36    │ │                            │
 │                       │ │ 2 Estrechez de Corazón     Los Prisioneros          6:21    │ │                            │
 │                       │ │ 3 Llueve sobre la Ciudad   Los Bunkers              3:56    │ │                            │
-│                       │ │                                                             │ │                            │
-│                       │ │                                                             │ │                            │
-│                       │ │                                                             │ │                            │
 │                       │ │                                                             │ │                            │
 │                       │ │                                                             │ │                            │
 │                       │ │                                                             │ │                            │
@@ -43,16 +41,18 @@ Search: type to search                                                          
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                                                                                                                         
 ├─ ▶ Playing  ▸  ⇄ on  ▸  ↻ all  ▸  Volume 37% ────────────────────────────────────────────────────────────────────────┤
-│                                                                                                                      │
-│  ┌────────┐  Estrechez de Corazón                                                                                    │
-│  │        │  Los Prisioneros                                                                                         │
-│  │   EC   │  La Cultura de la Basura                                                                                 │
-│  │        │                                                                                                          │
-│  └────────┘                                                                                                          │
-│              2:14 ━━━━━━━╸──────────── 6:21                                                                          │
-│                                                                                                                      │
-│              Playlist: Rock Chileno                                                                                  │
-│                                                                                                                      │
+│                        Estrechez de Corazón                                                                          │
+│  ┌──────────────────┐  Los Prisioneros                                                                               │
+│  │                  │  La Cultura de la Basura                                                                       │
+│  │                  │  2:14 / 6:21 (-4:07)                                                                           │
+│  │                  │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸────────────────────────────────────────────────────────────│
+│  │                  │                                                                                                │
+│  │        EC        │                                                                                                │
+│  │                  │                                                                                                │
+│  │                  │                                                                                                │
+│  │                  │                                                                                                │
+│  └──────────────────┘                                                                                                │
+│                        Playlist: Rock Chileno                                                                        │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -80,12 +80,12 @@ Rock Chileno · 42 tracks
 ────────────────────────────────────────────────────────────────────────────────
                                                                                 
 ├─ ▶ Playing  ▸  ⇄ on  ▸  ↻ all  ▸  Volume 37% ────────────────────────────────┤
-│                                                                              │
-│  ┌────────┐  Estrechez de Corazón                                            │
-│  │        │  Los Prisioneros                                                 │
-│  │   EC   │  La Cultura de la Basura                                         │
-│  │        │                                                                  │
-│  └────────┘  2:14 ━━━━━━━╸──────────── 6:21                                  │
+│              Estrechez de Corazón                                            │
+│  ┌────────┐  Los Prisioneros                                                 │
+│  │        │  La Cultura de la Basura                                         │
+│  │   EC   │  2:14 / 6:21 (-4:07)                                             │
+│  │        │  ━━━━━━━━━━━━━━━━━━━━━━╸─────────────────────────────────────────│
+│  └────────┘                                                                  │
 │                                                                              │
 │              Playlist: Rock Chileno                                          │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -104,9 +104,9 @@ LIBRARY: Rock Chileno          l library
 ────────────────────────────────────────
                                         
 ├─ ▶ ▸ ⇄ on ▸ ↻ all ▸ Volume 37% ──────┤
-│                                      │
 │  Estrechez de Corazón                │
-│  2:14 ━━━━━━━╸──────────── 6:21      │
+│  Los Prisioneros                     │
+│  La Cultura de la Basura             │
 └──────────────────────────────────────┘
 ```
 
@@ -120,13 +120,13 @@ The width conditions are floors and the height decides, so the first band in the
 
 | Band | Condition | Zones | Player box | Cover | Proof |
 | --- | --- | --- | --- | --- | --- |
-| Wide | width ≥ 120 and height ≥ 30 | library + table + queue/context | 10 interior rows | yes | 140×40, 120×34 |
-| Medium | width ≥ 100 and height ≥ 26, also above 120 columns when the height misses the wide band | library + table; queue with `c` | 10 rows | yes | 100×30 |
-| Compact | width ≥ 80 and height ≥ 20 | library switcher + table | 8 rows | yes | 80×24 |
+| Wide | width ≥ 120 and height ≥ 30 | library + table + queue/context | 12 interior rows | yes (20×10) | 140×40, 120×34 |
+| Medium | width ≥ 100 and height ≥ 26, also above 120 columns when the height misses the wide band | library + table; queue with `c` | 12 rows | yes (20×10) | 100×30 |
+| Compact | width ≥ 80 and height ≥ 20 | library switcher + table | 8 rows | yes (10×5) | 80×24 |
 | Minimum | width ≥ 40 and height ≥ 12 | library switcher and the player box, and the table when the height leaves rows for its header | 6 rows | no | 40×12, 79×23 |
 | Insufficient | width < 40 or height < 12 | size message, no frame | — | — | 39×11 |
 
-Rules that do not change with the band: the status line always lives on the player box's top border; the box never grows past its band height and, when the window is short, is cropped below it so the bottom border is never lost; the table cedes its rows first; no row overflows the width.
+Rules that do not change with the band: the status line always lives on the player box's top border; inside, the title comes first, then the artist, the album, the time line and the bar, and the context line closes the box; the bar is drawn only when its row keeps at least four cells, and below that it is not drawn and the row stays empty while the time line still carries the three values; the box never grows past its band height and, when the window is short, is cropped below it so the bottom border is never lost — in the minimum band it declares six rows and at 40×12 draws three: title, artist and album, with no time; the table cedes its rows first; no row overflows the width.
 
 ## Controls (one key, one action)
 
@@ -140,6 +140,7 @@ Rules that do not change with the band: the status line always lives on the play
 | Global | `+` / `-` | Volume |
 | Global | `←` / `→` | Back / forward 10 s |
 | Global | `r` | Repeat: off → all → one |
+| Global | `d` | Discover songs similar to the playing track |
 | Global | `F2` / `F3` | Language / theme |
 | Global | `?` | Help: the only key reference |
 | Global | `Esc` | Back to the table or cancel what has the focus |
@@ -155,12 +156,16 @@ Rules that do not change with the band: the status line always lives on the play
 
 ## Cover
 
-The cover fills a slot of 10 columns by 5 rows: half blocks `▀` with 24-bit colour, where each cell paints two pixels of a 10×10 reduction of the album image. The initials block — two letters of the title in a box — stands in whenever there is no image.
+The cover is drawn in two sizes: the wide and medium bands fill a slot of 20 columns by 10 rows — half blocks `▀` with 24-bit colour, where each cell paints two pixels of a 20×20 reduction of the album image, 400 pixels — and the compact band fills a slot of 10 columns by 5 rows, a 10×10 reduction and 100 pixels. The initials block — two letters of the title in a box — stands in whenever there is no image.
 
-- The URL comes from `album.images` in the responses the app already requests (`/v1/search` and `/v1/playlists/…/items`); the playing track that no loaded page brought is resolved with one narrow `GET /v1/tracks/…?fields=album.images`.
-- Download and decode use `image/png` and `image/jpeg` from the standard library: no new dependency and no new scope. The download is capped at 4 MiB and the header at one million pixels before decoding; the image is reduced by block average and drawn with 24-bit colour.
+- The URL comes from `album.images` in the responses the app already requests (`/v1/search` and `/v1/playlists/…/items`); the playing track that no loaded page brought is resolved with one narrow `GET /v1/tracks/…?fields=album.images`. The image picked is the smallest one at least as wide as the biggest slot — 20 pixels —, and the largest available when none reaches it. The single download is reduced once per slot, so a window that changes band draws the other size without asking Spotify again.
+- Download and decode use `image/png` and `image/jpeg` from the standard library: no new dependency for the image bytes and no new scope. The download is capped at 4 MiB and the header at one million pixels before decoding; the image is reduced by block average for each slot and drawn with 24-bit colour.
 - The first paint shows the initials block and never waits for the image; the result is cached in memory per URL and a failed download is remembered as well, leaving the initials with no notice and no error row.
-- The slot rule is one and shared by drawing and requesting — at least 80 columns and 8 interior rows — so a window without a slot downloads nothing, and a window that grows into the slot asks for the image then.
+- The slot rule is one and shared by drawing and requesting, and the resolved band decides it: the wide and medium bands get the 20-column slot, the compact band the one of 10 columns, and the minimum band gets none — a short window never borrows another band's cover, however many rows its cropped box keeps. A window without a slot neither draws nor downloads one, and a window that grows into a band with a slot asks for the image then.
+- **Terminal graphics.** When the terminal speaks Sixel the real image is drawn: the box leaves the slot's rows blank and the encoded image is written at that position, scaled to the slot **in pixels** — columns × cell width, rows × cell height, measured once at start with `sixel.CellSize()` — not to the number of cells, which is what made the cover look pixelated. The cell size falls back to a documented 10×20 pixels when the terminal does not answer, so the wide 20×10 slot of 120×34 is a 200×200-pixel image and the compact 10×5 slot of 80×24 is 100×100. `github.com/mattn/go-sixel` is the single new dependency: it encodes the image and measures the cell, the same two things `ratatui-image` gives Spotatui.
+- **Detection and override.** The mode is decided once at start: `PULSO_COVER=sixel` or `PULSO_COVER=blocks` imposes it without asking the terminal anything, and without the variable Sixel requires the output to be a terminal that declares the protocol in its DA1 reply (`ESC [ c`, attribute 4). Detection is a heuristic and the user has to be able to force it, which is why the variable exists.
+- **Emission.** The image is written once per track, once per window size and once per image size — never on a repaint. Bubble Tea rewrites only the lines that changed, so the blank slot rows are untouched between ticks and the image survives; a re-emit is only needed when its region is repainted or its size changes. The check, the write and the re-check are three separate steps: the command reads the key the screen expects, encodes, re-reads that key immediately before writing and re-reads it again after. A change before the write writes nothing; a change during the write never marks the image as written and asks the framework for a full repaint of the frame — the clear-screen command, which rewrites the slot cells and, on terminals that tie graphics to cells, discards those pixels — and on quit the terminal is being restored, so no repaint is requested. The check cannot be atomic with the write: a terminal that keeps pixels independently of the cells may show the stale image for one cycle, and nothing beyond that repaint is promised. An encode or a write that fails returns that image to the half block without retrying, and no lock spans the terminal write, so a slow terminal delays the image, never the keyboard or the box.
+- **Fallback intact.** Without Sixel the view is byte-identical to the half-block rendering: the initials block while there is no image, the 24-bit half blocks once it arrives, and the same box at every supported size. Nothing in the fallback path changed.
 
 ## Data
 
@@ -171,15 +176,18 @@ The cover fills a slot of 10 columns by 5 rows: half blocks `▀` with 24-bit co
 | Playlist snapshot for removal | `GET /v1/playlists/…?fields=snapshot_id` | delivered; the items page does not return it, so it is read from the playlist object next to the page, and a missing snapshot only leaves `x` unavailable |
 | Search results | `GET /v1/search?type=track` | delivered, ten per request |
 | Account handle | `/me` `display_name` | delivered; a missing name shows no label |
+| Recommendations for the playing track | `GET /v1/recommendations?seed_tracks=…&limit=20` | delivered; the seed is the id of the playing track, the key starts one of the results at random and Spotify's Autoplay continues from there; no new scope |
 | Shuffle, repeat, volume and playing state | Soloist `playback_state.options` and its events | delivered; the box shows what Soloist reported, never an optimistic guess beyond the pending intent |
 | Confirmed playlist context | Soloist `playback_state.context` and `context_changed` | delivered; only a validated playlist entity is named |
 | Queue | Soloist `get_queue` | delivered; the wide band's column and the table's `c` view read it |
 | Seek | `seek` command and `position_sync` | delivered; the bar moves at once and Soloist corrects it |
 | Saving the playing track | `POST /v1/playlists/…/items` with `uris` and Soloist's `item.uri` | delivered; needs the write scopes, recovered with one explicit reauthorization |
 | Removing a playlist track | `DELETE /v1/playlists/…/items` with `items` and the playlist's `snapshot_id` | delivered; removes one occurrence, reads the listing again on a stale snapshot and reuses the same single reauthorization |
-| Album cover | `album.images` in the responses above, plus one narrow track query | delivered; standard library decode, 24-bit half blocks |
+| Album cover | `album.images` in the responses above, plus one narrow track query | delivered; standard library decode, 24-bit half blocks over a 20×10-cell slot and a 10×5-cell one, and the real image over Sixel at the same slot measured in pixels |
 
 Playlist shuffle sends `play` with the playlist URI, waits for acceptance and confirmation of that playlist on the current Soloist session, then sends `set_shuffle`. An intervening observed change away from the confirmed context cancels the pending action. The commands are not atomic: an unobserved context switch between confirmation and command execution can still affect different playback. The first track is not guaranteed to be random. Spotify manages Autoplay; Pulso does not modify or simulate it.
+
+`d` (discover) extracts the id from the playing track's `spotify:track:` URI and sends one request to `/v1/recommendations` with that id as the only seed and twenty tracks, which is the endpoint's default page; the response is read with the track shape of the playlist items — name, artists, duration, URI and cover — and the endpoint uses the playlist scopes the session already has, so no authorization changes. Soloist accepts one target per `play`, so the key starts one of the returned tracks, chosen at random, through the same playback path and Spotify's Autoplay continues from there: Pulso never builds a queue of its own. A session with nothing playing, or an item that is not a Spotify track, sends no request — never an empty seed — and the notice row says why. A `403` means this Spotify app has no access to recommendations: one localized line says so, playback is untouched, no fallback list is invented and nothing is retried, and any other failure is reported without naming Spotify's response body.
 
 Save keeps Soloist's `item.uri` only when it is a track URI, so a missing or non-track item leaves the action unavailable instead of saving the wrong thing. Both write paths use Spotify's current playlist-items route: adding keeps the `uris` body and removing sends `items` with the playlist's `snapshot_id`. A `403` that does not clearly state that this account cannot change that particular playlist offers one explicit reauthorization with the wizard's browser-and-link presentation and retries once; a refusal that names the playlist the account cannot edit is reported as such without a retry. Playback is never touched and Spotify response bodies are never rendered.
 
