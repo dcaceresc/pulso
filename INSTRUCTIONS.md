@@ -130,13 +130,13 @@ El tamaño de la ventana decide la forma de la pantalla; las condiciones de anch
 
 | Tamaño | Qué se ve | Reproductor | Carátula |
 | --- | --- | --- | --- |
-| ancho ≥ 120 y alto ≥ 30 | biblioteca, tabla y cola con su contexto | 12 filas interiores | sí |
-| ancho ≥ 100 y alto ≥ 26, también con más de 120 columnas si el alto no llega a la banda amplia | biblioteca y tabla; la cola se abre con `c` | 12 filas | sí |
-| ancho ≥ 80 y alto ≥ 20 | una fila con la biblioteca encima de la tabla | 8 filas | no |
+| ancho ≥ 120 y alto ≥ 30 | biblioteca, tabla y cola con su contexto | 12 filas interiores | sí (20×10) |
+| ancho ≥ 100 y alto ≥ 26, también con más de 120 columnas si el alto no llega a la banda amplia | biblioteca y tabla; la cola se abre con `c` | 12 filas | sí (20×10) |
+| ancho ≥ 80 y alto ≥ 20 | una fila con la biblioteca encima de la tabla | 8 filas | sí (10×5) |
 | ancho ≥ 40 y alto ≥ 12 | la fila de la biblioteca y el reproductor, y la tabla cuando el alto deja filas para su encabezado | 6 filas | no |
 | ancho < 40 o alto < 12 | un mensaje con el tamaño mínimo, sin marco | — | — |
 
-La tabla es la que cede filas y ninguna fila desborda el ancho. La carátula mide veinte columnas por diez filas y solo se dibuja donde hay ranura —al menos 80 columnas y doce filas interiores—, que es lo que ofrecen las bandas amplia y media: la compacta declara ocho filas interiores y la mínima seis, así que ninguna de las dos gasta ranura. En la banda mínima la caja del reproductor declara seis filas interiores y una ventana baja las recorta —a 40×12 dibuja tres: título, artista y álbum, sin tiempo— para que su borde inferior no se pierda. Solo las bandas con zonas, la amplia y la media, promueven a todo el ancho una frase de estado que no cabe en su caja —un aviso de autorización largo, por ejemplo—; en la compacta y la mínima el aviso es una fila normal y, si es más ancho que la ventana, se recorta.
+La tabla es la que cede filas y ninguna fila desborda el ancho. La carátula se dibuja en dos tamaños: veinte columnas por diez filas en las bandas amplia y media, y diez columnas por cinco filas en la compacta. La caja pide la mayor ranura que cabe en sus filas interiores, porque la imagen ocupa las suyas y necesita la fila del título encima y la línea de contexto debajo: la grande pide doce filas y la pequeña siete, y por debajo de 80 columnas no hay ranura. La banda mínima declara seis filas interiores y se queda sin carátula. En la banda mínima la caja del reproductor declara seis filas interiores y una ventana baja las recorta —a 40×12 dibuja tres: título, artista y álbum, sin tiempo— para que su borde inferior no se pierda. Solo las bandas con zonas, la amplia y la media, promueven a todo el ancho una frase de estado que no cabe en su caja —un aviso de autorización largo, por ejemplo—; en la compacta y la mínima el aviso es una fila normal y, si es más ancho que la ventana, se recorta.
 
 `a` abre el selector de lista para guardar la canción que suena: `↑` `↓` o `j` `k` eligen la lista, el título del panel nombra la lista apuntada, `Enter` guarda y `Esc` cancela. El aviso de éxito aparece solo cuando Spotify confirmó la lista, y un fallo se muestra como una línea que no interrumpe la reproducción.
 

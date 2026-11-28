@@ -80,14 +80,14 @@ Rock Chileno · 42 tracks
 ────────────────────────────────────────────────────────────────────────────────
                                                                                 
 ├─ ▶ Playing  ▸  ⇄ on  ▸  ↻ all  ▸  Volume 37% ────────────────────────────────┤
-│  Estrechez de Corazón                                                        │
-│  Los Prisioneros                                                             │
-│  La Cultura de la Basura                                                     │
-│  2:14 / 6:21 (-4:07)                                                         │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━╸─────────────────────────────────────────────────│
+│              Estrechez de Corazón                                            │
+│  ┌────────┐  Los Prisioneros                                                 │
+│  │        │  La Cultura de la Basura                                         │
+│  │   EC   │  2:14 / 6:21 (-4:07)                                             │
+│  │        │  ━━━━━━━━━━━━━━━━━━━━━━╸─────────────────────────────────────────│
+│  └────────┘                                                                  │
 │                                                                              │
-│                                                                              │
-│  Playlist: Rock Chileno                                                      │
+│              Playlist: Rock Chileno                                          │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -120,9 +120,9 @@ The width conditions are floors and the height decides, so the first band in the
 
 | Band | Condition | Zones | Player box | Cover | Proof |
 | --- | --- | --- | --- | --- | --- |
-| Wide | width ≥ 120 and height ≥ 30 | library + table + queue/context | 12 interior rows | yes | 140×40, 120×34 |
-| Medium | width ≥ 100 and height ≥ 26, also above 120 columns when the height misses the wide band | library + table; queue with `c` | 12 rows | yes | 100×30 |
-| Compact | width ≥ 80 and height ≥ 20 | library switcher + table | 8 rows | no | 80×24 |
+| Wide | width ≥ 120 and height ≥ 30 | library + table + queue/context | 12 interior rows | yes (20×10) | 140×40, 120×34 |
+| Medium | width ≥ 100 and height ≥ 26, also above 120 columns when the height misses the wide band | library + table; queue with `c` | 12 rows | yes (20×10) | 100×30 |
+| Compact | width ≥ 80 and height ≥ 20 | library switcher + table | 8 rows | yes (10×5) | 80×24 |
 | Minimum | width ≥ 40 and height ≥ 12 | library switcher and the player box, and the table when the height leaves rows for its header | 6 rows | no | 40×12, 79×23 |
 | Insufficient | width < 40 or height < 12 | size message, no frame | — | — | 39×11 |
 
@@ -155,12 +155,12 @@ Rules that do not change with the band: the status line always lives on the play
 
 ## Cover
 
-The cover fills a slot of 20 columns by 10 rows: half blocks `▀` with 24-bit colour, where each cell paints two pixels of a 20×20 reduction of the album image — 400 pixels, four times the previous 10×10 slot. The initials block — two letters of the title in a box — stands in whenever there is no image.
+The cover is drawn in two sizes: the wide and medium bands fill a slot of 20 columns by 10 rows — half blocks `▀` with 24-bit colour, where each cell paints two pixels of a 20×20 reduction of the album image, 400 pixels — and the compact band fills a slot of 10 columns by 5 rows, a 10×10 reduction and 100 pixels. The initials block — two letters of the title in a box — stands in whenever there is no image.
 
-- The URL comes from `album.images` in the responses the app already requests (`/v1/search` and `/v1/playlists/…/items`); the playing track that no loaded page brought is resolved with one narrow `GET /v1/tracks/…?fields=album.images`. The image picked is the smallest one at least as wide as the drawn cover — 20 pixels —, and the largest available when none reaches it.
-- Download and decode use `image/png` and `image/jpeg` from the standard library: no new dependency and no new scope. The download is capped at 4 MiB and the header at one million pixels before decoding; the image is reduced by block average and drawn with 24-bit colour.
+- The URL comes from `album.images` in the responses the app already requests (`/v1/search` and `/v1/playlists/…/items`); the playing track that no loaded page brought is resolved with one narrow `GET /v1/tracks/…?fields=album.images`. The image picked is the smallest one at least as wide as the biggest slot — 20 pixels —, and the largest available when none reaches it. The single download is reduced once per slot, so a window that changes band draws the other size without asking Spotify again.
+- Download and decode use `image/png` and `image/jpeg` from the standard library: no new dependency and no new scope. The download is capped at 4 MiB and the header at one million pixels before decoding; the image is reduced by block average for each slot and drawn with 24-bit colour.
 - The first paint shows the initials block and never waits for the image; the result is cached in memory per URL and a failed download is remembered as well, leaving the initials with no notice and no error row.
-- The slot rule is one and shared by drawing and requesting — at least 80 columns and 12 interior rows, the ten of the image plus the title above and the context below — so a window without a slot downloads nothing, and a window that grows into the slot asks for the image then. That is why the cover exists in the wide and medium bands and not in the compact or minimum ones: at 80×24 the box declares eight interior rows and at 40×12 six, both below the twelve the slot needs.
+- The slot rule is one and shared by drawing and requesting: the box asks for the largest slot that fits its interior rows, because the cover occupies its own rows and needs the title row above and the context line below — 12 interior rows for the big slot and 7 interior rows for the small one — and at least 80 columns. That is why the cover exists in the wide, medium and compact bands and not in the minimum one, whose box declares 6 interior rows.
 
 ## Data
 
@@ -177,7 +177,7 @@ The cover fills a slot of 20 columns by 10 rows: half blocks `▀` with 24-bit c
 | Seek | `seek` command and `position_sync` | delivered; the bar moves at once and Soloist corrects it |
 | Saving the playing track | `POST /v1/playlists/…/items` with `uris` and Soloist's `item.uri` | delivered; needs the write scopes, recovered with one explicit reauthorization |
 | Removing a playlist track | `DELETE /v1/playlists/…/items` with `items` and the playlist's `snapshot_id` | delivered; removes one occurrence, reads the listing again on a stale snapshot and reuses the same single reauthorization |
-| Album cover | `album.images` in the responses above, plus one narrow track query | delivered; standard library decode, 24-bit half blocks over a 20×10-cell slot |
+| Album cover | `album.images` in the responses above, plus one narrow track query | delivered; standard library decode, 24-bit half blocks over a 20×10-cell slot and a 10×5-cell one |
 
 Playlist shuffle sends `play` with the playlist URI, waits for acceptance and confirmation of that playlist on the current Soloist session, then sends `set_shuffle`. An intervening observed change away from the confirmed context cancels the pending action. The commands are not atomic: an unobserved context switch between confirmation and command execution can still affect different playback. The first track is not guaranteed to be random. Spotify manages Autoplay; Pulso does not modify or simulate it.
 

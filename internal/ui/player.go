@@ -83,19 +83,44 @@ const (
 // barra en la fila siguiente, que llega hasta el borde. La altura interior
 // depende del ancho, para que la tabla sea siempre la que cede filas.
 const (
-	// Las bandas amplia y media dibujan doce filas interiores: las diez de la
-	// carátula más el título por encima y la línea de contexto por debajo.
+	// Las bandas amplia y media dibujan doce filas interiores: las de la carátula
+	// grande más el título por encima y la línea de contexto por debajo.
 	playerBoxWide    = 12 // Filas interiores desde 100 columnas.
 	playerBoxCompact = 8  // Filas interiores desde 80 columnas.
 	playerBoxMinimum = 6  // Filas interiores por debajo de 80 columnas.
-	// El ancho de la ranura es el que el catálogo usa para elegir la imagen.
-	playerArtWidth = spotify.CoverWidth
-	playerArtRows  = 10
+	// Las dos carátulas de la caja: la grande de las bandas amplia y media,
+	// veinte celdas por diez filas, y la pequeña de la compacta, diez celdas por
+	// cinco filas. El ancho de la grande es el que el catálogo usa para elegir la
+	// imagen (spotify.CoverWidth), así no hay dos números.
+	playerArtWideColumns    = spotify.CoverWidth
+	playerArtWideRows       = 10
+	playerArtCompactColumns = 10
+	playerArtCompactRows    = 5
 	// playerBarMinCells es el ancho mínimo de la línea de la barra: por debajo
 	// no se dibuja y la fila queda vacía, con el tiempo igual de completo.
 	playerBarMinCells = 4
 	playerBoxGutter   = 80 // Por debajo de este ancho la caja no gasta carátula.
 	playerBoxMinRoom  = 8  // Por debajo de este ancho no hay caja que dibujar.
+)
+
+// artSlot es la ranura de la carátula: las celdas que ocupa en la caja. La
+// ranura vacía —cero columnas— es la de una caja que no gasta carátula.
+type artSlot struct{ columns, rows int }
+
+// ok distingue la ranura de una caja con sitio de la de una que no lo tiene.
+func (s artSlot) ok() bool { return s.columns > 0 && s.rows > 0 }
+
+// pixelWidth y pixelHeight son los píxeles que la ranura dibuja: uno por celda a
+// lo ancho y dos por celda a lo alto, porque cada celda lleva un medio bloque.
+func (s artSlot) pixelWidth() int  { return s.columns }
+func (s artSlot) pixelHeight() int { return s.rows * coverPixelRows }
+
+var (
+	playerArtWide    = artSlot{columns: playerArtWideColumns, rows: playerArtWideRows}
+	playerArtCompact = artSlot{columns: playerArtCompactColumns, rows: playerArtCompactRows}
+	// playerArtSlots son las ranuras de la caja, de la mayor a la menor: la regla
+	// elige la primera que cabe en las filas interiores de la banda.
+	playerArtSlots = []artSlot{playerArtWide, playerArtCompact}
 )
 
 type playerViewState struct {
@@ -1882,20 +1907,31 @@ func playerBoxHeight(width, height int) int {
 
 // playerArtSlot es la única regla de la ranura de la carátula: dibujarla y
 // pedirla usan la misma, así una ventana estrecha no descarga una imagen que
-// nunca podría pintar. La ranura pide las diez filas de la imagen y las dos que
-// la enmarcan —el título arriba y el contexto abajo—, así que solo existe en
-// las bandas amplia y media.
-func playerArtSlot(width, interior int) bool {
-	return width >= playerBoxGutter && interior >= playerArtRows+2
+// nunca podría pintar. La caja pide la mayor ranura que quepa en sus filas
+// interiores, porque la carátula ocupa las suyas y necesita la fila del título
+// encima y la línea de contexto debajo: la grande pide doce filas —las de las
+// bandas amplia y media— y la pequeña siete, que es lo que dejan las ocho de la
+// banda compacta. Por debajo de playerBoxGutter columnas, y en la banda mínima
+// con sus seis filas, la caja no gasta carátula y la ranura queda vacía.
+func playerArtSlot(width, interior int) artSlot {
+	if width < playerBoxGutter {
+		return artSlot{}
+	}
+	for _, slot := range playerArtSlots {
+		if interior >= slot.rows+2 {
+			return slot
+		}
+	}
+	return artSlot{}
 }
 
 // playerBoxLayout reparte las filas interiores de la caja: el título la
 // encabeza, le siguen el artista, el álbum, el tiempo y la barra, y la línea de
-// contexto la cierra. La carátula ocupa de la fila 1 a la playerArtRows, de modo
-// que el título queda por encima de la imagen y el contexto por debajo. Las
-// filas que no caben quedan en -1 y no se dibujan: con cinco filas la caja pierde
-// el contexto, con cuatro la barra, con tres el tiempo y con dos el álbum y el
-// artista, así el título es siempre lo último que cede.
+// contexto la cierra. La carátula ocupa de la fila 1 a las filas de su ranura,
+// de modo que el título queda por encima de la imagen y el contexto por debajo.
+// Las filas que no caben quedan en -1 y no se dibujan: con cinco filas la caja
+// pierde el contexto, con cuatro la barra, con tres el tiempo y con dos el álbum
+// y el artista, así el título es siempre lo último que cede.
 type playerBoxLayout struct {
 	title, artist, album, time, bar, context int
 }
@@ -2006,14 +2042,15 @@ func (m *playerModel) playerBoxState(width int) string {
 	return playerEllipsis(options[len(options)-1], width)
 }
 
-// playerBoxArtLines devuelve la ranura de la carátula: la imagen ya decodificada
-// cuando llegó y, mientras no esté, el bloque de iniciales. El segundo valor dice
-// si las filas ya traen su color, porque la carátula usa 24 bits por celda.
-func (m *playerModel) playerBoxArtLines() ([]string, bool) {
-	if rows, ok := m.covers.rows(playerText(m.state.Track.URI)); ok {
+// playerBoxArtLines devuelve las filas de la ranura: la imagen ya decodificada a
+// la medida de esa ranura cuando llegó y, mientras no esté, el bloque de
+// iniciales. El segundo valor dice si las filas ya traen su color, porque la
+// carátula usa 24 bits por celda.
+func (m *playerModel) playerBoxArtLines(slot artSlot) ([]string, bool) {
+	if rows, ok := m.covers.rows(playerText(m.state.Track.URI), slot); ok {
 		return rows, true
 	}
-	return m.playerBoxArt(), false
+	return m.playerBoxArt(slot), false
 }
 
 // coverRequest pide lo que falte para dibujar la carátula de la pista en
@@ -2024,16 +2061,16 @@ func (m *playerModel) coverRequest() tea.Cmd {
 	if m.covers == nil || m.quit || m.playerBoxCondition() != playerBoxLive {
 		return nil
 	}
-	if !playerArtSlot(m.width, playerBoxInterior(m.width, m.height)) {
+	if !playerArtSlot(m.width, playerBoxInterior(m.width, m.height)).ok() {
 		return nil
 	}
 	return m.covers.request(m.ctx, playerText(m.state.Track.URI))
 }
 
 // playerBoxArt devuelve el bloque de iniciales de la carátula: dos letras del
-// título mientras no haya imagen que dibujar. playerArtRows es la fuente de la
-// altura y cada cadena mide playerArtWidth celdas.
-func (m *playerModel) playerBoxArt() []string {
+// título mientras no haya imagen que dibujar. La ranura decide la altura y el
+// ancho de cada fila.
+func (m *playerModel) playerBoxArt(slot artSlot) []string {
 	initials := "♪"
 	if title := playerText(m.state.Track.Title); title != "" {
 		letters := make([]rune, 0, 2)
@@ -2053,19 +2090,19 @@ func (m *playerModel) playerBoxArt() []string {
 		}
 		initials = strings.ToUpper(string(letters))
 	}
-	inner := playerArtWidth - 2
+	inner := slot.columns - 2
 	pad := max(0, inner-lipgloss.Width(initials))
 	left := pad / 2
 	middle := strings.Repeat(" ", left) + initials + strings.Repeat(" ", pad-left)
 	blank := "│" + strings.Repeat(" ", inner) + "│"
-	rows := make([]string, 0, playerArtRows)
-	for row := 0; row < playerArtRows; row++ {
+	rows := make([]string, 0, slot.rows)
+	for row := 0; row < slot.rows; row++ {
 		switch {
 		case row == 0:
 			rows = append(rows, "┌"+strings.Repeat("─", inner)+"┐")
-		case row == playerArtRows-1:
+		case row == slot.rows-1:
 			rows = append(rows, "└"+strings.Repeat("─", inner)+"┘")
-		case row == playerArtRows/2:
+		case row == slot.rows/2:
 			rows = append(rows, "│"+middle+"│")
 		default:
 			rows = append(rows, blank)
@@ -2103,15 +2140,16 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 	border += strings.Repeat("─", max(0, inner-lipgloss.Width(border)))
 	rows = append(rows, edge.Render("├")+styles.label.Render(playerFit(border, inner))+edge.Render("┤"))
 
-	hasArt := playerArtSlot(width, interior) && m.playerBoxCondition() == playerBoxLive
+	slot := playerArtSlot(width, interior)
+	hasArt := slot.ok() && m.playerBoxCondition() == playerBoxLive
 	art := []string{}
 	artColored := false
 	if hasArt {
-		art, artColored = m.playerBoxArtLines()
+		art, artColored = m.playerBoxArtLines(slot)
 	}
 	left := "  "
 	if hasArt {
-		left = "  " + strings.Repeat(" ", playerArtWidth) + "  "
+		left = "  " + strings.Repeat(" ", slot.columns) + "  "
 	}
 	textWidth := max(1, inner-lipgloss.Width(left)-2)
 	// La barra no deja margen derecho: ocupa todas las celdas que quedan hasta el
@@ -2158,8 +2196,7 @@ func (m *playerModel) playerBoxRows(width int, styles playerStyles) []string {
 				cell = styles.muted.Render(cell)
 			}
 			line = "  " + cell + "  "
-		}
-		// Solo la barra usa el ancho completo: las líneas de texto dejan el
+		} // Solo la barra usa el ancho completo: las líneas de texto dejan el
 		// margen derecho que las separa del borde.
 		rowWidth := textWidth
 		if row == layout.bar {

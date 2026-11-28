@@ -88,8 +88,12 @@ func docsNumbers(text string) []int {
 }
 
 // docsCover reduce la celda de la carátula a sí, no o ninguno, para que las dos
-// lenguas se comparen sin traducir la tabla.
+// lenguas se comparen sin traducir la tabla. El tamaño entre paréntesis se retira
+// aquí porque lo compara docsCoverSize.
 func docsCover(cell string) string {
+	if i := strings.Index(cell, " ("); i >= 0 {
+		cell = cell[:i]
+	}
 	switch cell {
 	case "sí", "yes":
 		return "yes"
@@ -99,6 +103,26 @@ func docsCover(cell string) string {
 		return "none"
 	}
 	return cell
+}
+
+// docsCoverSize devuelve las columnas y filas que la celda de la carátula
+// declara entre paréntesis, o nada cuando la banda no tiene ranura.
+func docsCoverSize(cell string) []int {
+	open := strings.Index(cell, " (")
+	close := strings.Index(cell, ")")
+	if open < 0 || close < open {
+		return nil
+	}
+	return docsNumbers(cell[open:close])
+}
+
+// docsSlotSize es el tamaño que la celda de la carátula debe declarar para la
+// ranura que la banda resuelve.
+func docsSlotSize(slot artSlot) []int {
+	if !slot.ok() {
+		return nil
+	}
+	return []int{slot.columns, slot.rows}
 }
 
 // docsCondition construye la condición que la matriz debe declarar para la
@@ -167,6 +191,7 @@ func TestDocsDeclareTheSameMatrixAndControls(t *testing.T) {
 	type docsRow struct {
 		condition, player []int
 		cover             string
+		size              []int
 	}
 	var reference []docsRow
 	for _, doc := range docsMatrices {
@@ -183,6 +208,7 @@ func TestDocsDeclareTheSameMatrixAndControls(t *testing.T) {
 				condition: docsNumbers(row[doc.condition]),
 				player:    docsNumbers(row[doc.player]),
 				cover:     docsCover(row[doc.cover]),
+				size:      docsCoverSize(row[doc.cover]),
 			})
 		}
 		if reference == nil {
@@ -259,8 +285,11 @@ func TestDocsMatrixMatchesTheLayout(t *testing.T) {
 				t.Errorf("%s: row %d declares %q interior rows, want %d", doc.name, i+1, row[doc.player], playerBoxBand(probe.width))
 			}
 			slot := playerArtSlot(probe.width, playerBoxInterior(probe.width, probe.height))
-			if want := docsCoverWord(doc.lang, slot); row[doc.cover] != want {
+			if want := docsCover(docsCoverWord(doc.lang, slot.ok())); docsCover(row[doc.cover]) != want {
 				t.Errorf("%s: row %d declares cover %q, want %q", doc.name, i+1, row[doc.cover], want)
+			}
+			if got, want := docsCoverSize(row[doc.cover]), docsSlotSize(slot); !reflect.DeepEqual(got, want) {
+				t.Errorf("%s: row %d declares the cover size %v, want %v", doc.name, i+1, got, want)
 			}
 		}
 	}
@@ -290,17 +319,24 @@ func TestDocsMatrixMatchesTheLayout(t *testing.T) {
 }
 
 // TestDocsCoverMatchesTheSlot fija que el plan y las dos INSTRUCTIONS declaren
-// la ranura que el código dibuja: las veinte columnas por diez filas y la
-// reducción de 20×20 píxeles, para que un número suelto no se quede atrás.
+// las dos ranuras que el código dibuja —la grande de veinte columnas por diez
+// filas con su reducción de 20×20 píxeles y la pequeña de diez por cinco con la
+// de 10×10— y la regla que elige entre ellas, para que un número suelto no se
+// quede atrás.
 func TestDocsCoverMatchesTheSlot(t *testing.T) {
-	pixels := playerArtWidth * playerArtRows * coverPixelRows
 	for _, want := range []string{
-		fmt.Sprintf("slot of %d columns by %d rows", playerArtWidth, playerArtRows),
-		fmt.Sprintf("a %d×%d reduction", playerArtWidth, playerArtRows*coverPixelRows),
-		fmt.Sprintf("%d pixels", pixels),
+		fmt.Sprintf("slot of %d columns by %d rows", playerArtWide.columns, playerArtWide.rows),
+		fmt.Sprintf("a %d×%d reduction", playerArtWide.pixelWidth(), playerArtWide.pixelHeight()),
+		fmt.Sprintf("slot of %d columns by %d rows", playerArtCompact.columns, playerArtCompact.rows),
+		fmt.Sprintf("a %d×%d reduction", playerArtCompact.pixelWidth(), playerArtCompact.pixelHeight()),
+		fmt.Sprintf("%d pixels", playerArtWide.pixelWidth()*playerArtWide.pixelHeight()),
+		fmt.Sprintf("%d pixels", playerArtCompact.pixelWidth()*playerArtCompact.pixelHeight()),
 		// La regla de la ranura se escribe con los mismos umbrales que
 		// playerArtSlot, así un cambio de código no deja el texto atrás.
-		fmt.Sprintf("at least %d columns and %d interior rows", playerBoxGutter, playerArtRows+2),
+		fmt.Sprintf("at least %d columns", playerBoxGutter),
+		fmt.Sprintf("%d interior rows", playerArtWide.rows+2),
+		fmt.Sprintf("%d interior rows", playerArtCompact.rows+2),
+		fmt.Sprintf("%d interior rows", playerBoxMinimum),
 	} {
 		if !strings.Contains(docsText(t, docsPlan), want) {
 			t.Errorf("%s does not declare %q", docsPlan, want)
@@ -308,7 +344,9 @@ func TestDocsCoverMatchesTheSlot(t *testing.T) {
 	}
 	for _, doc := range []struct{ name, phrase string }{
 		{docsSpanish, "veinte columnas por diez filas"},
+		{docsSpanish, "diez columnas por cinco filas"},
 		{docsEnglish, "twenty columns by ten rows"},
+		{docsEnglish, "ten columns by five rows"},
 	} {
 		if !strings.Contains(docsText(t, doc.name), doc.phrase) {
 			t.Errorf("%s does not state the cover slot as %q", doc.name, doc.phrase)

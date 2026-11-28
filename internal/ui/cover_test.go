@@ -176,8 +176,8 @@ func coverMessages(t *testing.T, cmd tea.Cmd) []tea.Msg {
 
 // coverInitialsTop es el borde superior del bloque de iniciales: la ranura que
 // la caja dibuja mientras no hay imagen.
-func coverInitialsTop() string {
-	return "┌" + strings.Repeat("─", playerArtWidth-2) + "┐"
+func coverInitialsTop(slot artSlot) string {
+	return "┌" + strings.Repeat("─", slot.columns-2) + "┐"
 }
 
 // coverFixtureRoute sirve la primera página de listas y la de la lista abierta,
@@ -212,10 +212,10 @@ func TestCoverReplacesInitialsFromLoadedRow(t *testing.T) {
 	m = coverState(t, m, coverTrackState(coverFixtureURI))
 
 	view := strings.Join(playerViewRows(t, m, 120, 40), "\n")
-	if got, want := strings.Count(view, coverUpperHalf), playerArtWidth*playerArtRows; got != want {
+	if got, want := strings.Count(view, coverUpperHalf), playerArtWide.columns*playerArtWide.rows; got != want {
 		t.Fatalf("the cover draws %d half blocks, want %d:\n%s", got, want, view)
 	}
-	for _, gone := range []string{coverInitialsTop(), "EC"} {
+	for _, gone := range []string{coverInitialsTop(playerArtWide), "EC"} {
 		if strings.Contains(view, gone) {
 			t.Fatalf("the initials block survived the cover (%q):\n%s", gone, view)
 		}
@@ -240,7 +240,7 @@ func TestCoverFetchFailureKeepsInitials(t *testing.T) {
 	m = coverState(t, m, coverTrackState(coverFixtureURI))
 
 	view := strings.Join(playerViewRows(t, m, 120, 40), "\n")
-	if !strings.Contains(view, coverInitialsTop()) || !strings.Contains(view, "EC") {
+	if !strings.Contains(view, coverInitialsTop(playerArtWide)) || !strings.Contains(view, "EC") {
 		t.Fatalf("the initials block is gone after a failed download:\n%s", view)
 	}
 	if strings.Contains(view, coverUpperHalf) {
@@ -278,7 +278,7 @@ func TestCoverSlowFetchKeepsFirstPaint(t *testing.T) {
 	<-started
 
 	view := strings.Join(playerViewRows(t, m, 120, 40), "\n")
-	if !strings.Contains(view, coverInitialsTop()) || strings.Contains(view, coverUpperHalf) {
+	if !strings.Contains(view, coverInitialsTop(playerArtWide)) || strings.Contains(view, coverUpperHalf) {
 		t.Fatalf("the first paint waited for the picture:\n%s", view)
 	}
 
@@ -289,7 +289,7 @@ func TestCoverSlowFetchKeepsFirstPaint(t *testing.T) {
 		t.Fatalf("unexpected model %T", model)
 	}
 	view = strings.Join(playerViewRows(t, after, 120, 40), "\n")
-	if strings.Contains(view, coverInitialsTop()) || !strings.Contains(view, coverUpperHalf) {
+	if strings.Contains(view, coverInitialsTop(playerArtWide)) || !strings.Contains(view, coverUpperHalf) {
 		t.Fatalf("the cover did not replace the initials once it arrived:\n%s", view)
 	}
 }
@@ -395,7 +395,7 @@ func TestCoverFallbackRemembersItsFailure(t *testing.T) {
 		t.Fatalf("a track without cover downloaded %v", downloaded)
 	}
 	view := strings.Join(playerViewRows(t, m, 120, 40), "\n")
-	if !strings.Contains(view, coverInitialsTop()) || strings.Contains(view, coverUpperHalf) {
+	if !strings.Contains(view, coverInitialsTop(playerArtWide)) || strings.Contains(view, coverUpperHalf) {
 		t.Fatalf("the failed fallback did not keep the initials:\n%s", view)
 	}
 	if notice := m.playerNoticeText(); notice != "" {
@@ -417,14 +417,14 @@ func TestCoverKeepsInitialsWithoutImage(t *testing.T) {
 
 	// La caja de 80 columnas dibuja la ranura; por debajo, ni ranura ni imagen.
 	view := strings.Join(playerViewRows(t, m, 120, 40), "\n")
-	if !strings.Contains(view, coverInitialsTop()) || !strings.Contains(view, "EC") {
+	if !strings.Contains(view, coverInitialsTop(playerArtWide)) || !strings.Contains(view, "EC") {
 		t.Fatalf("the initials block is gone without an image:\n%s", view)
 	}
 	if strings.Contains(view, coverUpperHalf) {
 		t.Fatalf("a track without cover drew a picture:\n%s", view)
 	}
 	narrow := strings.Join(playerViewRows(t, m, 79, 23), "\n")
-	if strings.Contains(narrow, coverInitialsTop()) || strings.Contains(narrow, coverUpperHalf) {
+	if strings.Contains(narrow, coverInitialsTop(playerArtWide)) || strings.Contains(narrow, coverUpperHalf) {
 		t.Fatalf("the art slot survived below 80 columns:\n%s", narrow)
 	}
 	if got := fetch.requested(); len(got) != 0 {
@@ -502,30 +502,47 @@ func TestCoverImageChoice(t *testing.T) {
 
 // TestCoverSlotIsTwentyByTen garantiza la geometría de R2: la ranura mide veinte
 // celdas por diez filas, dibuja doscientos medios bloques —dos píxeles por celda,
-// 400 píxeles de imagen en total— y el catálogo pide la imagen con ese ancho.
-func TestCoverSlotIsTwentyByTen(t *testing.T) {
+// 400 píxeles de imagen en total— y el catálogo pide la imagen con ese ancho. La
+// ranura pequeña de la banda compacta se queda en las diez celdas por cinco filas
+// de 10×10 píxeles, y las dos salen de un solo decodificado de la misma imagen.
+func TestCoverSlotSizes(t *testing.T) {
 	if spotify.CoverWidth != 20 {
-		t.Fatalf("spotify.CoverWidth = %d, want the twenty cells of the slot", spotify.CoverWidth)
+		t.Fatalf("spotify.CoverWidth = %d, want the twenty cells of the wide slot", spotify.CoverWidth)
 	}
-	if playerArtWidth != spotify.CoverWidth || playerArtRows != 10 {
-		t.Fatalf("the slot is %dx%d cells, want 20x10", playerArtWidth, playerArtRows)
+	if playerArtWide != (artSlot{columns: 20, rows: 10}) {
+		t.Fatalf("the wide slot is %+v, want 20x10 cells", playerArtWide)
 	}
-	rows, err := coverRows(coverImagePNG(t, 40, 20, color.RGBA{R: 0x30, G: 0x60, B: 0x90, A: 0xFF}))
+	if playerArtCompact != (artSlot{columns: 10, rows: 5}) {
+		t.Fatalf("the compact slot is %+v, want 10x5 cells", playerArtCompact)
+	}
+	picture, err := coverPictureFrom(coverImagePNG(t, 40, 40, color.RGBA{R: 0x30, G: 0x60, B: 0x90, A: 0xFF}))
 	if err != nil {
 		t.Fatalf("decode fixture: %v", err)
 	}
-	if len(rows) != playerArtRows {
-		t.Fatalf("the cover draws %d rows, want %d", len(rows), playerArtRows)
+	for _, slot := range []artSlot{playerArtWide, playerArtCompact} {
+		rows, ok := picture.rows[slot]
+		if !ok || len(rows) != slot.rows {
+			t.Fatalf("the %+v slot draws %d rows, want %d", slot, len(rows), slot.rows)
+		}
+		blocks := 0
+		for _, row := range rows {
+			blocks += strings.Count(row, coverUpperHalf)
+			if lipgloss.Width(row) != slot.columns {
+				t.Fatalf("the %+v slot row measures %d cells, want %d", slot, lipgloss.Width(row), slot.columns)
+			}
+		}
+		if want := slot.columns * slot.rows; blocks != want {
+			t.Fatalf("the %+v slot draws %d half blocks, want %d", slot, blocks, want)
+		}
+		if pixels := slot.pixelWidth() * slot.pixelHeight(); pixels != slot.columns*slot.rows*coverPixelRows {
+			t.Fatalf("the %+v slot holds %d pixels", slot, pixels)
+		}
 	}
-	blocks := 0
-	for _, row := range rows {
-		blocks += strings.Count(row, coverUpperHalf)
+	if pixels := playerArtWide.pixelWidth() * playerArtWide.pixelHeight(); pixels != 400 {
+		t.Fatalf("the wide slot holds %d pixels, want the 400 of a 20x20 reduction", pixels)
 	}
-	if want := playerArtWidth * playerArtRows; blocks != want {
-		t.Fatalf("the cover draws %d half blocks, want %d", blocks, want)
-	}
-	if pixels := playerArtWidth * playerArtRows * coverPixelRows; pixels != 400 {
-		t.Fatalf("the slot holds %d pixels, want the 400 of a 20x20 reduction", pixels)
+	if pixels := playerArtCompact.pixelWidth() * playerArtCompact.pixelHeight(); pixels != 100 {
+		t.Fatalf("the compact slot holds %d pixels, want the 100 of a 10x10 reduction", pixels)
 	}
 }
 
@@ -544,16 +561,17 @@ func TestCoverDecodesPNGAndJPEG(t *testing.T) {
 		{"jpeg", coverImageJPEG(t, 24, 24, red)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			rows, err := coverRows(tt.data)
+			picture, err := coverPictureFrom(tt.data)
 			if err != nil {
 				t.Fatalf("decode %s: %v", tt.name, err)
 			}
-			if len(rows) != playerArtRows {
-				t.Fatalf("%s cover draws %d rows, want %d", tt.name, len(rows), playerArtRows)
+			rows := picture.rows[playerArtWide]
+			if len(rows) != playerArtWide.rows {
+				t.Fatalf("%s cover draws %d rows, want %d", tt.name, len(rows), playerArtWide.rows)
 			}
 			for _, row := range rows {
-				if lipgloss.Width(row) != playerArtWidth {
-					t.Fatalf("%s cover row measures %d cells, want %d: %q", tt.name, lipgloss.Width(row), playerArtWidth, row)
+				if lipgloss.Width(row) != playerArtWide.columns {
+					t.Fatalf("%s cover row measures %d cells, want %d: %q", tt.name, lipgloss.Width(row), playerArtWide.columns, row)
 				}
 				if !strings.Contains(row, "▀") {
 					t.Fatalf("%s cover row is not drawn with half blocks: %q", tt.name, row)
@@ -565,8 +583,8 @@ func TestCoverDecodesPNGAndJPEG(t *testing.T) {
 		})
 	}
 	for _, data := range [][]byte{nil, []byte("not an image"), []byte("\x89PNG\r\n\x1a\ntruncated")} {
-		if rows, err := coverRows(data); err == nil || rows != nil {
-			t.Fatalf("coverRows(%q) = %v, %v; want a format error", data, rows, err)
+		if picture, err := coverPictureFrom(data); err == nil {
+			t.Fatalf("coverPictureFrom(%q) = %v, %v; want a format error", data, picture, err)
 		}
 	}
 }
@@ -597,13 +615,14 @@ func TestCoverFetcherIsInjected(t *testing.T) {
 // TestCoverAnsiRowsAreStripped garante que la ranura nunca desborda: las filas
 // de la carátula miden lo mismo que el bloque de iniciales, con y sin color.
 func TestCoverAnsiRowsAreStripped(t *testing.T) {
-	rows, err := coverRows(coverImagePNG(t, 16, 16, color.RGBA{G: 0x40, A: 0xFF}))
+	picture, err := coverPictureFrom(coverImagePNG(t, 16, 16, color.RGBA{G: 0x40, A: 0xFF}))
 	if err != nil {
 		t.Fatalf("decode fixture: %v", err)
 	}
+	rows := picture.rows[playerArtWide]
 	for _, row := range rows {
-		if stripped := ansi.Strip(row); stripped != strings.Repeat(coverUpperHalf, playerArtWidth) {
-			t.Fatalf("cover row = %q, want %d half blocks", stripped, playerArtWidth)
+		if stripped := ansi.Strip(row); stripped != strings.Repeat(coverUpperHalf, playerArtWide.columns) {
+			t.Fatalf("cover row = %q, want %d half blocks", stripped, playerArtWide.columns)
 		}
 	}
 }

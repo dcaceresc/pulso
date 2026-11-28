@@ -57,48 +57,70 @@ func coverSlotSolid(t *testing.T) *coverFetchFake {
 	}}
 }
 
-// TestCoverSlotMetrics fija la ranura: diez filas de veinte medios bloques, con
-// color de 24 bits, nada dibujado fuera de ella y cada fila del ancho exacto de
-// la ventana.
+// coverSlotCase es un tamaño de la matriz con la ranura que su banda dibuja.
+type coverSlotCase struct {
+	width, height int
+	slot          artSlot
+}
+
+// TestCoverSlotMetrics fija la ranura de cada banda y que un solo dibujo sirva
+// para las dos: diez filas de veinte medios bloques en las bandas amplia y media
+// y cinco filas de diez en la compacta, con color de 24 bits, nada dibujado
+// fuera de la ranura, cada fila del ancho exacto de la ventana y una única
+// descarga para todas las vistas.
 func TestCoverSlotMetrics(t *testing.T) {
 	profile := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(profile) })
 
-	m := coverSlotPlayer(t, coverFixtureURL, coverSlotSolid(t))
-	for _, size := range []struct{ width, height int }{{120, 40}, {120, 34}} {
-		rows := playerViewRows(t, m, size.width, size.height)
-		slot := make([]int, 0, playerArtRows)
+	fetch := coverSlotSolid(t)
+	m := coverSlotPlayer(t, coverFixtureURL, fetch)
+	for _, tt := range []coverSlotCase{
+		{120, 40, playerArtWide},
+		{120, 34, playerArtWide},
+		{100, 30, playerArtWide},
+		{80, 24, playerArtCompact},
+	} {
+		rows := playerViewRows(t, m, tt.width, tt.height)
+		slot := make([]int, 0, tt.slot.rows)
 		for index, row := range rows {
-			if width := lipgloss.Width(row); width != size.width {
-				t.Fatalf("%dx%d row %d measures %d cells, want %d: %q", size.width, size.height, index, width, size.width, row)
+			if width := lipgloss.Width(row); width != tt.width {
+				t.Fatalf("%dx%d row %d measures %d cells, want %d: %q", tt.width, tt.height, index, width, tt.width, row)
 			}
 			if blocks := strings.Count(row, coverUpperHalf); blocks > 0 {
 				slot = append(slot, index)
-				if blocks != playerArtWidth {
-					t.Fatalf("%dx%d row %d carries %d half blocks, want %d: %q", size.width, size.height, index, blocks, playerArtWidth, row)
+				if blocks != tt.slot.columns {
+					t.Fatalf("%dx%d row %d carries %d half blocks, want %d: %q", tt.width, tt.height, index, blocks, tt.slot.columns, row)
 				}
-				// Los veinte medios bloques van juntos y son lo único de la fila:
-				// nada de la carátula se sale de la ranura.
-				if want := "  " + strings.Repeat(coverUpperHalf, playerArtWidth) + "  "; !strings.Contains(row, want) {
-					t.Fatalf("%dx%d row %d does not keep the slot together: %q", size.width, size.height, index, row)
+				// Los medios bloques de la ranura van juntos y son lo único de la
+				// fila: nada de la carátula se sale de ella.
+				if want := "  " + strings.Repeat(coverUpperHalf, tt.slot.columns) + "  "; !strings.Contains(row, want) {
+					t.Fatalf("%dx%d row %d does not keep the slot together: %q", tt.width, tt.height, index, row)
 				}
 			}
 		}
-		if len(slot) != playerArtRows {
-			t.Fatalf("%dx%d draws the cover in %v, want %d consecutive rows", size.width, size.height, slot, playerArtRows)
+		if len(slot) != tt.slot.rows {
+			t.Fatalf("%dx%d draws the cover in %v, want %d consecutive rows", tt.width, tt.height, slot, tt.slot.rows)
 		}
-		for row := slot[0]; row < slot[0]+playerArtRows; row++ {
+		for row := slot[0]; row < slot[0]+tt.slot.rows; row++ {
 			if !containsInt(slot, row) {
-				t.Fatalf("%dx%d leaves a gap in the slot from row %d: %v", size.width, size.height, slot[0], slot)
+				t.Fatalf("%dx%d leaves a gap in the slot from row %d: %v", tt.width, tt.height, slot[0], slot)
 			}
 		}
 		raw := m.View()
 		for _, colour := range []string{"38;2;", "48;2;"} {
 			if !strings.Contains(raw, colour) {
-				t.Fatalf("%dx%d lost the 24-bit colour %q", size.width, size.height, colour)
+				t.Fatalf("%dx%d lost the 24-bit colour %q", tt.width, tt.height, colour)
 			}
 		}
+	}
+	// Cambiar de banda elige la otra ranura con la misma descarga y el mismo
+	// decodificado: ni una petición más, ni una entrada más en la caché.
+	if got := len(m.covers.images); got != 1 {
+		t.Fatalf("the cache holds %d pictures, want the single download", got)
+	}
+	if got := fetch.requested(); len(got) != 1 || got[0] != coverFixtureURL {
+		t.Fatalf("downloads across the bands = %v, want one for %q", got, coverFixtureURL)
 	}
 }
 
@@ -127,24 +149,26 @@ func TestCoverFailedDownloadMatchesNoCoverView(t *testing.T) {
 	}
 }
 
-// TestCoverSlotThreshold fija cuándo existe la ranura: con las filas de la
-// carátula disponibles —las diez de la imagen y las dos que la enmarcan— y al
-// menos 80 columnas. La banda compacta se queda sin carátula porque su caja solo
-// declara ocho filas interiores.
+// TestCoverSlotThreshold fija cuándo existe la ranura y cuál: la caja pide la
+// mayor que cabe en sus filas interiores, de modo que la grande —diez filas de
+// imagen más el título y el contexto— pide doce y la pequeña —cinco filas más las
+// dos que la enmarcan— pide siete. La banda mínima y cualquier ventana con menos
+// filas, o con menos de 80 columnas, se quedan sin carátula.
 func TestCoverSlotThreshold(t *testing.T) {
 	m := coverSlotPlayer(t, coverFixtureURL, coverSlotSolid(t))
 	for _, tt := range []struct {
 		width, height int
-		slot          bool
+		slot          artSlot
 	}{
-		{120, 40, true}, {120, 22, true}, {100, 30, true},
-		{120, 21, false}, {100, 21, false}, {80, 24, false}, {79, 40, false},
+		{120, 40, playerArtWide}, {120, 22, playerArtWide}, {100, 30, playerArtWide},
+		{80, 24, playerArtCompact}, {120, 17, playerArtCompact},
+		{120, 16, artSlot{}}, {120, 21, playerArtCompact}, {40, 12, artSlot{}}, {79, 40, artSlot{}},
 	} {
 		view := strings.Join(playerViewRows(t, m, tt.width, tt.height), "\n")
 		switch drawn := strings.Contains(view, coverUpperHalf); {
-		case drawn != tt.slot:
-			t.Fatalf("%dx%d draws the cover = %v, want %v:\n%s", tt.width, tt.height, drawn, tt.slot, view)
-		case !tt.slot && strings.Contains(view, coverInitialsTop()):
+		case drawn != tt.slot.ok():
+			t.Fatalf("%dx%d draws the cover = %v, want %v:\n%s", tt.width, tt.height, drawn, tt.slot.ok(), view)
+		case !drawn && strings.Contains(view, coverInitialsTop(playerArtWide)):
 			t.Fatalf("%dx%d draws the initials block without a slot:\n%s", tt.width, tt.height, view)
 		}
 	}
@@ -218,7 +242,7 @@ func TestCoverNarrowWindowSkipsTheRequest(t *testing.T) {
 		t.Fatalf("a 40x12 window downloaded %v", got)
 	}
 	view := strings.Join(playerViewRows(t, m, 40, 12), "\n")
-	if strings.Contains(view, coverUpperHalf) || strings.Contains(view, coverInitialsTop()) {
+	if strings.Contains(view, coverUpperHalf) || strings.Contains(view, coverInitialsTop(playerArtWide)) {
 		t.Fatalf("a 40x12 window drew art:\n%s", view)
 	}
 
@@ -261,7 +285,7 @@ func TestCoverNarrowWindowSkipsTheRequest(t *testing.T) {
 // memoria: una imagen que declara más píxeles de los que la ranura necesita se
 // rechaza antes de decodificarse, con el mismo silencio que un fallo.
 func TestCoverRejectsDeclaredPixelsBeyondTheCap(t *testing.T) {
-	if _, err := coverRows(coverBigPNG(t, 640, 640)); err != nil {
+	if _, err := coverPictureFrom(coverBigPNG(t, 640, 640)); err != nil {
 		t.Fatalf("a 640x640 cover, the largest Spotify publishes, was rejected: %v", err)
 	}
 	// La misma imagen con la cabecera reescrita: unos cientos de bytes que
@@ -270,8 +294,8 @@ func TestCoverRejectsDeclaredPixelsBeyondTheCap(t *testing.T) {
 	binary.BigEndian.PutUint32(oversized[16:20], 2000)
 	binary.BigEndian.PutUint32(oversized[20:24], 2000)
 	binary.BigEndian.PutUint32(oversized[29:33], crc32.ChecksumIEEE(oversized[12:29]))
-	if rows, err := coverRows(oversized); !errors.Is(err, errCoverTooLarge) || rows != nil {
-		t.Fatalf("coverRows(2000x2000 header) = %v, %v; want the pixel cap", rows, err)
+	if picture, err := coverPictureFrom(oversized); !errors.Is(err, errCoverTooLarge) {
+		t.Fatalf("coverPictureFrom(2000x2000 header) = %v, %v; want the pixel cap", picture, err)
 	}
 }
 

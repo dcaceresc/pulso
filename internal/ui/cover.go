@@ -20,9 +20,10 @@ import (
 )
 
 // La carátula ocupa la ranura de la caja: medio bloque por celda, con el píxel
-// de arriba como color de texto y el de abajo como fondo. Así la ranura de veinte
-// columnas por diez filas dibuja una imagen de 20×20 píxeles —cuatro veces los
-// 10×10 de la ranura anterior— sin más filas.
+// de arriba como color de texto y el de abajo como fondo. Cada ranura pide su
+// propia reducción —la grande de veinte columnas por diez filas dibuja 20×20
+// píxeles y la pequeña de diez por cinco dibuja 10×10— y las dos salen de la
+// misma descarga y del mismo decodificado.
 const (
 	coverUpperHalf = "▀"
 	// coverPixelRows son los píxeles que caben en cada fila de la ranura.
@@ -32,8 +33,9 @@ const (
 	// coverMaxPixels acota lo que la cabecera puede declarar, porque el tope de
 	// bytes no acota la memoria que pide decodificar: unos cientos de bytes
 	// pueden anunciar millones de píxeles. La carátula más grande que Spotify
-	// publica mide 640×640 —410 000 píxeles— y la ranura dibuja 20×20, así que un
-	// millón deja sitio de sobra y acota la decodificación a unos 4 MiB en RGBA.
+	// publica mide 640×640 —410 000 píxeles— y la ranura mayor dibuja 20×20, así
+	// que un millón deja sitio de sobra y acota la decodificación a unos 4 MiB en
+	// RGBA.
 	coverMaxPixels = 1 << 20
 	// coverTimeout acota la espera de una descarga que no llega.
 	coverTimeout = 10 * time.Second
@@ -87,10 +89,12 @@ type coverBytesMsg struct {
 	err  error
 }
 
-// coverPicture es una carátula lista para dibujar o el recuerdo de que su URL no
-// dio ninguna. Un fallo nunca produce aviso ni fila de error.
+// coverPicture es una carátula lista para cualquiera de las ranuras de la caja,
+// o el recuerdo de que su URL no dio ninguna. Cada ranura guarda sus filas ya
+// dibujadas, reducidas desde la misma imagen: cambiar de banda elige otra ranura
+// y no vuelve a descargar ni a decodificar.
 type coverPicture struct {
-	rows []string
+	rows map[artSlot][]string
 	ok   bool
 }
 
@@ -192,8 +196,8 @@ func (c *coverArt) download(ctx context.Context, link string) tea.Cmd {
 	}
 }
 
-// land guarda la respuesta de una descarga: la imagen decodificada o el recuerdo
-// del fallo. Ni el error ni el motivo llegan a la pantalla.
+// land guarda la respuesta de una descarga: la carátula reducida a cada ranura o
+// el recuerdo del fallo. Ni el error ni el motivo llegan a la pantalla.
 func (c *coverArt) land(msg coverBytesMsg) {
 	if c == nil {
 		return
@@ -203,18 +207,18 @@ func (c *coverArt) land(msg coverBytesMsg) {
 		c.images[msg.url] = coverPicture{}
 		return
 	}
-	rows, err := coverRows(msg.data)
+	picture, err := coverPictureFrom(msg.data)
 	if err != nil {
 		c.images[msg.url] = coverPicture{}
 		return
 	}
-	c.images[msg.url] = coverPicture{rows: rows, ok: true}
+	c.images[msg.url] = picture
 }
 
-// rows devuelve las filas ya dibujables de la carátula de una pista: solo
-// cuando la imagen llegó y se decodificó.
-func (c *coverArt) rows(uri string) ([]string, bool) {
-	if c == nil || uri == "" {
+// rows devuelve las filas ya dibujables de la carátula de una pista para la
+// ranura que la caja pide: solo cuando la imagen llegó y se decodificó.
+func (c *coverArt) rows(uri string, slot artSlot) ([]string, bool) {
+	if c == nil || uri == "" || !slot.ok() {
 		return nil, false
 	}
 	link, known := c.urls[uri]
@@ -222,18 +226,27 @@ func (c *coverArt) rows(uri string) ([]string, bool) {
 		return nil, false
 	}
 	picture, done := c.images[link]
-	return picture.rows, done && picture.ok
+	if !done || !picture.ok {
+		return nil, false
+	}
+	rows, drawn := picture.rows[slot]
+	return rows, drawn
 }
 
-// coverRows decodifica los bytes de una carátula y los reduce a las filas de la
-// ranura. Solo la biblioteca estándar decodifica: JPEG y PNG.
-func coverRows(data []byte) ([]string, error) {
+// coverPictureFrom decodifica los bytes de una carátula y la reduce una vez a
+// cada ranura de la caja: el color de cada celda sale del promedio de sus bloques
+// de origen, así la ranura pequeña no hereda el recorte de la grande.
+func coverPictureFrom(data []byte) (coverPicture, error) {
 	img, err := coverDecode(data)
 	if err != nil {
-		return nil, err
+		return coverPicture{}, err
 	}
-	width, height := playerArtWidth, playerArtRows*coverPixelRows
-	return coverDraw(coverShrink(img, width, height), width, height), nil
+	picture := coverPicture{rows: make(map[artSlot][]string, len(playerArtSlots)), ok: true}
+	for _, slot := range playerArtSlots {
+		pixels := coverShrink(img, slot.pixelWidth(), slot.pixelHeight())
+		picture.rows[slot] = coverDraw(pixels, slot.columns, slot.pixelHeight())
+	}
+	return picture, nil
 }
 
 // coverDecode elige el decodificador por la firma del archivo y no por su

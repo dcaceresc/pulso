@@ -98,7 +98,7 @@ func TestE6CapturesMatchTheRecord(t *testing.T) {
 // no las iniciales: diez filas de veinte medios bloques con color de 24 bits.
 func TestE6CoverCaptureDrawsTheCover(t *testing.T) {
 	block := e6Captures(t)[4]
-	initials := "┌" + strings.Repeat("─", playerArtWidth-2) + "┐"
+	initials := "┌" + strings.Repeat("─", playerArtWide.columns-2) + "┐"
 	rows := 0
 	for _, line := range block {
 		blocks := strings.Count(line, "▀")
@@ -106,14 +106,14 @@ func TestE6CoverCaptureDrawsTheCover(t *testing.T) {
 			continue
 		}
 		rows++
-		if blocks != playerArtWidth {
-			t.Fatalf("la fila %d de la carátula dibuja %d medios bloques; se esperaban %d: %q", rows, blocks, playerArtWidth, line)
+		if blocks != playerArtWide.columns {
+			t.Fatalf("la fila %d de la carátula dibuja %d medios bloques; se esperaban %d: %q", rows, blocks, playerArtWide.columns, line)
 		}
 		if strings.Contains(line, "EC") || strings.Contains(line, initials) {
 			t.Fatalf("la captura con carátula muestra las iniciales: %q", line)
 		}
 	}
-	if rows != playerArtRows {
-		t.Fatalf("la captura con carátula dibuja %d filas; se esperaban %d", rows, playerArtRows)
+	if rows != playerArtWide.rows {
+		t.Fatalf("la captura con carátula dibuja %d filas; se esperaban %d", rows, playerArtWide.rows)
 	}
 }

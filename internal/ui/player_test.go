@@ -2042,8 +2042,8 @@ func playerBoxInteriorRows(t *testing.T, m tea.Model, width, height int) []strin
 
 // playerArtIndent es el hueco que la ranura de la carátula deja a las líneas de
 // texto: dos columnas, la imagen y otras dos.
-func playerArtIndent() string {
-	return "  " + strings.Repeat(" ", playerArtWidth) + "  "
+func playerArtIndent(slot artSlot) string {
+	return "  " + strings.Repeat(" ", slot.columns) + "  "
 }
 
 // playerBarFixture arma la barra con la regla declarada —lo recorrido en `━`, la
@@ -2106,11 +2106,11 @@ func TestPlayerBoxTimeUnderTheAlbumAndBarToTheEdge(t *testing.T) {
 	const position, duration = 134000, 381000
 	for _, size := range []struct {
 		width, height, interior int
-		art                     bool
+		art                     artSlot
 	}{
-		{120, 34, playerBoxWide, true},
-		{100, 30, playerBoxWide, true},
-		{80, 24, playerBoxCompact, false},
+		{120, 34, playerBoxWide, playerArtWide},
+		{100, 30, playerBoxWide, playerArtWide},
+		{80, 24, playerBoxCompact, playerArtCompact},
 	} {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
 			m, _ := playerViewModel(t, size.width, size.height, playerState{
@@ -2136,8 +2136,8 @@ func TestPlayerBoxTimeUnderTheAlbumAndBarToTheEdge(t *testing.T) {
 			// La barra empieza donde empieza el texto y no deja margen derecho: ocupa
 			// todas las celdas que quedan hasta el borde interior.
 			left := "  "
-			if size.art {
-				left = playerArtIndent()
+			if size.art.ok() {
+				left = playerArtIndent(size.art)
 			}
 			barWidth := size.width - 2 - lipgloss.Width(left)
 			bar := playerBarFixture(position, duration, barWidth)
