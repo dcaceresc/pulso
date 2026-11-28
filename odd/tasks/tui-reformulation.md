@@ -232,24 +232,24 @@ Cada etapa es un commit revisable propio; el orden importa: E1 antes de E2, E3 y
 - E3 [S2, S4] — Controles: quitar la línea de pistas y `Tab`/`Shift+Tab`; `c`, `b`, `Esc` que vuelve y `q` que sale; `s` acotado por zona; retirar `p`, `S` y `F1` duplicados; ayuda como única referencia; el campo de texto se traga `q`, `s`, `r`, `+`, `-`. Aceptación: existe una prueba por cada fila de la tabla de controles; ninguna tecla hace dos cosas; `q` no sale con la búsqueda enfocada y sí sale desde la tabla. Hecho: el pie de pistas y `Tab`/`Shift+Tab` desaparecen con `playerStep` y `playerFocusPlaying`; `b` es siempre anterior y la lista restringida se reproduce con `Enter`; `s` se acota por zona; `F1`, `p` y `S` ya no existen; `q`/`Ctrl+C` salen y `Esc` solo vuelve o cancela. La ayuda se reescribió por ámbitos y es la única referencia. Las filas que ocupaba el pie pasan a la tabla, así que el marco vuelve a llenar la ventana en todas las bandas con marco. Ruta: parent. Commit: —.
 - E4 [S2, S4] — Carátula: campos `album.images` en las respuestas ya pedidas, mapa `URI → URL`, una llamada `GET /v1/tracks/{id}?fields=album.images` cuando la pista no está cargada, descarga y decodificación con `image/jpeg` y `image/png` de la biblioteca estándar, dibujo con `▀` y color de 24 bits, caché en memoria y bloque de iniciales como respaldo. Aceptación: sin dependencia nueva en `go.mod`; sin scope nuevo; una descarga fallida deja iniciales y no emite aviso; la primera pintura no espera la imagen; se dibuja solo donde existe la ranura de carátula —el mismo umbral de E1: ancho ≥ 80 y ocho filas interiores—. Hecho: `album.images` se lee de las respuestas ya pedidas, la pista que ninguna página trajo se resuelve con una sola consulta estrecha, la imagen se descarga y decodifica con la biblioteca estándar, se reduce por promedio de bloque y se dibuja con medio bloque y color de 24 bits; la caché recuerda la imagen y el fallo por URL, la primera pintura nunca espera y una ventana sin ranura no descarga nada. Ruta: parent. Commit: —.
 - E5 [S1, S4] — Documentación y regresión: `INSTRUCTIONS.md`, `INSTRUCTIONS.en.md`, `docs/UI-PLAN.md` con la matriz y los controles nuevos, ayuda actualizada y las pruebas que fijan la matriz de bandas, las teclas retiradas y la eliminación de la línea de pistas. Hecho: `INSTRUCTIONS.md` y su par inglés describen las tres zonas, la caja con carátula o iniciales y las cinco bandas, sin `Tab`, `F1`, `p`, `S` ni pie; `docs/UI-PLAN.md` pasa de plan a interfaz entregada con la misma matriz y la misma tabla de controles. Se cierra además el aviso de la posición obsoleta: una sesión desconectada muestra `0:00 / --:--`. Aceptación: `go test ./...` verde en Linux; ninguna prueba *depende* de `Tab`, `F1` ni de la línea de pistas —las que los nombran solo comprueban que no hacen nada—; `docs/UI-PLAN.md` y este documento declaran la misma matriz. Ruta: parent. Commit: —.
-- E6 [S1, S4] — Verificación visual: captura de terminal en 120×34 y 80×24, antes y después, con carátula disponible y sin ella, y `go test ./...`; las fallas preexistentes de Windows quedan registradas en el `## Log` de este documento. Aceptación: las cuatro capturas están en el registro y cada una coincide con la banda que declara. Hecho: las cuatro capturas están en `## Capturas de E6` con su ancho medido; el árbol compila y pasa `go vet` para Windows, cuyas pruebas no se pudieron ejecutar en esta máquina; la descarga real contra la CDN queda como paso manual por falta de red y credenciales. Ruta: parent. Commit: —.
+- E6 [S1, S4] — Verificación visual: cinco capturas reales —antes y después a 120×34 y 80×24, y una con carátula—, `go test ./...` y el estado de la compilación para Windows. Aceptación: las capturas están en `## Capturas de E6`, cada una mide el ancho de su banda y las del estado entregado coinciden con lo que la vista dibuja con el estado declarado. Hecho: las cinco capturas están guardadas y comprobadas por una prueba; `GOOS=windows go build` y `go vet` pasan, pero sus pruebas no se pueden ejecutar en esta máquina y no se registra ninguna falla de Windows que no se haya observado; la descarga real contra la CDN de Spotify queda como paso manual por falta de red y credenciales. Ruta: parent. Commit: —.
 
 ## Capturas de E6
 
-Verificación visual del estado entregado contra la línea base `947e4ab`, con el mismo estado de reproducción en ambas: sesión conectada, aleatorio y repetición activos, volumen 85 %. Las filas miden exactamente el ancho que declara cada banda.
+Verificación visual del estado entregado contra la línea base `947e4ab`, con el mismo estado de reproducción en las cinco capturas: sesión conectada, en reproducción, aleatorio activado, repetición de lista y volumen 85 %. Todas las filas miden exactamente el ancho que declara su banda.
 
-### Antes (947e4ab)
+### Antes (`947e4ab`) — 120×34
 
 ```
 Pulso                                                                                                            playing
 Search: type to search                                                                                             @user
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-LIBRARY                       │Playback · 0 tracks                                                                      
-○ Nothing here yet            │#  Title                                  Artist                                 Duration
-                              │─────────────────────────────────────────────────────────────────────────────────────────
-                              │○ Nothing here yet                                                                       
-                              │                                                                                         
-                              │                                                                                         
+LIBRARY                       │Rock Chileno · 42 tracks                                                                 
+> Rock Chileno · ana          │#  Title                                  Artist                                 Duration
+  Jazz · beto                 │─────────────────────────────────────────────────────────────────────────────────────────
+                              │>1 Tren al Sur                            Los Prisioneros                        5:36    
+                              │ 2 Estrechez de Corazón                   Los Prisioneros                        6:21    
+                              │ 3 Llueve sobre la Ciudad                 Los Bunkers                            3:56    
                               │                                                                                         
                               │                                                                                         
                               │                                                                                         
@@ -270,32 +270,36 @@ LIBRARY                       │Playback · 0 tracks
                               │                                                                                         
                               │                                                                                         
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ▶ Estrechez de Corazón · Los Prisioneros                                                                  ⇄ off  ↻ off
-La Cultura de la Basura  2:14 ━━━━━━━╸──────────── 6:21                                                       Volume 85%
+  ▶ Estrechez de Corazón · Los Prisioneros                                                                   ⇄ on  ↻ all
+La Cultura de la Basura  0:00 ╸─────────────────── 6:21                                                       Volume 85%
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Tab focus  ↑↓/jk move  Enter play  Space play/pause  s shuffle  r repeat  +/- volume  / search  l library  F1 help     
- F2 language  F3 theme  q quit  Esc back/quit                                                                           
+ Tab focus  ↑↓/jk move  Enter play  Space play/pause  s shuffle  r repeat  +/- volume  / search  l library              
+ S shuffle-list  F1 help  F2 language  F3 theme  q quit  Esc back/quit                                                  
 ```
+
+### Antes (`947e4ab`) — 80×24
 
 ```
 Pulso                                                                    playing
 Search: type to search                                                     @user
 ────────────────────────────────────────────────────────────────────────────────
-LIBRARY: ○ Nothing here yet                                         Tab: library
-Playback · 0 tracks                                                             
+LIBRARY: Rock Chileno                                               Tab: library
+Rock Chileno · 42 tracks                                                        
 #  Title                             Artist                             Duration
 ────────────────────────────────────────────────────────────────────────────────
-○ Nothing here yet                                                              
+>1 Tren al Sur                       Los Prisioneros                    5:36    
+ 2 Estrechez de Corazón              Los Prisioneros                    6:21    
+ 3 Llueve sobre la Ciudad            Los Bunkers                        3:56    
 ────────────────────────────────────────────────────────────────────────────────
-  ▶ Estrechez de Corazón · Los Prisioneros                          ⇄ off  ↻ off
-2:14 ━━━━━━━╸──────────── 6:21                                        Volume 85%
+  ▶ Estrechez de Corazón · Los Prisioneros                           ⇄ on  ↻ all
+0:00 ╸─────────────────── 6:21                                        Volume 85%
 ────────────────────────────────────────────────────────────────────────────────
  Tab focus  ↑↓/jk move  Enter play  Space play/pause  s shuffle  r repeat       
- +/- volume  / search  l library  F1 help  F2 language  F3 theme  q quit        
- Esc back/quit                                                                  
+ +/- volume  / search  l library  S shuffle-list  F1 help  F2 language          
+ F3 theme  q quit  Esc back/quit                                                
 ```
 
-### Después
+### Después — 120×34
 
 ```
 Pulso                                                                                                            playing
@@ -320,11 +324,11 @@ Buscar: escribe para buscar                                                     
 └───────────────────────┘ └─────────────────────────────────────────────────────────────┘ └────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                                                                                                                         
-├─ ▶ Reproduciendo  ▸  ⇄ activado  ▸  ↻ todo  ▸  Volumen 37% ──────────────────────────────────────────────────────────┤
+├─ ▶ Reproduciendo  ▸  ⇄ activado  ▸  ↻ todo  ▸  Volumen 85% ──────────────────────────────────────────────────────────┤
 │                                                                                                                      │
 │  ┌────────┐  Estrechez de Corazón                                                                                    │
 │  │        │  Los Prisioneros                                                                                         │
-│  │   EC   │                                                                                                          │
+│  │   EC   │  La Cultura de la Basura                                                                                 │
 │  │        │                                                                                                          │
 │  └────────┘                                                                                                          │
 │              0:00 ╸─────────────────── 6:21                                                                          │
@@ -333,6 +337,8 @@ Buscar: escribe para buscar                                                     
 │                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Después — 80×24
 
 ```
 Pulso                                                                    playing
@@ -349,11 +355,11 @@ Rock Chileno · 42 canciones
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
                                                                                 
-├─ ▶ Reproduciendo  ▸  ⇄ activado  ▸  ↻ todo  ▸  Volumen 37% ──────────────────┤
+├─ ▶ Reproduciendo  ▸  ⇄ activado  ▸  ↻ todo  ▸  Volumen 85% ──────────────────┤
 │                                                                              │
 │  ┌────────┐  Estrechez de Corazón                                            │
 │  │        │  Los Prisioneros                                                 │
-│  │   EC   │                                                                  │
+│  │   EC   │  La Cultura de la Basura                                         │
 │  │        │                                                                  │
 │  └────────┘  0:00 ╸─────────────────── 6:21                                  │
 │                                                                              │
@@ -361,24 +367,48 @@ Rock Chileno · 42 canciones
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-La carátula se comprobó en la verificación de E4: cinco filas de diez medios bloques `▀`, con primer plano y fondo de 24 bits, y ninguna celda pintada fuera de la ranura. Una descarga fallida deja la vista idéntica a la de una pista sin carátula.
+### Después con carátula — 120×34
 
+La carátula real sustituye al bloque de iniciales dentro de la misma ranura. Se dibuja con una imagen de dos tonos para que el medio bloque se lea en texto plano; las pruebas de la etapa comprueban las cinco filas de diez medios bloques `▀` con primer plano y fondo de 24 bits.
 
-## Log
+```
+Pulso                                                                                                            playing
+Search: type to search                                                                                             @user
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌─ LIBRARY ─────────────┐ ┌─ Rock Chileno · 1 tracks ───────────────────────────────────┐ ┌─ UP NEXT ──────────────────┐
+│> Rock Chileno · ana   │ │#  Title                    Artist                   Duration│ │○ Nothing here yet          │
+│  Jazz · beto          │ │─────────────────────────────────────────────────────────────│ │                            │
+│                       │ │>1 Estrechez de Corazón     Los Prisioneros          6:21    │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │                            │
+│                       │ │                                                             │ │CONTEXT                     │
+│                       │ │                                                             │ │Rock Chileno                │
+│                       │ │                                                             │ │⇄ off · ↻ off               │
+└───────────────────────┘ └─────────────────────────────────────────────────────────────┘ └────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+├─ ▶ Playing  ▸  ⇄ off  ▸  ↻ off  ▸  Volume 37% ───────────────────────────────────────────────────────────────────────┤
+│                                                                                                                      │
+│  ▀▀▀▀▀▀▀▀▀▀  Estrechez de Corazón                                                                                    │
+│  ▀▀▀▀▀▀▀▀▀▀  Los Prisioneros                                                                                         │
+│  ▀▀▀▀▀▀▀▀▀▀  La Cultura de la Basura                                                                                 │
+│  ▀▀▀▀▀▀▀▀▀▀                                                                                                          │
+│  ▀▀▀▀▀▀▀▀▀▀                                                                                                          │
+│              0:00 ╸─────────────────── 6:21                                                                          │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-- L1 — User: “quiero una reformulacion de la ui https://github.com/LargeModGames/spotatui quiero que hagas una tui muestrame la propuesta en formato tui”
-- L2 — Proposal shown as terminal mockups: three zones with focus, upper status line and a transport footer; taken from spotatui the pane focus, density and control bar, not its sources, visualizer or plugins.
-- L3 — User: “hay que quitar los comandos de abajo, tambien hay que quitar el tab para pasar de foco sino que cada parte tendra un comando especifico el reproductor estara abajo …”. Revised proposal: no hint bar, no `Tab`, per-zone keys, and the player as a bottom box whose top border carries play state, shuffle, repeat and volume, with cover, title, album/artist and the time bar inside.
-- L4 — User: “quiero que generes el plan”. Delivery is split into player, layout, command model, docs/tests and visual verification. No implementation started and no branch created yet.
-- L5 — User: “1. es posible agregar la caratula? verifica si es posible 2. genera varias versiones en formato tui 3. arregla los tamaos, 4. la aplicacion se cerrar con q hay que definir bien los controles y evitar duplicaciones 5. en plan debe estar por etapas repara las etapas actualiza el plan”
-- L6 — Carátula verificada como posible sin dependencias nuevas: la URL viaja en las respuestas ya pedidas (`catalog.go:73-80`, `library_source.go:44-49`) y el dibujo usa `▀` con color de 24 bits de la biblioteca estándar; Soloist no transporta imagen (`transport.go:33-40`, `219-236`), así que el mapa `URI → URL` y una llamada de respaldo resuelven la pista sonando.
-- L7 — Tres versiones dibujadas con ancho exacto comprobado fila por fila y la banda estrecha 80×24 común; la matriz de tamaños, la tabla de controles y las seis etapas reemplazan las cinco tareas anteriores. Se descartan B (un solo marco) y C (foco expandido).
-- L8 — Riesgo vigente: E3 cambia contratos de teclado que las pruebas actuales fijan (`player_test.go`, `help_test.go`, `modes_regression_test.go`, `u3_regression_test.go`), así que E5 debe actualizarlas en el mismo commit que documenta el cambio; E1 y E2 reescriben la misma `View()` de 2318 líneas y conviene vigilar el tamaño de cada commit. Comprobado al cerrar E3: la predicción de que `modes_regression_test.go` y `u3_regression_test.go` fijaban `Tab` o `F1` era falsa —no los nombran— y los seis archivos que sí los fijaban se adaptaron, con la suite completa en verde.
-- L9 — Decisión del usuario: versión **A — tres cajas** como cromo de E2. B y C quedan descartadas y solo se registran como alternativas; E1, E3, E4, E5 y E6 no cambian.
-- L10 — Las cinco bandas quedan dibujadas por un prototipo ejecutable (`/tmp/pulso-preview.py`, modo `--live` para verlo en la terminal con colores y teclas) y sus capturas, comprobadas fila por fila, reemplazan las maquetas manuales del documento. La banda mínima no lleva tabla: a 40×12 el marco, el encabezado y el reproductor dejan una sola fila de contenido.
-- L11 — User: “lo de desk o spotify connect deks no tiene sentido porque siempre se ocupara en la consola”. El diseño pierde el dispositivo: la línea de estado queda con reproducción, aleatorio, repetición y volumen, y las maquetas se regeneran sin esa columna.
-- L12 — E1 implementada en `internal/ui/player.go`: la caja dibuja su línea de estado en el borde superior con degradación por ancho (palabra de estado → etiqueta de volumen → porcentaje → puntos suspensivos), bloque de iniciales de 10×5 desde 80 columnas, título, artista, álbum, barra de tiempo y línea de contexto. El pie de pistas pasa a ceder filas y la reproducción remota deja de ocupar una columna fija. `go test ./...` verde en Linux; las pruebas que fijaban la barra plana se adaptaron al tamaño donde su regla sigue siendo observable.
-- L13 — Revisión nativa del candidato (lentes readability y reliability): aprobada con cinco hallazgos informativos. Se corrigen los cinco: la caja comparte una sola decisión de estado con su línea superior, así que una desconexión ya no muestra el título guardado ni el bloque de iniciales; la altura interior se recorta cuando la ventana es baja, para que el borde inferior nunca se pierda; las filas interiores se reparten con una prioridad declarada en vez de offsets literales; el bloque de iniciales se construye con `playerArtRows` como fuente de altura; y `hintBudget` pierde el parámetro muerto y su comentario dice la verdad: el pie puede quedarse sin filas. Dos pruebas nuevas fijan la pista obsoleta y la ventana ancha y baja.
+Una descarga fallida deja la vista idéntica a la de una pista sin carátula, sin aviso ni fila de error.
 
 ## Corte de revisión
 
@@ -401,6 +431,22 @@ La entrega va como PR encadenadas, todas en borrador:
 - **#14** — E6, verificación visual, sobre la rama de #13.
 
 Conviene revisar en orden. Con #14 el plan queda cubierto salvo los dos huecos que declara E6, ambos de entorno.
+
+## Log
+
+- L1 — User: “quiero una reformulacion de la ui https://github.com/LargeModGames/spotatui quiero que hagas una tui muestrame la propuesta en formato tui”
+- L2 — Proposal shown as terminal mockups: three zones with focus, upper status line and a transport footer; taken from spotatui the pane focus, density and control bar, not its sources, visualizer or plugins.
+- L3 — User: “hay que quitar los comandos de abajo, tambien hay que quitar el tab para pasar de foco sino que cada parte tendra un comando especifico el reproductor estara abajo …”. Revised proposal: no hint bar, no `Tab`, per-zone keys, and the player as a bottom box whose top border carries play state, shuffle, repeat and volume, with cover, title, album/artist and the time bar inside.
+- L4 — User: “quiero que generes el plan”. Delivery is split into player, layout, command model, docs/tests and visual verification. No implementation started and no branch created yet.
+- L5 — User: “1. es posible agregar la caratula? verifica si es posible 2. genera varias versiones en formato tui 3. arregla los tamaos, 4. la aplicacion se cerrar con q hay que definir bien los controles y evitar duplicaciones 5. en plan debe estar por etapas repara las etapas actualiza el plan”
+- L6 — Carátula verificada como posible sin dependencias nuevas: la URL viaja en las respuestas ya pedidas (`catalog.go:73-80`, `library_source.go:44-49`) y el dibujo usa `▀` con color de 24 bits de la biblioteca estándar; Soloist no transporta imagen (`transport.go:33-40`, `219-236`), así que el mapa `URI → URL` y una llamada de respaldo resuelven la pista sonando.
+- L7 — Tres versiones dibujadas con ancho exacto comprobado fila por fila y la banda estrecha 80×24 común; la matriz de tamaños, la tabla de controles y las seis etapas reemplazan las cinco tareas anteriores. Se descartan B (un solo marco) y C (foco expandido).
+- L8 — Riesgo vigente: E3 cambia contratos de teclado que las pruebas actuales fijan (`player_test.go`, `help_test.go`, `modes_regression_test.go`, `u3_regression_test.go`), así que E5 debe actualizarlas en el mismo commit que documenta el cambio; E1 y E2 reescriben la misma `View()` de 2318 líneas y conviene vigilar el tamaño de cada commit. Comprobado al cerrar E3: la predicción de que `modes_regression_test.go` y `u3_regression_test.go` fijaban `Tab` o `F1` era falsa —no los nombran— y los seis archivos que sí los fijaban se adaptaron, con la suite completa en verde.
+- L9 — Decisión del usuario: versión **A — tres cajas** como cromo de E2. B y C quedan descartadas y solo se registran como alternativas; E1, E3, E4, E5 y E6 no cambian.
+- L10 — Las cinco bandas quedan dibujadas por un prototipo ejecutable (`/tmp/pulso-preview.py`, modo `--live` para verlo en la terminal con colores y teclas) y sus capturas, comprobadas fila por fila, reemplazan las maquetas manuales del documento. La banda mínima no lleva tabla: a 40×12 el marco, el encabezado y el reproductor dejan una sola fila de contenido.
+- L11 — User: “lo de desk o spotify connect deks no tiene sentido porque siempre se ocupara en la consola”. El diseño pierde el dispositivo: la línea de estado queda con reproducción, aleatorio, repetición y volumen, y las maquetas se regeneran sin esa columna.
+- L12 — E1 implementada en `internal/ui/player.go`: la caja dibuja su línea de estado en el borde superior con degradación por ancho (palabra de estado → etiqueta de volumen → porcentaje → puntos suspensivos), bloque de iniciales de 10×5 desde 80 columnas, título, artista, álbum, barra de tiempo y línea de contexto. El pie de pistas pasa a ceder filas y la reproducción remota deja de ocupar una columna fija. `go test ./...` verde en Linux; las pruebas que fijaban la barra plana se adaptaron al tamaño donde su regla sigue siendo observable.
+- L13 — Revisión nativa del candidato (lentes readability y reliability): aprobada con cinco hallazgos informativos. Se corrigen los cinco: la caja comparte una sola decisión de estado con su línea superior, así que una desconexión ya no muestra el título guardado ni el bloque de iniciales; la altura interior se recorta cuando la ventana es baja, para que el borde inferior nunca se pierda; las filas interiores se reparten con una prioridad declarada en vez de offsets literales; el bloque de iniciales se construye con `playerArtRows` como fuente de altura; y `hintBudget` pierde el parámetro muerto y su comentario dice la verdad: el pie puede quedarse sin filas. Dos pruebas nuevas fijan la pista obsoleta y la ventana ancha y baja.
 - L14 — Segunda revisión nativa del candidato de correcciones (lente reliability): el revisor pidió refuter y el refuter confirmó un hallazgo crítico `R3-001` — a 40×12 el pie volvía a dibujarse y la caja se encogía, cambiando el marco de línea base. Corrección aceptada con un plan de 40 líneas de diff: el presupuesto del pie exige ahora que el cuerpo tenga sus filas mínimas, así que en ventanas bajas el pie cede entero antes que la tabla. El validador dirigido aprobó la corrección; queda un aviso informativo `R3-002` sobre la posición guardada frente a un total en cero, pendiente para E5.
 - L15 — E2 implementada: la vista pasa de pila plana a la matriz de bandas con el cromo de tres cajas —biblioteca, tabla y cola con su bloque de contexto—, el borde acentuado de la zona con foco, la forma apilada en compacta, solo contexto en la mínima y un mensaje de tamaño por debajo de 40×12. Las frases de estado de sesión que la zona no puede mostrar se promueven a una fila de ancho completo sobre la caja del reproductor en vez de truncarse: el aviso de autorización de listas mide 74 celdas y a 120 columnas la caja de la tabla tiene 61. La biblioteca media crece a 24 columnas para que un nombre de lista de 21 celdas quepa entero.
 - L16 — Revisión nativa de E2: el revisor pidió refuter y el refuter confirmó un hallazgo crítico `R3-001` — la matriz saltaba a la banda mínima cuando faltaba un solo renglón de altura (120×29, 100×25, 80×19) y la tabla desaparecía. Corrección con plan de 90 líneas de diff: escalera monótona de bandas, tabla también en la banda mínima cuando hay filas, y pruebas de frontera en 120×29, 100×25, 80×19, 119×40, 99×40 y 79×24. El validador dirigido aprobó. Queda el aviso `R3-002`: el prompt de confirmación de quitar una pista no lleva marcador y por eso se recorta en la caja en vez de promoverse a todo el ancho; las pruebas de desborde cubren la oferta de permiso pero no esa confirmación.
