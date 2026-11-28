@@ -367,8 +367,6 @@ type playerModel struct {
 	// sixel es la carátula gráfica: el modo decidido al arrancar con su tamaño de
 	// celda, o el medio bloque como respaldo.
 	sixel coverGraphics
-	// coverMu es el candado de lo que la emisión lee desde su propia goroutine.
-	coverMu sync.Mutex
 	// openBrowser presenta el enlace de aprobación; las pruebas lo reemplazan.
 	openBrowser func(string) error
 }
@@ -510,6 +508,15 @@ func (m *playerModel) awaitState() tea.Cmd {
 }
 
 func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := m.update(msg)
+	// La carátula gráfica se escribe aquí, en el hilo de la interfaz y ya procesado
+	// el mensaje: el cuadro anterior fue el que reservó su ranura, y una salida
+	// procesada arriba impide la escritura en vez de cruzarse con ella.
+	m.coverSixelWrite()
+	return model, cmd
+}
+
+func (m *playerModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -518,7 +525,7 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sixel.painted, m.sixel.pending = "", nil
 		// Una ventana que crece hasta la ranura de la carátula pide lo que antes
 		// no cabía; mientras no quepa, la petición no se hace.
-		return m, m.coverCommands()
+		return m, m.coverRequest()
 	case libraryAuthMsg, libraryPageMsg:
 		auth, isAuth := msg.(libraryAuthMsg)
 		// Una autorización solo instala el catálogo si la generación sigue viva.
@@ -540,9 +547,9 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.covers.installSource(coverSourceOf(auth.api))
 			// Y las recomendaciones que la tecla `d` pide.
 			m.installDiscoverSource(auth.api)
-			return m, playerCommands(cmd, m.installProfile(auth.api), m.coverCommands())
+			return m, playerCommands(cmd, m.installProfile(auth.api), m.coverRequest())
 		}
-		return m, playerCommands(cmd, m.coverCommands())
+		return m, playerCommands(cmd, m.coverRequest())
 	case saveResultMsg, saveAuthMsg:
 		return m, m.updateSave(msg)
 	case discoverResultMsg:
@@ -556,33 +563,10 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && msg.url != "" {
 			m.covers.urls[msg.uri] = msg.url
 		}
-		return m, m.coverCommands()
+		return m, m.coverRequest()
 	case coverBytesMsg:
 		// Una descarga fallida deja las iniciales: no hay aviso ni fila de error.
 		m.covers.land(msg)
-		return m, m.coverSixelSoon()
-	case coverSixelReadyMsg:
-		// El cuadro que dejó la ranura en blanco ya salió: se escribe la imagen.
-		// No se reprograma nada: un tic por imagen, porque un cambio de pista o de
-		// tamaño vuelve a pedirlo y un reintento sin fin solo gastaría cuadros.
-		return m, m.coverSixelEmit()
-	case coverSixelMsg:
-		// Cancelada, no se escribió nada; desfasada, la pantalla cambió mientras se
-		// escribía y la ranura se repinta; fallida, esa imagen vuelve al medio bloque.
-		switch {
-		case msg.err != nil:
-			m.sixel.failed = msg.key
-		case msg.cancelled:
-		case msg.stale || m.coverSixelWanted() != msg.key:
-			m.sixel.painted, m.sixel.pending = "", nil
-			// Una salida restaura el terminal: no se repinta lo que ya no está.
-			if m.quit || m.ctx.Err() != nil {
-				return m, nil
-			}
-			return m, coverSixelRepaint()
-		default:
-			m.sixel.emitted = msg.key
-		}
 		return m, nil
 	case playerProfileMsg:
 		if m.quit || msg.generation != m.profileGeneration || m.ctx.Err() != nil {
@@ -599,7 +583,7 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.search.update(msg)
 		// Los resultados de la búsqueda también anuncian carátulas.
 		m.covers.remember(m.search.tracks)
-		return m, playerCommands(cmd, m.coverCommands())
+		return m, playerCommands(cmd, m.coverRequest())
 	case playerViewState:
 		if m.quit || !m.pending {
 			break
@@ -630,14 +614,14 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reconcileModes()
 		m.clampSelections()
 		// A playing session needs a second of wall time to advance its playhead.
-		return m, playerCommands(m.awaitState(), m.armTick(), m.coverCommands())
+		return m, playerCommands(m.awaitState(), m.armTick(), m.coverRequest())
 	case playerTickMsg:
 		return m, m.tick()
 	case tea.KeyMsg:
 		// La ayuda se queda con toda tecla, salvo las de salir: `?` y `Esc` la
 		// cierran y las globales de salida siguen funcionando.
 		if m.help {
-			return m, playerCommands(m.handleHelpKey(msg), m.coverSixelSoon())
+			return m, m.handleHelpKey(msg)
 		}
 		if msg.Type == tea.KeyF2 {
 			m.changePreferences(true)
@@ -649,7 +633,7 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Cerrar la ayuda devuelve la caja a la pantalla: la carátula gráfica que
 		// se olvidó vuelve a pedir su turno con la primera tecla.
-		return m, playerCommands(m.handleKey(msg), m.coverSixelSoon())
+		return m, m.handleKey(msg)
 	}
 	return m, nil
 }
@@ -2533,11 +2517,9 @@ func (m *playerModel) statusRows() []playerRow {
 // quitApp sale de la aplicación: `q` sin campo de texto y `Ctrl+C` siempre.
 func (m *playerModel) quitApp() tea.Cmd {
 	m.quit = true
-	// Salir deja sin efecto el `d` en vuelo y la carátula gráfica: una emisión no
-	// puede escribir ni darse por escrita tras la salida.
-	m.coverMu.Lock()
-	m.sixel.wanted = ""
-	m.coverMu.Unlock()
+	// Salir deja sin efecto el `d` que quedó en vuelo; la carátula gráfica no
+	// necesita nada: su escritura corre en este mismo hilo y ve `quit` antes de
+	// escribir.
 	m.invalidateDiscover()
 	m.cancel()
 	return tea.Quit

@@ -7,9 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-sixel"
 )
 
@@ -18,6 +16,11 @@ import (
 // lugar de reducirla a medios bloques. El medio bloque sigue siendo el respaldo
 // de todo lo que no sea Sixel y de cualquier emisión que falle.
 //
+// La escritura corre en el hilo de la interfaz, dentro de Update: no hay goroutine,
+// ni candado, ni mensaje que ordenar, así que una salida nunca puede cruzarse con
+// ella. El precio es que un terminal lento retrasa el teclado mientras dura esa
+// escritura, unos pocos kilobytes.
+//
 // La detección es una heurística y el usuario puede imponer el modo con
 // PULSO_COVER: un terminal que no conteste a la consulta no pierde la carátula,
 // solo la reduce a bloques.
@@ -25,11 +28,6 @@ import (
 const (
 	// coverOverrideEnv fuerza el modo de la carátula: `sixel` o `blocks`.
 	coverOverrideEnv = "PULSO_COVER"
-	// coverSixelArm es la espera antes de escribir la imagen. Bubble Tea pinta a
-	// 60 cuadros por segundo, así que cincuenta milisegundos son varios cuadros:
-	// el que dejó la ranura en blanco ya salió y la imagen no la borra el mismo
-	// repintado que la reservó.
-	coverSixelArm = 50 * time.Millisecond
 	// coverSixelColumn es la columna (desde uno) donde empieza la ranura: el
 	// borde de la caja, dos espacios de margen y la primera celda de la imagen.
 	coverSixelColumn = 4
@@ -64,18 +62,6 @@ type coverCell struct{ width, height int }
 // de diez por cinco mide 100×100.
 var coverCellFallback = coverCell{width: 10, height: 20}
 
-// coverSixelMsg es el resultado de una emisión: la clave escrita, el fallo, la cancelación o el desfase.
-type coverSixelMsg struct {
-	key       string
-	err       error
-	cancelled bool
-	stale     bool
-}
-
-// coverSixelReadyMsg es el tic que vuelve después del cuadro que dejó la ranura
-// en blanco: con ese cuadro ya pintado se puede escribir la imagen.
-type coverSixelReadyMsg struct{}
-
 // coverSixelPlan es la imagen que la caja acaba de dejar en blanco y el lugar
 // exacto del terminal donde hay que escribirla.
 type coverSixelPlan struct {
@@ -105,8 +91,6 @@ type coverGraphics struct {
 	failed string
 	// pending es la imagen en blanco que espera su emisión, con su lugar.
 	pending *coverSixelPlan
-	// wanted es la clave que la pantalla espera; la emisión la compara al escribir.
-	wanted string
 }
 
 // coverRendererFor decide el modo una sola vez al arrancar. Un PULSO_COVER
@@ -249,81 +233,31 @@ func (m *playerModel) coverSixelPaint(boxTop int) {
 	}
 }
 
-// coverSixelWanted lee la clave que la pantalla espera; el candado nunca cubre la escritura.
-func (m *playerModel) coverSixelWanted() string {
-	m.coverMu.Lock()
-	defer m.coverMu.Unlock()
-	return m.sixel.wanted
-}
-
-// coverSixelRepaint pide al marco un repintado completo: borra la pantalla y la
-// vuelve a dibujar, así se reescriben las celdas de la ranura. No garantiza que un
-// terminal que guarde los píxeles aparte de las celdas los borre; eso queda en sus
-// manos y como mucho se ve una imagen vieja durante un cuadro.
-func coverSixelRepaint() tea.Cmd {
-	return func() tea.Msg { return tea.ClearScreen() }
-}
-
-// coverSixelEmit escribe la imagen en la ranura una sola vez por cambio: al
-// cambiar de pista, al cambiar el tamaño de la ventana y al cambiar el tamaño
-// de la imagen. No se escribe en cada repintado porque Bubble Tea, en la
-// pantalla alternativa, vuelve a escribir solo las líneas que cambian: las filas
-// en blanco de la ranura no cambian entre un tic y el siguiente, así que la
-// imagen sobrevive entre tics y reescribirla cada segundo sería trabajo inútil y
-// un parpadeo. La emisión exige además que la vista ya haya devuelto esas filas
-// en blanco —lo dice coverSixelPaint—: escribir la imagen y después sustituir su
-// región por otro contenido la borraría, y por eso la escritura viaja en el tic
-// de coverSixelSoon y no en el mensaje que dejó la ranura vacía.
-func (m *playerModel) coverSixelEmit() tea.Cmd {
-	if !m.sixel.active() || m.quit || m.ctx.Err() != nil {
-		return nil
-	}
+// coverSixelWrite escribe la imagen en la ranura, en el hilo de la interfaz, una
+// sola vez por cambio: al cambiar de pista, al cambiar el tamaño de la ventana y
+// al cambiar el tamaño de la imagen. Nunca en cada repintado, porque Bubble Tea,
+// en la pantalla alternativa, reescribe solo las líneas que cambian: las filas en
+// blanco de la ranura no cambian entre mensajes y la imagen sobrevive. Se llama al
+// final de cada mensaje del modelo, así que el cuadro que reservó esas filas ya se
+// dibujó; escribir en el mismo mensaje que las reserva las borraría. Como corre en
+// este hilo, una salida o una tecla no pueden cruzarse con la escritura: no hay
+// goroutine, ni candado, ni mensaje que ordenar.
+func (m *playerModel) coverSixelWrite() {
 	plan := m.sixel.pending
-	if plan == nil || m.sixel.painted != plan.key || m.sixel.emitted == plan.key || m.sixel.failed == plan.key {
-		return nil
-	}
-	out, key, row, column, img := m.sixel.output(), plan.key, plan.row, plan.column, plan.image
-	return func() tea.Msg {
-		// Se codifica entero en memoria antes de tocar el terminal: una
-		// codificación a medias dejaría media imagen escrita.
-		data, err := coverSixelEncode(img)
-		if err != nil {
-			return coverSixelMsg{key: key, err: err}
-		}
-		// Antes de escribir: si la pantalla cambió mientras se codificaba, no se escribe.
-		if m.coverSixelWanted() != key || m.ctx.Err() != nil {
-			return coverSixelMsg{key: key, cancelled: true}
-		}
-		_, err = out.Write(coverSixelPlace(row, column, data))
-		// Después de escribir: si la clave cambió, la imagen es vieja y la ranura se repinta.
-		if m.coverSixelWanted() != key {
-			return coverSixelMsg{key: key, stale: true}
-		}
-		return coverSixelMsg{key: key, err: err}
-	}
-}
-
-// coverSixelSoon pide el tic que escribe la imagen cuando hay una lista y todavía
-// no está en el terminal. Es lo que hace que la carátula no dependa de que llegue
-// otro mensaje: en pausa no hay tics de reproducción y la imagen llegaría tarde.
-func (m *playerModel) coverSixelSoon() tea.Cmd {
-	if !m.sixel.active() || m.quit || m.ctx.Err() != nil {
-		return nil
-	}
 	art, ok := m.coverSixelArt()
-	m.coverMu.Lock()
-	m.sixel.wanted = art.key
-	m.coverMu.Unlock()
-	if !ok || art.key == m.sixel.emitted {
-		return nil
+	if !ok || plan == nil || art.key != plan.key || m.sixel.painted != plan.key || m.sixel.emitted == plan.key {
+		return
 	}
-	return tea.Tick(coverSixelArm, func(time.Time) tea.Msg { return coverSixelReadyMsg{} })
-}
-
-// coverCommands junta lo que la carátula necesita: pedir la imagen que falta y
-// programar la escritura de la que ya está lista.
-func (m *playerModel) coverCommands() tea.Cmd {
-	return playerCommands(m.coverRequest(), m.coverSixelSoon())
+	data, err := coverSixelEncode(plan.image)
+	if err == nil {
+		_, err = m.sixel.output().Write(coverSixelPlace(plan.row, plan.column, data))
+	}
+	if err != nil {
+		// Un fallo deja esa imagen en el medio bloque, y no se reintenta.
+		m.sixel.failed = plan.key
+		return
+	}
+	m.sixel.emitted = plan.key
 }
 
 // coverSixelEncode codifica la imagen ya escalada al tamaño de la ranura. El
@@ -339,10 +273,9 @@ func coverSixelEncode(img image.Image) ([]byte, error) {
 
 // coverSixelPlace lleva el cursor a la esquina de la ranura y escribe la imagen
 // ahí, en una sola llamada: el repintado de Bubble Tea escribe en el mismo
-// terminal desde otra goroutine y no debe meterse entre la posición y la imagen.
-// La pantalla alternativa empieza cada repintado en la esquina superior
-// izquierda, así que la posición del cursor tras la imagen no descoloca al resto
-// de la vista.
+// terminal y no debe meterse entre la posición y la imagen. La pantalla
+// alternativa empieza cada repintado en la esquina superior izquierda, así que la
+// posición del cursor tras la imagen no descoloca al resto de la vista.
 func coverSixelPlace(row, column int, data []byte) []byte {
 	place := fmt.Sprintf("\x1b[%d;%dH", row, column)
 	out := make([]byte, 0, len(place)+len(data))

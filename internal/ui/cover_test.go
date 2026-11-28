@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"net/http"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -653,20 +654,12 @@ func (coverFailWriter) Write([]byte) (int, error) {
 	return 0, errors.New("fixture terminal refused the image")
 }
 
-// coverEmit ejecuta la emisión programada y entrega su respuesta al modelo, como
-// haría Bubble Tea con el comando.
-func coverEmit(t *testing.T, m *playerModel) *playerModel {
+// coverStep entrega un mensaje benigno: el mensaje siguiente es el que escribe la
+// carátula que el cuadro anterior dejó pendiente.
+func coverStep(t *testing.T, m *playerModel) *playerModel {
 	t.Helper()
-	cmd := m.coverSixelEmit()
-	if cmd == nil {
-		t.Fatal("the cover was not emitted")
-	}
-	model, _ := m.Update(cmd())
-	player, ok := model.(*playerModel)
-	if !ok {
-		t.Fatalf("unexpected model %T", model)
-	}
-	return player
+	model, _ := m.Update(playerTickMsg{})
+	return model.(*playerModel)
 }
 
 // coverPlacement es la fila y la columna donde la vista deja la ranura: el borde
@@ -840,29 +833,37 @@ func coverBlankSlotRow(row string, slot artSlot) string {
 func TestCoverSixelWritesAfterTheBlankFrame(t *testing.T) {
 	m, terminal := coverSixelPlayer(t, 120, 40)
 	// La imagen ya está decodificada y la vista todavía no reservó su lugar.
-	if cmd := m.coverSixelSoon(); cmd == nil {
-		t.Fatal("the ready cover scheduled no write")
-	}
-	if cmd := m.coverSixelEmit(); cmd != nil {
-		t.Fatal("the cover was written before the view reserved its slot")
-	}
+	m = coverStep(t, m)
 	playerViewRows(t, m, 120, 40)
+	if terminal.Len() != 0 {
+		t.Fatalf("the reserving frame wrote the image: %q", terminal.String())
+	}
+	// El mensaje siguiente llega con la ranura ya dibujada: escribe.
+	m = coverStep(t, m)
+	if terminal.Len() == 0 || m.sixel.emitted == "" {
+		t.Fatal("the reserved slot was not written on the next message")
+	}
+}
 
-	model, cmd := m.Update(coverSixelReadyMsg{})
-	ready, ok := model.(*playerModel)
-	if !ok {
-		t.Fatalf("unexpected model %T", model)
-	}
-	ready = coverSettle(t, ready, cmd)
-	if terminal.Len() == 0 {
-		t.Fatal("the tic wrote no image after the blank frame")
-	}
-	if ready.sixel.emitted == "" {
-		t.Fatal("the written image was not remembered")
-	}
-	if cmd := ready.coverSixelSoon(); cmd != nil {
-		t.Fatal("the written image scheduled another write")
-	}
+// coverSixelWriter es el terminal de la prueba: guarda lo escrito y la goroutine
+// que lo escribió.
+type coverSixelWriter struct {
+	written   bytes.Buffer
+	goroutine string
+}
+
+func (w *coverSixelWriter) Write(p []byte) (int, error) {
+	w.written.Write(p)
+	w.goroutine = coverGoroutine()
+	return len(p), nil
+}
+
+// coverGoroutine es la cabecera del volcado de la goroutine actual: lo único que
+// distingue el hilo de la interfaz de una goroutine aparte.
+func coverGoroutine() string {
+	buffer := make([]byte, 64)
+	line, _, _ := strings.Cut(string(buffer[:runtime.Stack(buffer, false)]), "\n")
+	return line
 }
 
 // TestCoverSixelEmitsOncePerChange fija cuándo se escribe la imagen: una vez por
@@ -875,10 +876,7 @@ func TestCoverSixelEmitsOncePerChange(t *testing.T) {
 		t.Fatalf("the first paint wrote to the terminal: %q", terminal.String())
 	}
 	row, column := coverPlacement(t, rows)
-	if cmd := m.coverSixelSoon(); cmd == nil {
-		t.Fatal("the blank slot scheduled no write")
-	}
-	m = coverEmit(t, m)
+	m = coverStep(t, m)
 	if !bytes.HasPrefix(terminal.Bytes(), []byte(fmt.Sprintf("\x1b[%d;%dH", row, column))) {
 		t.Fatalf("the image is not placed at its slot (%d;%d): %q", row, column, terminal.String())
 	}
@@ -891,9 +889,7 @@ func TestCoverSixelEmitsOncePerChange(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		playerViewRows(t, m, 120, 40)
 		m = coverState(t, m, coverTrackState(coverFixtureURI))
-		if cmd := m.coverSixelEmit(); cmd != nil {
-			t.Fatalf("the repaint %d wrote the image again", i)
-		}
+		m = coverStep(t, m)
 	}
 	if terminal.Len() != written {
 		t.Fatalf("the repaints wrote %d bytes more", terminal.Len()-written)
@@ -902,7 +898,7 @@ func TestCoverSixelEmitsOncePerChange(t *testing.T) {
 	// Otro tamaño de ventana la escribe otra vez, en la ranura nueva.
 	rows = playerViewRows(t, m, 80, 24)
 	row, column = coverPlacement(t, rows)
-	m = coverEmit(t, m)
+	m = coverStep(t, m)
 	second := terminal.Bytes()[written:]
 	if !bytes.HasPrefix(second, []byte(fmt.Sprintf("\x1b[%d;%dH", row, column))) {
 		t.Fatalf("the resized image is not placed at its slot (%d;%d): %q", row, column, second)
@@ -916,36 +912,32 @@ func TestCoverSixelEmitsOncePerChange(t *testing.T) {
 	m.covers.urls["spotify:track:otra"] = coverFixtureURL
 	m = coverState(t, m, coverTrackState("spotify:track:otra"))
 	playerViewRows(t, m, 80, 24)
-	m = coverEmit(t, m)
+	m = coverStep(t, m)
 	if terminal.Len() == written {
 		t.Fatal("the new track did not write its cover")
 	}
 }
 
-// TestCoverSixelFailureFallsBackToBlocks fija el respaldo: una emisión que falla
+// TestCoverSixelFailureFallsBackToBlocks fija el respaldo: una escritura que falla
 // deja esa imagen en el medio bloque, sin ranura vacía y sin reintentos.
 func TestCoverSixelFailureFallsBackToBlocks(t *testing.T) {
 	m, _ := coverSixelPlayer(t, 120, 40)
 	m.sixel.out = coverFailWriter{}
 	playerViewRows(t, m, 120, 40)
-	cmd := m.coverSixelEmit()
-	if cmd == nil {
-		t.Fatal("the cover was not emitted")
+	m = coverStep(t, m)
+	if m.sixel.emitted != "" || m.sixel.failed == "" {
+		t.Fatalf("a failed write left emitted=%q failed=%q", m.sixel.emitted, m.sixel.failed)
 	}
-	model, _ := m.Update(cmd())
-	player, ok := model.(*playerModel)
-	if !ok {
-		t.Fatalf("unexpected model %T", model)
-	}
-	view := strings.Join(playerViewRows(t, player, 120, 40), "\n")
+	view := strings.Join(playerViewRows(t, m, 120, 40), "\n")
 	if !strings.Contains(view, coverUpperHalf) {
-		t.Fatalf("a failed emission left the slot blank:\n%s", view)
+		t.Fatalf("a failed write left the slot blank:\n%s", view)
 	}
-	if player.sixel.emitted != "" {
-		t.Fatalf("a failed emission was remembered as written: %q", player.sixel.emitted)
-	}
-	if cmd := player.coverSixelEmit(); cmd != nil {
-		t.Fatal("a failed emission was retried")
+	// No se reintenta: esa misma imagen ya falló.
+	writer := &coverSixelWriter{}
+	m.sixel.out = writer
+	m = coverStep(t, m)
+	if writer.written.Len() != 0 {
+		t.Fatal("a failed image was retried")
 	}
 }
 
@@ -955,7 +947,7 @@ func TestCoverSixelFailureFallsBackToBlocks(t *testing.T) {
 func TestCoverSixelForgetsAHiddenScreen(t *testing.T) {
 	m, terminal := coverSixelPlayer(t, 120, 40)
 	playerViewRows(t, m, 120, 40)
-	m = coverEmit(t, m)
+	m = coverStep(t, m)
 	written := terminal.Len()
 
 	m.help = true
@@ -965,7 +957,7 @@ func TestCoverSixelForgetsAHiddenScreen(t *testing.T) {
 	}
 	m.help = false
 	playerViewRows(t, m, 120, 40)
-	m = coverEmit(t, m)
+	m = coverStep(t, m)
 	if terminal.Len() == written {
 		t.Fatal("the cover was not written again after the help")
 	}
@@ -977,96 +969,61 @@ func TestCoverSixelForgetsAHiddenScreen(t *testing.T) {
 		t.Fatalf("the minimum size kept the image as written: %q", m.sixel.emitted)
 	}
 	playerViewRows(t, m, 120, 40)
-	m = coverEmit(t, m)
+	m = coverStep(t, m)
 	if terminal.Len() == written {
 		t.Fatal("the cover was not written again after the minimum size")
 	}
 }
 
-// TestCoverSixelDropsAnEmissionThatNoLongerMatches fija que una emisión en vuelo
-// solo escribe si la pantalla sigue esperando esa imagen; si no, el cuadro la escribe.
-func TestCoverSixelDropsAnEmissionThatNoLongerMatches(t *testing.T) {
-	for name, drop := range map[string]func(*playerModel){
-		"help": func(m *playerModel) { m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}) },
-		"track": func(m *playerModel) {
-			m.covers.urls["spotify:track:otra"] = coverFixtureURL
-			coverState(t, m, coverTrackState("spotify:track:otra"))
-		},
-		"quit": func(m *playerModel) { m.quitApp() },
-	} {
-		m, terminal := coverSixelPlayer(t, 120, 40)
-		playerViewRows(t, m, 120, 40)
-		cmd := m.coverSixelEmit()
-		drop(m)
-		model, _ := m.Update(cmd())
-		if got := model.(*playerModel); terminal.Len() != 0 || got.sixel.emitted != "" {
-			t.Fatalf("%s: wrote %q and emitted %q", name, terminal.String(), got.sixel.emitted)
-		}
-		if m.quit {
-			continue
-		}
-		// La imagen descartada no queda suprimida: el cuadro siguiente la escribe.
-		m.help = false
-		playerViewRows(t, m, 120, 40)
-		if after := coverEmit(t, m); terminal.Len() == 0 || after.sixel.emitted == "" {
-			t.Fatalf("%s: the dropped image was never written", name)
-		}
-	}
-}
-
-// coverSixelWriter es el terminal de la prueba: guarda lo escrito y provoca, durante la escritura, el cambio pedido.
-type coverSixelWriter struct {
-	written bytes.Buffer
-	during  func()
-}
-
-func (w *coverSixelWriter) Write(p []byte) (int, error) {
-	w.written.Write(p)
-	w.during()
-	return len(p), nil
-}
-
-// TestCoverSixelChecksTheScreenAroundTheWrite fija la comprobación antes y después de escribir.
-func TestCoverSixelChecksTheScreenAroundTheWrite(t *testing.T) {
-	help := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}
-	for _, tt := range []struct {
-		during  func(*playerModel)
-		repaint bool
-	}{
-		{func(m *playerModel) { m.Update(help) }, true},
-		{func(m *playerModel) { m.quitApp() }, false},
-	} {
-		m, _ := coverSixelPlayer(t, 120, 40)
-		playerViewRows(t, m, 120, 40)
-		writer := &coverSixelWriter{during: func() { tt.during(m) }}
-		m.sixel.out = writer
-		message := m.coverSixelEmit()()
-		if msg, ok := message.(coverSixelMsg); !ok || !msg.stale || msg.err != nil {
-			t.Fatalf("a changed screen was not reported as stale: %#v", message)
-		}
-		model, cmd := m.Update(message)
-		repaint := false
-		if cmd != nil {
-			repaint = reflect.TypeOf(cmd()) == reflect.TypeOf(tea.ClearScreen())
-		}
-		stale := model.(*playerModel)
-		if repaint != tt.repaint || writer.written.Len() == 0 || stale.sixel.emitted != "" || stale.sixel.pending != nil || stale.sixel.painted != "" {
-			t.Fatalf("a changed screen was not respected: repaint=%v wrote=%d emitted=%q", repaint, writer.written.Len(), stale.sixel.emitted)
-		}
-	}
-
-	// Un terminal atascado no detiene el modelo: la ayuda se procesa igual.
-	m, _ := coverSixelPlayer(t, 120, 40)
+// TestCoverSixelSkipsAStalePendingWrite fija que una escritura pendiente no sale si
+// entre la reserva y el mensaje siguiente la pantalla cambió: sigue pendiente, y el
+// mensaje con el estado nuevo escribe la imagen nueva.
+func TestCoverSixelSkipsAStalePendingWrite(t *testing.T) {
+	m, terminal := coverSixelPlayer(t, 120, 40)
 	playerViewRows(t, m, 120, 40)
-	blocked, release := make(chan struct{}), make(chan struct{})
-	m.sixel.out = &coverSixelWriter{during: func() { close(blocked); <-release }}
-	done := make(chan tea.Msg, 1)
-	go func() { done <- m.coverSixelEmit()() }()
-	<-blocked
-	m.Update(help)
-	close(release)
-	if model, _ := m.Update(<-done); !m.help || model.(*playerModel).sixel.emitted != "" {
-		t.Fatal("the write blocked the model or left the cover marked")
+	m.covers.urls["spotify:track:otra"] = coverFixtureURL
+	m = coverState(t, m, coverTrackState("spotify:track:otra"))
+	if terminal.Len() != 0 || m.sixel.emitted != "" {
+		t.Fatalf("a stale pending write wrote %q and marked %q", terminal.String(), m.sixel.emitted)
+	}
+	if m.sixel.pending == nil {
+		t.Fatal("the pending image was dropped instead of kept")
+	}
+	playerViewRows(t, m, 120, 40)
+	m = coverStep(t, m)
+	art, ok := m.coverSixelArt()
+	if terminal.Len() == 0 || !ok || m.sixel.emitted != art.key {
+		t.Fatal("the new image was never written")
+	}
+}
+
+// TestCoverSixelQuitSkipsThePendingWrite fija que una salida procesada antes de la
+// escritura pendiente no escribe nada ni marca la imagen.
+func TestCoverSixelQuitSkipsThePendingWrite(t *testing.T) {
+	m, terminal := coverSixelPlayer(t, 120, 40)
+	playerViewRows(t, m, 120, 40)
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if terminal.Len() != 0 || m.sixel.emitted != "" {
+		t.Fatalf("a quit wrote %q and marked %q", terminal.String(), m.sixel.emitted)
+	}
+}
+
+// TestCoverSixelWritesOnTheUpdateGoroutine fija que la escritura ocurre dentro de
+// Update y en su misma goroutine: no hay comando, ni canal, ni candado que ordenar,
+// así que una salida nunca puede cruzarse con ella.
+func TestCoverSixelWritesOnTheUpdateGoroutine(t *testing.T) {
+	m, _ := coverSixelPlayer(t, 120, 40)
+	writer := &coverSixelWriter{}
+	m.sixel.out = writer
+	playerViewRows(t, m, 120, 40)
+	here := coverGoroutine()
+	before := writer.written.Len()
+	m.Update(playerTickMsg{})
+	if writer.written.Len() == before {
+		t.Fatal("the pending image was not written by the message")
+	}
+	if writer.goroutine != here {
+		t.Fatalf("the write ran on %q, want the Update goroutine %q", writer.goroutine, here)
 	}
 }
 
