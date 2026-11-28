@@ -3040,3 +3040,122 @@ func TestDiscoverReportsOtherAnswers(t *testing.T) {
 		})
 	}
 }
+
+// TestDiscoverDropsALateAnswerAfterANewerAction fija la regla de invalidación:
+// un `d` en vuelo se descarta en cuanto algo lo reemplaza —un comando de
+// reproducción del teclado, otra sesión o pista de Soloist, o la salida—, así
+// que su respuesta tardía no reproduce nada ni deja aviso.
+func TestDiscoverDropsALateAnswerAfterANewerAction(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		apply func(t *testing.T, m tea.Model, out chan playerCommand) tea.Model
+	}{
+		{"playback command", func(t *testing.T, m tea.Model, out chan playerCommand) tea.Model {
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+			select {
+			case command := <-out:
+				if command.Name != "pause" {
+					t.Fatalf("the pause key sent %#v", command)
+				}
+			default:
+				t.Fatal("the pause key sent no command")
+			}
+			return m
+		}},
+		{"new state", func(t *testing.T, m tea.Model, _ chan playerCommand) tea.Model {
+			m.(*playerModel).pending = true
+			changed := discoverStateFixture()
+			changed.Track = playerTrack{Title: "Next", Artist: "Artist", URI: "spotify:track:next"}
+			m, _ = m.Update(playerViewState{state: changed, ok: true})
+			return m
+		}},
+		{"quit", func(t *testing.T, m tea.Model, _ chan playerCommand) tea.Model {
+			m, _ = m.Update(playerViewKey("q"))
+			return m
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newDiscoverFake(libraryTrack{Name: "One", Artist: "A", URI: "spotify:track:one"})
+			m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 0)
+			m, pending := m.Update(playerViewKey("d"))
+			if pending == nil {
+				t.Fatal("d scheduled no recommendations request")
+			}
+			m = tt.apply(t, m, out)
+			m, _ = m.Update(playerViewRun(t, pending))
+			if len(out) != 0 {
+				t.Fatalf("a late answer still played after a newer action (%d commands)", len(out))
+			}
+			if view := ansi.Strip(m.View()); strings.Contains(view, "recommendation") || strings.Contains(view, "Discover") {
+				t.Fatalf("a late answer left a notice:\n%s", view)
+			}
+		})
+	}
+}
+
+// TestDiscoverDropsTheOlderOfTwoRequests conserva la regla que ya existía: dos
+// `d` seguidas solo dejan reproducir la respuesta de la última.
+func TestDiscoverDropsTheOlderOfTwoRequests(t *testing.T) {
+	fake := newDiscoverFake(libraryTrack{Name: "One", Artist: "A", URI: "spotify:track:one"})
+	m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 0)
+	m, first := m.Update(playerViewKey("d"))
+	m, second := m.Update(playerViewKey("d"))
+	if first == nil || second == nil {
+		t.Fatal("d scheduled no recommendations request")
+	}
+	m, _ = m.Update(playerViewRun(t, first))
+	if len(out) != 0 {
+		t.Fatal("the older request played")
+	}
+	m, _ = m.Update(playerViewRun(t, second))
+	select {
+	case command := <-out:
+		if command.Name != "play" || command.URI != "spotify:track:one" {
+			t.Fatalf("the newest request played %#v", command)
+		}
+	default:
+		t.Fatal("the newest request played nothing")
+	}
+}
+
+// TestDiscoverAndSaveShareOneNotice fija la precedencia de los dos avisos de
+// acción: se dibuja el último resultado producido, uno nuevo reemplaza al
+// anterior y empezar un descubrimiento no borra el aviso de guardado ya visible.
+func TestDiscoverAndSaveShareOneNotice(t *testing.T) {
+	t.Run("un descubrimiento en vuelo conserva el aviso de guardado", func(t *testing.T) {
+		fake := newDiscoverFake(libraryTrack{Name: "One", Artist: "A", URI: "spotify:track:one"})
+		m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 0)
+		m, _ = m.Update(saveResultMsg{generation: m.(*playerModel).saveTo.generation, name: "Rock Chileno", err: nil})
+		playerViewText(t, m, "Saved to Rock Chileno.")
+		// La petición de `d` queda en vuelo: el aviso de guardado sigue en su fila.
+		m, pending := m.Update(playerViewKey("d"))
+		if pending == nil {
+			t.Fatal("d scheduled no recommendations request")
+		}
+		playerViewText(t, m, "Saved to Rock Chileno.")
+		// El resultado del descubrimiento es más nuevo y reemplaza al de guardado.
+		fake.recommend = func(int, string) ([]libraryTrack, error) { return nil, spotify.ErrRecommendationsUnavailable }
+		m, _ = m.Update(playerViewRun(t, pending))
+		view := playerViewText(t, m, "This Spotify app has no access to recommendations.")
+		if strings.Contains(view, "Saved to Rock Chileno.") {
+			t.Fatalf("both action notices share the row:\n%s", view)
+		}
+		if len(out) != 0 {
+			t.Fatal("the discover answer touched playback")
+		}
+	})
+
+	t.Run("un guardado que termina reemplaza al aviso de descubrir", func(t *testing.T) {
+		fake := newDiscoverFake()
+		fake.recommend = func(int, string) ([]libraryTrack, error) { return nil, spotify.ErrRecommendationsUnavailable }
+		m, out := discoverPlayer(t, preferences{}, discoverStateFixture(), fake, 0)
+		m, _ = discoverPlayed(t, m, out)
+		playerViewText(t, m, "This Spotify app has no access to recommendations.")
+		// Un guardado completa después: su resultado es el más nuevo.
+		m, _ = m.Update(saveResultMsg{generation: m.(*playerModel).saveTo.generation, name: "Rock Chileno", err: nil})
+		view := playerViewText(t, m, "Saved to Rock Chileno.")
+		if strings.Contains(view, "no access to recommendations") {
+			t.Fatalf("the older discover notice is still drawn:\n%s", view)
+		}
+	})
+}

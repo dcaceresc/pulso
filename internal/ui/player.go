@@ -302,6 +302,18 @@ type discoverResultMsg struct {
 	err        error
 }
 
+// noticeOutcome nombra el aviso de acción que se produjo último. Las dos teclas
+// que dejan aviso —`a`/`x` al guardar o quitar y `d` al descubrir— comparten una
+// sola fila: se dibuja el resultado más nuevo, uno nuevo reemplaza al anterior y
+// ninguna de las dos borra el aviso que la otra ya produjo.
+type noticeOutcome uint8
+
+const (
+	noticeOutcomeNone noticeOutcome = iota
+	noticeOutcomeSave
+	noticeOutcomeDiscover
+)
+
 // discoverState es la tecla `d`: el catálogo que sabe pedir recomendaciones, la
 // generación que descarta una respuesta vieja, el aviso del último intento y la
 // elección de la pista con la que empieza lo que Spotify continúe.
@@ -360,6 +372,9 @@ type playerModel struct {
 	// discover es la tecla global `d`: pistas parecidas a la que suena, con su
 	// propio aviso de una línea.
 	discover discoverState
+	// noticeBy dice cuál de los dos avisos de acción se produjo último: solo uno
+	// se dibuja.
+	noticeBy noticeOutcome
 	// covers guarda el mapa URI → URL que anuncian las páginas ya cargadas, la
 	// consulta de respaldo y la imagen decodificada: la caja dibuja la carátula
 	// cuando llega y, mientras tanto, sus iniciales.
@@ -407,6 +422,8 @@ func NewPlayerModelWithCatalog(ctx context.Context, states <-chan soloist.State,
 
 // playURI sends a catalog selection to the session currently on screen.
 func (m *playerModel) playURI(uri string) {
+	// Elegir otra cosa para reproducir reemplaza al `d` que quedó en vuelo.
+	m.invalidateDiscover()
 	if m.commands == nil || m.ctx.Err() != nil || !m.state.Connected || uri == "" {
 		return
 	}
@@ -580,7 +597,13 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Un aviso nuevo de Soloist no queda escondido por el último guardado ni
 		// por la explicación del último descubrimiento.
 		if playerText(msg.state.Notice) != playerText(m.state.Notice) {
-			m.saveTo.notice, m.discover.notice = saveNoticeNone, discoverNoticeNone
+			m.setSaveNotice(saveNoticeNone)
+			m.setDiscoverNotice(discoverNoticeNone)
+		}
+		// Una sesión o una pista distinta es otra reproducción: el `d` que quedó en
+		// vuelo ya no corresponde a lo que suena y se descarta.
+		if msg.state.SessionID != m.state.SessionID || playerText(msg.state.Track.URI) != playerText(m.state.Track.URI) {
+			m.invalidateDiscover()
 		}
 		m.state = msg.state
 		// Sin una pista en reproducción el selector de guardado se queda sin qué
@@ -783,9 +806,10 @@ func (m *playerModel) playPlaylistShuffle(uri string) {
 // reproducción y empieza a reproducir una de ellas, elegida al azar, por el
 // camino de reproducción de siempre; Spotify continúa desde ahí. Sin catálogo o
 // sin una pista de Spotify sonando la tecla solo explica el motivo, y ningún
-// caso envía una semilla vacía.
+// caso envía una semilla vacía. Empezar un descubrimiento no borra el aviso que
+// ya estaba: solo el resultado que llegue después puede reemplazarlo.
 func (m *playerModel) discoverTracks() tea.Cmd {
-	m.saveTo.notice, m.discover.notice = saveNoticeNone, discoverNoticeNone
+	m.setDiscoverNotice(discoverNoticeNone)
 	m.discover.generation++
 	seed := ""
 	if m.state.Connected && soloist.IsTrackURI(m.state.Track.URI) {
@@ -793,11 +817,11 @@ func (m *playerModel) discoverTracks() tea.Cmd {
 	}
 	switch {
 	case m.discover.source == nil:
-		m.discover.notice = discoverNoticeNoSource
+		m.setDiscoverNotice(discoverNoticeNoSource)
 	case seed == "":
-		m.discover.notice = discoverNoticeNoSeed
+		m.setDiscoverNotice(discoverNoticeNoSeed)
 	case m.ctx.Err() != nil:
-		m.discover.notice = discoverNoticeFailed
+		m.setDiscoverNotice(discoverNoticeFailed)
 	default:
 		ctx, generation, source := m.ctx, m.discover.generation, m.discover.source
 		return func() tea.Msg {
@@ -811,6 +835,39 @@ func (m *playerModel) discoverTracks() tea.Cmd {
 	return nil
 }
 
+// invalidateDiscover descarta el `d` que quedó en vuelo: subir la generación
+// hace que su respuesta ya no pueda reproducir nada. La llaman las acciones que
+// lo reemplazan —un comando de reproducción del teclado, una sesión o una pista
+// distinta de Soloist y la salida—, así una respuesta lenta nunca pisa lo que la
+// persona hizo después.
+func (m *playerModel) invalidateDiscover() {
+	m.discover.generation++
+}
+
+// setSaveNotice produce el aviso de guardado: el resultado recién producido pasa
+// a ser el aviso del momento, y vaciarlo solo lo retira si era el último.
+func (m *playerModel) setSaveNotice(notice saveNotice) {
+	m.saveTo.notice = notice
+	switch {
+	case notice != saveNoticeNone:
+		m.noticeBy = noticeOutcomeSave
+	case m.noticeBy == noticeOutcomeSave:
+		m.noticeBy = noticeOutcomeNone
+	}
+}
+
+// setDiscoverNotice produce el aviso de descubrir con la misma regla que el de
+// guardado: el más nuevo reemplaza al anterior y ninguno borra el del otro.
+func (m *playerModel) setDiscoverNotice(notice discoverNotice) {
+	m.discover.notice = notice
+	switch {
+	case notice != discoverNoticeNone:
+		m.noticeBy = noticeOutcomeDiscover
+	case m.noticeBy == noticeOutcomeDiscover:
+		m.noticeBy = noticeOutcomeNone
+	}
+}
+
 // updateDiscover aplica la respuesta de `d`. Un fallo se explica en una línea y
 // la reproducción no se toca: no hay lista inventada ni reintento.
 func (m *playerModel) updateDiscover(msg tea.Msg) tea.Cmd {
@@ -820,16 +877,16 @@ func (m *playerModel) updateDiscover(msg tea.Msg) tea.Cmd {
 	}
 	switch {
 	case errors.Is(result.err, spotify.ErrRecommendationsUnavailable):
-		m.discover.notice = discoverNoticeUnavailable
+		m.setDiscoverNotice(discoverNoticeUnavailable)
 		return nil
 	case result.err != nil:
-		m.discover.notice = discoverNoticeFailed
+		m.setDiscoverNotice(discoverNoticeFailed)
 		return nil
 	case len(result.tracks) == 0:
-		m.discover.notice = discoverNoticeEmpty
+		m.setDiscoverNotice(discoverNoticeEmpty)
 		return nil
 	}
-	m.discover.notice = discoverNoticeNone
+	m.setDiscoverNotice(discoverNoticeNone)
 	// La caja ya conoce las carátulas que la respuesta anuncia.
 	m.covers.remember(result.tracks)
 	pick := m.discover.pick
@@ -862,6 +919,9 @@ func (m *playerModel) discoverNoticeText() string {
 // send binds a command to the session on screen and reports whether it fit
 // through the bounded command channel. There is no retry: the bar shows busy.
 func (m *playerModel) send(command playerCommand) bool {
+	// Un comando de reproducción del teclado reemplaza al `d` que quedó en vuelo:
+	// la recomendación ya no es lo que la persona pidió.
+	m.invalidateDiscover()
 	command.SessionID = m.state.SessionID
 	select {
 	case <-m.ctx.Done():
@@ -1076,7 +1136,8 @@ func (m *playerModel) openSave() tea.Cmd {
 	m.saveTo.authURL = ""
 	m.saveTo.removeTrackURI, m.saveTo.removeTrackName, m.saveTo.removeSnapshot = "", "", ""
 	m.saveTo.reloading = false
-	m.saveTo.notice, m.saveTo.noticeName, m.saveTo.noticeTrack = saveNoticeNone, "", ""
+	m.setSaveNotice(saveNoticeNone)
+	m.saveTo.noticeName, m.saveTo.noticeTrack = "", ""
 	m.saveTo.retried = false
 	if len(m.library.playlists) == 0 && m.library.notice == libraryNoticeLoadFailed {
 		return m.library.fetchPlaylists(0)
@@ -1089,7 +1150,8 @@ func (m *playerModel) openSave() tea.Cmd {
 // catálogo que pueda escribir en ella.
 func (m *playerModel) explainRemove() {
 	m.saveTo.action = saveActionRemove
-	m.saveTo.notice, m.saveTo.noticeName = saveNoticeNeedsPlaylist, ""
+	m.setSaveNotice(saveNoticeNeedsPlaylist)
+	m.saveTo.noticeName = ""
 	if m.saveTo.writer == nil {
 		m.saveTo.noticeName = m.text("no write permission", "sin permiso de escritura")
 	}
@@ -1108,8 +1170,8 @@ func (m *playerModel) openRemove() tea.Cmd {
 	m.saveTo.removeTrackURI, m.saveTo.removeTrackName = track.URI, playerText(track.Name)
 	m.saveTo.removeSnapshot, m.saveTo.reloading = track.Snapshot, false
 	m.saveTo.authURL = ""
-	m.saveTo.notice, m.saveTo.noticeName = saveNoticeNone, ""
-	m.saveTo.noticeTrack = m.saveTo.removeTrackName
+	m.setSaveNotice(saveNoticeNone)
+	m.saveTo.noticeName, m.saveTo.noticeTrack = "", m.saveTo.removeTrackName
 	m.saveTo.retried = false
 	return nil
 }
@@ -1289,7 +1351,8 @@ func (m *playerModel) reloadRemoval(msg tea.Msg) {
 	}
 	if page.err != nil || snapshot == "" {
 		// La lista releída no ofrece esa fila: se informa y no se quita nada.
-		m.saveTo.phase, m.saveTo.notice = saveIdle, saveNoticeFailed
+		m.saveTo.phase = saveIdle
+		m.setSaveNotice(saveNoticeFailed)
 		m.saveTo.noticeName, m.saveTo.noticeTrack = m.saveTargetName(), m.removeTrackLabel()
 		return
 	}
@@ -1381,7 +1444,9 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 		removing := m.saveTo.action == saveActionRemove
 		switch {
 		case msg.err == nil:
-			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeSaved, msg.name
+			m.saveTo.phase = saveIdle
+			m.setSaveNotice(saveNoticeSaved)
+			m.saveTo.noticeName = msg.name
 			// Cualquier escritura aceptada cambia el snapshot de la lista: se relee
 			// para que las filas queden con la versión que Spotify ya conoce. En una
 			// retirada además hace desaparecer la fila.
@@ -1395,14 +1460,18 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 		case errors.Is(msg.err, spotify.ErrPlaylistNotEditable):
 			// Solo un rechazo que nombra la falta de permiso sobre esa lista llega
 			// aquí: la noticia afirma que esta cuenta no puede cambiarla.
-			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeNotEditable, msg.name
+			m.saveTo.phase = saveIdle
+			m.setSaveNotice(saveNoticeNotEditable)
+			m.saveTo.noticeName = msg.name
 		case errors.Is(msg.err, spotify.ErrSpotifyWriteScope) && !m.saveTo.retried && m.saveTo.target.URI != "":
 			// Falta el permiso de escritura, o Spotify rechazó el cambio sin motivo
 			// clasificable: se ofrece aprobarlo otra vez, una sola vez.
 			m.saveTo.phase = saveScopeOffered
 		default:
 			// Cualquier otra causa se reporta por su nombre y sin inventar un motivo.
-			m.saveTo.phase, m.saveTo.notice, m.saveTo.noticeName = saveIdle, saveNoticeFailed, msg.name
+			m.saveTo.phase = saveIdle
+			m.setSaveNotice(saveNoticeFailed)
+			m.saveTo.noticeName = msg.name
 		}
 		return nil
 	case saveAuthMsg:
@@ -1418,7 +1487,8 @@ func (m *playerModel) updateSave(msg tea.Msg) tea.Cmd {
 		}
 		m.saveTo.work, m.saveTo.cancel, m.saveTo.events, m.saveTo.authURL = nil, nil, nil, ""
 		if msg.writer == nil {
-			m.saveTo.phase, m.saveTo.notice = saveIdle, saveNoticeDeclined
+			m.saveTo.phase = saveIdle
+			m.setSaveNotice(saveNoticeDeclined)
 			m.saveTo.noticeName, m.saveTo.noticeTrack = m.saveTargetName(), m.removeTrackLabel()
 			return nil
 		}
@@ -1443,7 +1513,8 @@ func (m *playerModel) installApproved(writer spotify.PlaylistWriter) tea.Cmd {
 		retry = m.requestRemove(writer)
 	}
 	if retry == nil {
-		m.saveTo.phase, m.saveTo.notice = saveIdle, saveNoticeFailed
+		m.saveTo.phase = saveIdle
+		m.setSaveNotice(saveNoticeFailed)
 		m.saveTo.noticeName = m.saveTargetName()
 	}
 	api, ok := writer.(CatalogAPI)
@@ -2415,14 +2486,20 @@ func (m *playerModel) repeatMode() string {
 }
 
 // playerNoticeText es el aviso de la sesión: la única fila que queda bajo la caja
-// del reproductor, y la última que cede antes de quedarse sin sitio.
+// del reproductor, y la última que cede antes de quedarse sin sitio. De los dos
+// avisos de acción se dibuja solo el último producido, así que un resultado
+// nuevo reemplaza al anterior y ninguno borra el que la otra tecla ya dejó.
 func (m *playerModel) playerNoticeText() string {
 	notice := playerText(m.state.Notice)
-	if text := m.saveNoticeText(); text != "" {
-		notice = text
-	}
-	if text := m.discoverNoticeText(); text != "" {
-		notice = text
+	switch m.noticeBy {
+	case noticeOutcomeSave:
+		if text := m.saveNoticeText(); text != "" {
+			notice = text
+		}
+	case noticeOutcomeDiscover:
+		if text := m.discoverNoticeText(); text != "" {
+			notice = text
+		}
 	}
 	switch m.state.PlaylistShuffle {
 	case soloist.PlaylistShuffleWaiting:
@@ -2456,6 +2533,8 @@ func (m *playerModel) statusRows() []playerRow {
 // quitApp sale de la aplicación: `q` sin campo de texto y `Ctrl+C` siempre.
 func (m *playerModel) quitApp() tea.Cmd {
 	m.quit = true
+	// Salir deja sin efecto el `d` que quedó en vuelo.
+	m.invalidateDiscover()
 	m.cancel()
 	return tea.Quit
 }
