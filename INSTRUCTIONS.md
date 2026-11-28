@@ -116,48 +116,64 @@ Después de la primera aprobación, la sesión queda guardada y se renueva sola.
 
 ## Uso diario
 
-La pantalla es un único espacio de trabajo:
+La pantalla es un único espacio de trabajo con tres zonas y el reproductor al pie:
 
-- **Barra superior:** búsqueda y tu usuario de Spotify.
-- **Biblioteca:** tus listas de reproducción.
-- **Tabla:** canciones de la lista elegida o resultados de búsqueda, con número, título, artista y duración.
-- **Barra de reproducción:** pista, artista, álbum, lista que confirma Soloist (si hay espacio), progreso, aleatorio, repetición, volumen y dispositivo.
-- **Pie:** pares `tecla acción` del panel activo; `F1` abre la ayuda.
+- **Barra superior:** la búsqueda y tu usuario de Spotify.
+- **Biblioteca:** tus listas de reproducción, con el cursor y la letra `l` que lleva el foco ahí.
+- **Tabla:** las canciones de la lista elegida, los resultados de la búsqueda o la cola, con número, título, artista y duración.
+- **Cola:** en las ventanas anchas una tercera caja muestra lo que sigue y el contexto de la reproducción; `c` devuelve la cola a la tabla y le da el foco.
+- **Reproductor:** una caja al pie. Su borde superior lleva el estado —reproduciendo, en pausa, sin conexión—, el aleatorio, la repetición y el volumen; dentro van la carátula de la pista en reproducción —o un bloque con sus iniciales cuando no hay imagen—, el título, el artista, el álbum, el tiempo con su barra y la lista o el dispositivo remoto que informa Soloist.
+
+El foco se mueve solo con la letra de cada zona: `l` lleva a la biblioteca, `/` a la búsqueda y `c` a la cola. `Esc` nunca cierra Pulso: vuelve a la tabla o cancela lo enfocado. Tampoco hay ciclo de foco ni línea de pistas al pie: cada zona tiene su tecla y `?` abre la ayuda, la única referencia de teclas, que las enumera por ámbitos —global, zonas, biblioteca, tabla y búsqueda—.
+
+El tamaño de la ventana decide la forma de la pantalla; si el alto no alcanza para la banda de su ancho, Pulso usa la forma más rica que sí quepa, nunca la más pobre.
+
+| Tamaño | Qué se ve | Reproductor | Carátula |
+| --- | --- | --- | --- |
+| ancho ≥ 120 y alto ≥ 30 | biblioteca, tabla y cola con su contexto | 10 filas interiores | sí |
+| 100 ≤ ancho < 120 y alto ≥ 26 | biblioteca y tabla; la cola se abre con `c` | 10 filas | sí |
+| 80 ≤ ancho < 100 y alto ≥ 20 | una fila con la biblioteca encima de la tabla | 8 filas | sí |
+| 40 ≤ ancho < 80 y alto ≥ 12 | la fila de la biblioteca y el reproductor, y la tabla cuando el alto deja filas para su encabezado | 6 filas | no |
+| ancho < 40 o alto < 12 | un mensaje con el tamaño mínimo, sin marco | — | — |
+
+La tabla es la que cede filas: el reproductor conserva su borde inferior y ninguna fila desborda el ancho. Cuando una frase de estado no cabe en su zona —un aviso de autorización largo, por ejemplo— se dibuja entera a todo el ancho sobre la caja del reproductor en lugar de recortarse.
 
 `a` abre el selector de lista para guardar la canción que suena: `↑` `↓` o `j` `k` eligen la lista, el título del panel nombra la lista apuntada, `Enter` guarda y `Esc` cancela. El aviso de éxito aparece solo cuando Spotify confirmó la lista, y un fallo se muestra como una línea que no interrumpe la reproducción.
 
 `x` pide quitar de la lista abierta la canción marcada: la confirmación nombra la canción y la lista, `Enter` la quita y `Esc` cancela. Cuando Spotify acepta, el aviso nombra la canción y la lista, y la lista se vuelve a leer para que la fila desaparezca. La reproducción y la cola no se tocan.
 
-`Tab` recorre biblioteca, tabla, búsqueda y barra de reproducción. Con la búsqueda enfocada puedes escribir `q`, `s`, `r`, `+` y `-` sin que se disparen atajos; `Enter` busca y `Esc` sale del campo.
+Con la búsqueda enfocada puedes escribir `q`, `s`, `r`, `+` y `-` sin que se disparen atajos; `Enter` busca y `Esc` sale del campo. `q` y `Ctrl+C` cierran Pulso: `q` sale cuando ningún campo de texto tiene el foco y `Ctrl+C` sale siempre.
 
 Al cerrar Pulso, la reproducción se pausa. Soloist sigue en segundo plano con su emparejamiento para que el siguiente arranque sea inmediato; si quieres detener el proceso, termínalo desde el sistema.
 
 ## Atajos
 
-| Tecla | Acción |
-| --- | --- |
-| `Tab` / `Shift+Tab` | Cambiar de panel |
-| `↑` `↓` / `j` `k` | Mover la selección |
-| `Enter` | Abrir una lista, buscar o reproducir la selección |
-| `Espacio` | Reproducir o pausar |
-| `n` / `p` | Siguiente o anterior |
-| `←` `→` | Retroceder o avanzar 10 segundos (barra de reproducción) |
-| `s` | Alternar el aleatorio de la reproducción actual |
-| `S` | Iniciar en aleatorio la lista seleccionada en la biblioteca o abierta en la tabla (no en resultados de búsqueda) |
-| `a` | Guardar la canción en reproducción en una lista: `↑` `↓` o `j` `k` eligen, `Enter` guarda, `Esc` cancela |
-| `x` | Quitar de la lista abierta la canción marcada: `Enter` confirma, `Esc` cancela |
-| `r` | Repetición: desactivada, lista, canción |
-| `+` / `-` | Volumen |
-| `/` | Buscar |
-| `l` | Ir a la biblioteca |
-| `F1` / `?` | Ayuda con todos los controles |
-| `F2` | Inglés o español |
-| `F3` | Tema estándar, oscuro o claro |
-| `q` / `Esc` | Salir |
+Cada tecla hace una sola cosa y `?` abre la ayuda con esta misma lista por ámbitos.
 
-`F1`, `?`, `Esc` o `q` cierran la ayuda y vuelven al panel donde estabas.
+| Ámbito | Tecla | Acción |
+| --- | --- | --- |
+| Global | `q` / `Ctrl+C` | Salir |
+| Global | `Space` | Reproducir o pausar |
+| Global | `n` / `b` | Pista siguiente o anterior |
+| Global | `+` / `-` | Volumen |
+| Global | `←` / `→` | Retroceder o avanzar 10 segundos |
+| Global | `r` | Repetir: apagado, lista, pista |
+| Global | `F2` / `F3` | Idioma o tema |
+| Global | `?` | Ayuda: la única referencia de teclas |
+| Global | `Esc` | Volver a la tabla o cancelar lo enfocado |
+| Zona | `l` | Biblioteca |
+| Zona | `/` | Búsqueda: `q`, `s`, `r`, `+` y `-` son texto |
+| Zona | `c` | La tabla muestra la cola y toma el foco; la columna de la ventana ancha solo informa |
+| Biblioteca | `j` / `k`, `Enter` | Mover el cursor, abrir la lista |
+| Biblioteca | `s` | Reproducir la lista seleccionada en aleatorio |
+| Tabla | `j` / `k`, `Enter` | Mover el cursor, reproducir la fila |
+| Tabla | `a` / `x` | Guardar la pista sonando o quitar la fila resaltada |
 
-`S` funciona con la URI de la lista aunque no se puedan consultar sus canciones. Pulso espera a que Soloist acepte la reproducción y confirme la lista antes de enviar una segunda orden para activar el aleatorio. No se garantiza que la primera canción sea aleatoria, y otro cliente de Spotify puede cambiar el contexto entre la confirmación y la segunda orden. Si la confirmación no llega a tiempo, Pulso no envía la segunda orden; la lista aún puede empezar a reproducirse.
+Las flechas `↑` `↓` mueven el cursor igual que `j` `k`. `s` alterna el aleatorio de la reproducción cuando el foco no está en la biblioteca; ahí reproduce en aleatorio la lista seleccionada. La lista restringida, cuyas canciones Spotify no entrega, se reproduce con `Enter`.
+
+`?` o `Esc` cierran la ayuda y vuelven a la zona donde estabas.
+
+`s` en la biblioteca funciona con la URI de la lista aunque no se puedan consultar sus canciones. Pulso espera a que Soloist acepte la reproducción y confirme la lista antes de enviar una segunda orden para activar el aleatorio. No se garantiza que la primera canción sea aleatoria, y otro cliente de Spotify puede cambiar el contexto entre la confirmación y la segunda orden. Si la confirmación no llega a tiempo, Pulso no envía la segunda orden; la lista aún puede empezar a reproducirse.
 
 Pulso no cambia Autoplay. Si está activado y Spotify continúa la reproducción al terminar una lista, Spotify elige las canciones.
 

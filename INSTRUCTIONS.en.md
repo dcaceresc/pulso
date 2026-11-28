@@ -116,48 +116,64 @@ After the first approval the session is stored and refreshed automatically. You 
 
 ## Daily use
 
-The screen is one workspace:
+The screen is one workspace with three zones and the player at the bottom:
 
 - **Top bar:** search and your Spotify user.
-- **Library:** your playlists.
-- **Table:** tracks of the selected playlist, or search results, with number, title, artist and duration.
-- **Playing bar:** track, artist, album, playlist confirmed by Soloist (when space permits), progress, shuffle, repeat, volume and device.
-- **Footer:** `key action` pairs for the focused panel; `F1` opens help.
+- **Library:** your playlists, with the cursor and the `l` key that brings the focus there.
+- **Table:** tracks of the selected playlist, search results, or the queue, with number, title, artist and duration.
+- **Queue:** in wide windows a third box shows what comes next and the playback context; `c` brings the queue back into the table and gives it the focus.
+- **Player:** a box at the bottom. Its top border carries the state — playing, paused, disconnected —, shuffle, repeat and volume; inside are the cover of the playing track — or a block with its initials when there is no image —, the title, the artist, the album, the time with its bar and the playlist or remote device Soloist reports.
+
+Focus moves only with the zone keys: `l` goes to the library, `/` to search and `c` to the queue. `Esc` never quits Pulso: it returns to the table or cancels what has the focus. There is no focus cycle and no key hint line at the bottom either: every zone has its letter, and `?` opens help, the only key reference, which lists them by scope — global, zones, library, table and search.
+
+The window size decides the shape of the screen; when the height misses its width's band, Pulso uses the richest shape that does fit, never the poorest.
+
+| Size | What you see | Player | Cover |
+| --- | --- | --- | --- |
+| width ≥ 120 and height ≥ 30 | library, table and queue with its context | 10 interior rows | yes |
+| 100 ≤ width < 120 and height ≥ 26 | library and table; the queue opens with `c` | 10 rows | yes |
+| 80 ≤ width < 100 and height ≥ 20 | one library row above the table | 8 rows | yes |
+| 40 ≤ width < 80 and height ≥ 12 | the library row and the player, and the table when the height leaves rows for its header | 6 rows | no |
+| width < 40 or height < 12 | one message with the minimum size, no frame | — | — |
+
+The table is the zone that gives up rows: the player keeps its bottom border and no row overflows the width. When a session sentence does not fit inside its zone — a long authorization notice, for example — it is drawn whole across the full width above the player box instead of being truncated.
 
 `a` opens the playlist chooser for the playing track: `↑` `↓` or `j` `k` choose the playlist, the panel title names the targeted playlist, `Enter` saves and `Esc` cancels. The success notice appears only once Spotify confirmed the playlist, and a failure shows as one row that does not interrupt playback.
 
 `x` asks to remove the highlighted track from the open playlist: the confirmation names the track and the playlist, `Enter` removes it and `Esc` cancels. When Spotify accepts, the notice names the track and the playlist, and the playlist is read again so the row disappears. Playback and the queue are never touched.
 
-`Tab` cycles library, table, search and playing bar. With the search field focused you can type `q`, `s`, `r`, `+` and `-` without triggering shortcuts; `Enter` searches and `Esc` leaves the field.
+With the search field focused you can type `q`, `s`, `r`, `+` and `-` without triggering shortcuts; `Enter` searches and `Esc` leaves the field. `q` and `Ctrl+C` quit Pulso: `q` quits while no text field has the focus and `Ctrl+C` always quits.
 
 Quitting Pulso pauses playback. Soloist stays in the background with its pairing so the next launch is instant; stop that process from the system if you want it gone.
 
 ## Shortcuts
 
-| Key | Action |
-| --- | --- |
-| `Tab` / `Shift+Tab` | Change panel |
-| `↑` `↓` / `j` `k` | Move the selection |
-| `Enter` | Open a playlist, search, or play the selection |
-| `Space` | Play or pause |
-| `n` / `p` | Next or previous |
-| `←` `→` | Seek 10 seconds (playing bar) |
-| `s` | Toggle shuffle for current playback |
-| `S` | Start and shuffle the playlist selected in the library or open in the table (not search results) |
-| `a` | Save the playing track to a playlist: `↑` `↓` or `j` `k` choose, `Enter` saves, `Esc` cancels |
-| `x` | Remove the highlighted track from the open playlist: `Enter` confirms, `Esc` cancels |
-| `r` | Repeat: off, context, track |
-| `+` / `-` | Volume |
-| `/` | Search |
-| `l` | Jump to the library |
-| `F1` / `?` | Help with every control |
-| `F2` | English or Spanish |
-| `F3` | Standard, dark or light theme |
-| `q` / `Esc` | Quit |
+Every key does one thing, and `?` opens help with this same list by scope.
 
-`F1`, `?`, `Esc` or `q` close help and return to the panel you came from.
+| Scope | Key | Action |
+| --- | --- | --- |
+| Global | `q` / `Ctrl+C` | Quit |
+| Global | `Space` | Play or pause |
+| Global | `n` / `b` | Next or previous track |
+| Global | `+` / `-` | Volume |
+| Global | `←` / `→` | Seek back or forward 10 seconds |
+| Global | `r` | Repeat: off, context, track |
+| Global | `F2` / `F3` | Language or theme |
+| Global | `?` | Help: the only key reference |
+| Global | `Esc` | Back to the table or cancel what has the focus |
+| Zone | `l` | Library |
+| Zone | `/` | Search: `q`, `s`, `r`, `+` and `-` are text |
+| Zone | `c` | The table shows the queue and takes the focus; the wide window's column is informative only |
+| Library | `j` / `k`, `Enter` | Move the cursor, open the playlist |
+| Library | `s` | Play the selected playlist shuffled |
+| Table | `j` / `k`, `Enter` | Move the cursor, play the row |
+| Table | `a` / `x` | Save the playing track or remove the highlighted row |
 
-`S` works by playlist URI even when the tracks cannot be listed. Pulso waits for Soloist to accept playback and confirm the playlist context before sending a separate shuffle command. The first track is not guaranteed to be random, and another Spotify client can change the context between confirmation and shuffle. If confirmation does not arrive in time, Pulso does not send shuffle; the playlist may still start playing.
+The arrows `↑` `↓` move the cursor just like `j` `k`. `s` toggles shuffle for the current playback while the focus is outside the library; there it plays the selected playlist shuffled. A restricted playlist, whose tracks Spotify does not hand over, plays with `Enter`.
+
+`?` or `Esc` close help and return to the zone you came from.
+
+`s` in the library works by playlist URI even when the tracks cannot be listed. Pulso waits for Soloist to accept playback and confirm the playlist context before sending a separate shuffle command. The first track is not guaranteed to be random, and another Spotify client can change the context between confirmation and shuffle. If confirmation does not arrive in time, Pulso does not send shuffle; the playlist may still start playing.
 
 Pulso does not change Autoplay. If it is enabled and Spotify continues playback after a playlist ends, Spotify chooses the tracks.
 
