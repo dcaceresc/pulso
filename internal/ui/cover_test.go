@@ -983,6 +983,37 @@ func TestCoverSixelForgetsAHiddenScreen(t *testing.T) {
 	}
 }
 
+// TestCoverSixelDropsAnEmissionThatNoLongerMatches fija que una emisión en vuelo
+// solo escribe si la pantalla sigue esperando esa imagen; si no, el cuadro la escribe.
+func TestCoverSixelDropsAnEmissionThatNoLongerMatches(t *testing.T) {
+	for name, drop := range map[string]func(*playerModel){
+		"help": func(m *playerModel) { m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}) },
+		"track": func(m *playerModel) {
+			m.covers.urls["spotify:track:otra"] = coverFixtureURL
+			coverState(t, m, coverTrackState("spotify:track:otra"))
+		},
+		"quit": func(m *playerModel) { m.quitApp() },
+	} {
+		m, terminal := coverSixelPlayer(t, 120, 40)
+		playerViewRows(t, m, 120, 40)
+		cmd := m.coverSixelEmit()
+		drop(m)
+		model, _ := m.Update(cmd())
+		if got := model.(*playerModel); terminal.Len() != 0 || got.sixel.emitted != "" {
+			t.Fatalf("%s: wrote %q and emitted %q", name, terminal.String(), got.sixel.emitted)
+		}
+		if m.quit {
+			continue
+		}
+		// La imagen descartada no queda suprimida: el cuadro siguiente la escribe.
+		m.help = false
+		playerViewRows(t, m, 120, 40)
+		if after := coverEmit(t, m); terminal.Len() == 0 || after.sixel.emitted == "" {
+			t.Fatalf("%s: the dropped image was never written", name)
+		}
+	}
+}
+
 // TestCoverBlocksViewIsTheFallback fija que sin Sixel la vista es la de siempre:
 // la detección en una prueba —sin terminal— elige el medio bloque, y el modo
 // forzado dibuja exactamente los mismos bytes a los dos tamaños.

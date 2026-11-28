@@ -367,6 +367,8 @@ type playerModel struct {
 	// sixel es la carátula gráfica: el modo decidido al arrancar con su tamaño de
 	// celda, o el medio bloque como respaldo.
 	sixel coverGraphics
+	// coverMu es el candado de lo que la emisión lee desde su propia goroutine.
+	coverMu sync.Mutex
 	// openBrowser presenta el enlace de aprobación; las pruebas lo reemplazan.
 	openBrowser func(string) error
 }
@@ -565,13 +567,13 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// tamaño vuelve a pedirlo y un reintento sin fin solo gastaría cuadros.
 		return m, m.coverSixelEmit()
 	case coverSixelMsg:
-		// Una emisión fallida deja esa imagen en el medio bloque: el terminal no
-		// puede mostrarla y la caja no se queda con una ranura vacía.
+		// Cancelada, la emisión no escribe ni marca la imagen; fallida, esa imagen
+		// vuelve al medio bloque.
 		if msg.err != nil {
 			m.sixel.failed = msg.key
-			break
+		} else if !msg.cancelled && m.ctx.Err() == nil && m.sixel.wanted == msg.key {
+			m.sixel.emitted = msg.key
 		}
-		m.sixel.emitted = msg.key
 		return m, nil
 	case playerProfileMsg:
 		if m.quit || msg.generation != m.profileGeneration || m.ctx.Err() != nil {

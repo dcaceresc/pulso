@@ -64,11 +64,12 @@ type coverCell struct{ width, height int }
 // de diez por cinco mide 100×100.
 var coverCellFallback = coverCell{width: 10, height: 20}
 
-// coverSixelMsg es el resultado de una emisión: la clave de la imagen escrita o
-// el fallo que la devuelve al medio bloque.
+// coverSixelMsg es el resultado de una emisión: la clave escrita, el fallo o la
+// cancelación de una emisión que ya no corresponde a la pantalla.
 type coverSixelMsg struct {
-	key string
-	err error
+	key       string
+	err       error
+	cancelled bool
 }
 
 // coverSixelReadyMsg es el tic que vuelve después del cuadro que dejó la ranura
@@ -104,6 +105,8 @@ type coverGraphics struct {
 	failed string
 	// pending es la imagen en blanco que espera su emisión, con su lugar.
 	pending *coverSixelPlan
+	// wanted es la clave que la pantalla espera; la emisión la compara al escribir.
+	wanted string
 }
 
 // coverRendererFor decide el modo una sola vez al arrancar. Un PULSO_COVER
@@ -269,9 +272,17 @@ func (m *playerModel) coverSixelEmit() tea.Cmd {
 		// Se codifica entero en memoria antes de tocar el terminal: una
 		// codificación a medias dejaría media imagen escrita.
 		data, err := coverSixelEncode(img)
-		if err == nil {
-			_, err = out.Write(coverSixelPlace(row, column, data))
+		if err != nil {
+			return coverSixelMsg{key: key, err: err}
 		}
+		// La pantalla pudo cambiar mientras se codificaba: con el candado tomado se
+		// comprueba justo antes de escribir, y comprobar y escribir son un paso solo.
+		m.coverMu.Lock()
+		defer m.coverMu.Unlock()
+		if m.ctx.Err() != nil || m.sixel.wanted != key {
+			return coverSixelMsg{key: key, cancelled: true}
+		}
+		_, err = out.Write(coverSixelPlace(row, column, data))
 		return coverSixelMsg{key: key, err: err}
 	}
 }
@@ -284,6 +295,9 @@ func (m *playerModel) coverSixelSoon() tea.Cmd {
 		return nil
 	}
 	art, ok := m.coverSixelArt()
+	m.coverMu.Lock()
+	m.sixel.wanted = art.key
+	m.coverMu.Unlock()
 	if !ok || art.key == m.sixel.emitted {
 		return nil
 	}
