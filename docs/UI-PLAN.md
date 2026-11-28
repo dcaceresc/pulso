@@ -11,7 +11,7 @@ The screen is two header rows, one rule, the zones, one rule and the player box.
 - **Zones:** each one is a box with its title on the top border and an accented border while it has the focus. The library box lists playlists with the owner when the name leaves room; the table box names what it shows — the open playlist and its total, the submitted query and its total, or `Playback` with the queue length — and carries the number, title, artist and duration columns; the queue box lists what comes next, each track with its artist below it, and ends with the `CONTEXT` block: the playlist that plays — or the open one when nothing is playing — and the shuffle and repeat modes.
 - **Player box:** the top border carries the status line; inside are the cover — or the initials block when there is no image — the title, the artist, the album, the time bar and a context line naming the playlist, which names the device too only when playback runs on another one. The session notice stays as one row under the box.
 
-A session sentence that does not fit inside its zone — a long authorization or confirmation notice — is promoted to the full width above the player box, wrapped rather than truncated, and the zone keeps only its state mark.
+In the bands that have zones — wide and medium — a session sentence that does not fit inside its zone — a long authorization or confirmation notice — is promoted to the full width above the player box, wrapped rather than truncated, and the zone keeps only its state mark. The compact and minimum bands have no boxes: there the notice is an ordinary full-width row, and one wider than the window is clipped.
 
 The mockups below are the app's own render at the size each heading names, not a drawing of an intended screen.
 
@@ -93,7 +93,7 @@ Rock Chileno · 42 tracks
 
 ### Minimum band — 40×12
 
-From 40 columns and 12 rows: the library switcher and the player box, and the table too when the height leaves rows for its header and one track; at 40×12 it does not, so only the context row is drawn.
+From 40 columns and 12 rows: the library switcher and the player box, and the table too when the height leaves rows for its header and one track; at 40×12 it does not, so only the switcher row is drawn.
 
 ```
 Pulso                            playing
@@ -122,15 +122,15 @@ The first band in the ladder that fits wins, so a height that misses its width's
 | --- | --- | --- | --- | --- | --- |
 | Wide | width ≥ 120 and height ≥ 30 | library + table + queue/context | 10 interior rows | yes | 140×40, 120×34 |
 | Medium | 100 ≤ width < 120 and height ≥ 26 | library + table; queue with `c` | 10 rows | yes | 100×30 |
-| Compact | 80 ≤ width < 100 and height ≥ 20 | switcher + table | 8 rows | yes | 80×24 |
-| Minimum | 40 ≤ width < 80 and height ≥ 12 | context and the player box, and the table when the height leaves rows for its header | 6 rows | no | 40×12, 79×23 |
+| Compact | 80 ≤ width < 100 and height ≥ 20 | library switcher + table | 8 rows | yes | 80×24 |
+| Minimum | 40 ≤ width < 80 and height ≥ 12 | library switcher and the player box, and the table when the height leaves rows for its header | 6 rows | no | 40×12, 79×23 |
 | Insufficient | width < 40 or height < 12 | size message, no frame | — | — | 39×11 |
 
 Rules that do not change with the band: the status line always lives on the player box's top border; the box never grows past its band height and, when the window is short, is cropped below it so the bottom border is never lost; the table cedes its rows first; no row overflows the width.
 
 ## Controls (one key, one action)
 
-`q` is the application exit: it only quits while no text field has the focus; `Ctrl+C` always quits. `Esc` never quits: it returns to the table or cancels what has the focus.
+`q` is the application exit: it only quits while no text field has the focus; `Ctrl+C` always quits. Inside the workspace `Esc` never quits: it returns to the table or cancels what has the focus, and the setup wizard is the one surface that still exits on `Esc`.
 
 | Scope | Key | Action |
 | --- | --- | --- |

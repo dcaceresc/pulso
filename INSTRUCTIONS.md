@@ -124,7 +124,7 @@ La pantalla es un único espacio de trabajo con tres zonas y el reproductor al p
 - **Cola:** en las ventanas anchas una tercera caja muestra lo que sigue y el contexto de la reproducción; `c` devuelve la cola a la tabla y le da el foco.
 - **Reproductor:** una caja al pie. Su borde superior lleva el estado —reproduciendo, en pausa, sin conexión—, el aleatorio, la repetición y el volumen; dentro van la carátula de la pista en reproducción —o un bloque con sus iniciales cuando no hay imagen—, el título, el artista, el álbum, el tiempo con su barra y la lista o el dispositivo remoto que informa Soloist.
 
-El foco se mueve solo con la letra de cada zona: `l` lleva a la biblioteca, `/` a la búsqueda y `c` a la cola. `Esc` nunca cierra Pulso: vuelve a la tabla o cancela lo enfocado. Tampoco hay ciclo de foco ni línea de pistas al pie: cada zona tiene su tecla y `?` abre la ayuda, la única referencia de teclas, que las enumera por ámbitos —global, zonas, biblioteca, tabla y búsqueda—.
+El foco se mueve solo con la letra de cada zona: `l` lleva a la biblioteca, `/` a la búsqueda y `c` a la cola. Dentro del espacio de trabajo `Esc` nunca cierra Pulso: vuelve a la tabla o cancela lo enfocado; el asistente, en cambio, sí sale con `Esc`. Tampoco hay ciclo de foco ni línea de pistas al pie: cada zona tiene su tecla y `?` abre la ayuda, la única referencia de teclas, que las enumera por ámbitos —global, zonas, biblioteca, tabla y búsqueda—.
 
 El tamaño de la ventana decide la forma de la pantalla; si el alto no alcanza para la banda de su ancho, Pulso usa la forma más rica que sí quepa, nunca la más pobre.
 
@@ -136,7 +136,7 @@ El tamaño de la ventana decide la forma de la pantalla; si el alto no alcanza p
 | 40 ≤ ancho < 80 y alto ≥ 12 | la fila de la biblioteca y el reproductor, y la tabla cuando el alto deja filas para su encabezado | 6 filas | no |
 | ancho < 40 o alto < 12 | un mensaje con el tamaño mínimo, sin marco | — | — |
 
-La tabla es la que cede filas: el reproductor conserva su borde inferior y ninguna fila desborda el ancho. Cuando una frase de estado no cabe en su zona —un aviso de autorización largo, por ejemplo— se dibuja entera a todo el ancho sobre la caja del reproductor en lugar de recortarse.
+La tabla es la que cede filas y ninguna fila desborda el ancho. En la banda mínima la caja del reproductor declara seis filas interiores y una ventana baja las recorta —a 40×12 dibuja tres— para que su borde inferior no se pierda. Solo las bandas con zonas, la amplia y la media, promueven a todo el ancho una frase de estado que no cabe en su caja —un aviso de autorización largo, por ejemplo—; en la compacta y la mínima el aviso es una fila normal y, si es más ancho que la ventana, se recorta.
 
 `a` abre el selector de lista para guardar la canción que suena: `↑` `↓` o `j` `k` eligen la lista, el título del panel nombra la lista apuntada, `Enter` guarda y `Esc` cancela. El aviso de éxito aparece solo cuando Spotify confirmó la lista, y un fallo se muestra como una línea que no interrumpe la reproducción.
 
@@ -148,7 +148,7 @@ Al cerrar Pulso, la reproducción se pausa. Soloist sigue en segundo plano con s
 
 ## Atajos
 
-Cada tecla hace una sola cosa y `?` abre la ayuda con esta misma lista por ámbitos.
+Cada tecla hace una sola cosa. `?` abre la ayuda, la referencia completa por ámbitos: repite esta tabla y añade las teclas del campo de búsqueda y `s` como aleatorio global de la reproducción.
 
 | Ámbito | Tecla | Acción |
 | --- | --- | --- |

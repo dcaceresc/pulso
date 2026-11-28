@@ -124,7 +124,7 @@ The screen is one workspace with three zones and the player at the bottom:
 - **Queue:** in wide windows a third box shows what comes next and the playback context; `c` brings the queue back into the table and gives it the focus.
 - **Player:** a box at the bottom. Its top border carries the state — playing, paused, disconnected —, shuffle, repeat and volume; inside are the cover of the playing track — or a block with its initials when there is no image —, the title, the artist, the album, the time with its bar and the playlist or remote device Soloist reports.
 
-Focus moves only with the zone keys: `l` goes to the library, `/` to search and `c` to the queue. `Esc` never quits Pulso: it returns to the table or cancels what has the focus. There is no focus cycle and no key hint line at the bottom either: every zone has its letter, and `?` opens help, the only key reference, which lists them by scope — global, zones, library, table and search.
+Focus moves only with the zone keys: `l` goes to the library, `/` to search and `c` to the queue. Inside the workspace `Esc` never quits Pulso: it returns to the table or cancels what has the focus; the wizard, in turn, does quit on `Esc`. There is no focus cycle and no key hint line at the bottom either: every zone has its letter, and `?` opens help, the only key reference, which lists them by scope — global, zones, library, table and search.
 
 The window size decides the shape of the screen; when the height misses its width's band, Pulso uses the richest shape that does fit, never the poorest.
 
@@ -136,7 +136,7 @@ The window size decides the shape of the screen; when the height misses its widt
 | 40 ≤ width < 80 and height ≥ 12 | the library row and the player, and the table when the height leaves rows for its header | 6 rows | no |
 | width < 40 or height < 12 | one message with the minimum size, no frame | — | — |
 
-The table is the zone that gives up rows: the player keeps its bottom border and no row overflows the width. When a session sentence does not fit inside its zone — a long authorization notice, for example — it is drawn whole across the full width above the player box instead of being truncated.
+The table is the zone that gives up rows and no row overflows the width. In the minimum band the player box declares six interior rows and a low window crops them — at 40×12 it draws three — so its bottom border is never lost. Only the bands with zones, wide and medium, promote a session sentence that does not fit inside its box — a long authorization notice, for example — to the full width; in the compact and minimum bands the notice is an ordinary row and, when it is wider than the window, it is clipped.
 
 `a` opens the playlist chooser for the playing track: `↑` `↓` or `j` `k` choose the playlist, the panel title names the targeted playlist, `Enter` saves and `Esc` cancels. The success notice appears only once Spotify confirmed the playlist, and a failure shows as one row that does not interrupt playback.
 
@@ -148,7 +148,7 @@ Quitting Pulso pauses playback. Soloist stays in the background with its pairing
 
 ## Shortcuts
 
-Every key does one thing, and `?` opens help with this same list by scope.
+Every key does one thing. `?` opens help, the complete reference by scope: it repeats this table and adds the search field's own keys and `s` as a global shuffle key for the current playback.
 
 | Scope | Key | Action |
 | --- | --- | --- |
