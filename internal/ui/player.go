@@ -364,6 +364,9 @@ type playerModel struct {
 	// consulta de respaldo y la imagen decodificada: la caja dibuja la carátula
 	// cuando llega y, mientras tanto, sus iniciales.
 	covers *coverArt
+	// sixel es la carátula gráfica: el modo decidido al arrancar con su tamaño de
+	// celda, o el medio bloque como respaldo.
+	sixel coverGraphics
 	// openBrowser presenta el enlace de aprobación; las pruebas lo reemplazan.
 	openBrowser func(string) error
 }
@@ -401,6 +404,7 @@ func NewPlayerModelWithCatalog(ctx context.Context, states <-chan soloist.State,
 	m.saveTo.writer = playlistWriterOf(api)
 	m.discover = discoverState{source: recommendationSourceOf(api), pick: rand.IntN}
 	m.covers = newCoverArt(coverSourceOf(api))
+	m.sixel = newCoverSixel()
 	m.openBrowser = spotify.OpenBrowser
 	return m
 }
@@ -507,9 +511,12 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		// Una ventana nueva mueve la caja: la colocación anotada para la anterior
+		// ya no sirve, así que la vista que sigue es la que la vuelve a anotar.
+		m.sixel.painted, m.sixel.pending = "", nil
 		// Una ventana que crece hasta la ranura de la carátula pide lo que antes
 		// no cabía; mientras no quepa, la petición no se hace.
-		return m, m.coverRequest()
+		return m, m.coverCommands()
 	case libraryAuthMsg, libraryPageMsg:
 		auth, isAuth := msg.(libraryAuthMsg)
 		// Una autorización solo instala el catálogo si la generación sigue viva.
@@ -531,9 +538,9 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.covers.installSource(coverSourceOf(auth.api))
 			// Y las recomendaciones que la tecla `d` pide.
 			m.installDiscoverSource(auth.api)
-			return m, playerCommands(cmd, m.installProfile(auth.api), m.coverRequest())
+			return m, playerCommands(cmd, m.installProfile(auth.api), m.coverCommands())
 		}
-		return m, playerCommands(cmd, m.coverRequest())
+		return m, playerCommands(cmd, m.coverCommands())
 	case saveResultMsg, saveAuthMsg:
 		return m, m.updateSave(msg)
 	case discoverResultMsg:
@@ -547,10 +554,24 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && msg.url != "" {
 			m.covers.urls[msg.uri] = msg.url
 		}
-		return m, m.coverRequest()
+		return m, m.coverCommands()
 	case coverBytesMsg:
 		// Una descarga fallida deja las iniciales: no hay aviso ni fila de error.
 		m.covers.land(msg)
+		return m, m.coverSixelSoon()
+	case coverSixelReadyMsg:
+		// El cuadro que dejó la ranura en blanco ya salió: se escribe la imagen.
+		// No se reprograma nada: un tic por imagen, porque un cambio de pista o de
+		// tamaño vuelve a pedirlo y un reintento sin fin solo gastaría cuadros.
+		return m, m.coverSixelEmit()
+	case coverSixelMsg:
+		// Una emisión fallida deja esa imagen en el medio bloque: el terminal no
+		// puede mostrarla y la caja no se queda con una ranura vacía.
+		if msg.err != nil {
+			m.sixel.failed = msg.key
+			break
+		}
+		m.sixel.emitted = msg.key
 		return m, nil
 	case playerProfileMsg:
 		if m.quit || msg.generation != m.profileGeneration || m.ctx.Err() != nil {
@@ -567,7 +588,7 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.search.update(msg)
 		// Los resultados de la búsqueda también anuncian carátulas.
 		m.covers.remember(m.search.tracks)
-		return m, playerCommands(cmd, m.coverRequest())
+		return m, playerCommands(cmd, m.coverCommands())
 	case playerViewState:
 		if m.quit || !m.pending {
 			break
@@ -598,14 +619,14 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reconcileModes()
 		m.clampSelections()
 		// A playing session needs a second of wall time to advance its playhead.
-		return m, playerCommands(m.awaitState(), m.armTick(), m.coverRequest())
+		return m, playerCommands(m.awaitState(), m.armTick(), m.coverCommands())
 	case playerTickMsg:
 		return m, m.tick()
 	case tea.KeyMsg:
 		// La ayuda se queda con toda tecla, salvo las de salir: `?` y `Esc` la
 		// cierran y las globales de salida siguen funcionando.
 		if m.help {
-			return m, m.handleHelpKey(msg)
+			return m, playerCommands(m.handleHelpKey(msg), m.coverSixelSoon())
 		}
 		if msg.Type == tea.KeyF2 {
 			m.changePreferences(true)
@@ -615,7 +636,9 @@ func (m *playerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.changePreferences(false)
 			return m, nil
 		}
-		return m, m.handleKey(msg)
+		// Cerrar la ayuda devuelve la caja a la pantalla: la carátula gráfica que
+		// se olvidó vuelve a pedir su turno con la primera tecla.
+		return m, playerCommands(m.handleKey(msg), m.coverSixelSoon())
 	}
 	return m, nil
 }
@@ -1918,12 +1941,14 @@ func (m *playerModel) View() string {
 		return ""
 	}
 	if m.help {
+		m.sixel.forget()
 		return m.helpView()
 	}
 	styles := m.styles()
 	width, height := m.width, m.height
 	band := playerBand(width, height)
 	if band == playerBandInsufficient {
+		m.sixel.forget()
 		return m.playerSizeMessage(width)
 	}
 	rule := styles.muted.Render(strings.Repeat("─", width))
@@ -1997,6 +2022,7 @@ func (m *playerModel) View() string {
 		rows = append(rows, playerRenderRow(row, width))
 	}
 	// La caja ya viene dibujada y ajustada a la ventana.
+	boxTop := len(rows)
 	rows = append(rows, play...)
 	if rules >= 2 && len(status) > 0 {
 		rows = append(rows, rule)
@@ -2007,6 +2033,12 @@ func (m *playerModel) View() string {
 	if len(rows) > height {
 		rows = rows[:height]
 	}
+	// La carátula gráfica se coloca en la ranura que esta misma vista dejó en
+	// blanco; una caja que no llegó a la ventana no tiene dónde escribirla.
+	if boxTop >= len(rows) {
+		boxTop = -1
+	}
+	m.coverSixelPaint(boxTop)
 	return strings.Join(rows, "\n")
 }
 
@@ -2238,6 +2270,12 @@ func (m *playerModel) playerBoxState(width int) string {
 // iniciales. El segundo valor dice si las filas ya traen su color, porque la
 // carátula usa 24 bits por celda.
 func (m *playerModel) playerBoxArtLines(slot artSlot) ([]string, bool) {
+	// Con Sixel la ranura se deja en blanco y la imagen real se escribe encima,
+	// en su lugar y en píxeles; un terminal sin el protocolo, o una emisión que
+	// falló, siguen recibiendo el medio bloque.
+	if art, ok := m.coverSixelArt(); ok && m.sixel.hidden(art.key) {
+		return coverSixelBlank(slot), false
+	}
 	if rows, ok := m.covers.rows(playerText(m.state.Track.URI), slot); ok {
 		return rows, true
 	}

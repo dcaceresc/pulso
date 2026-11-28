@@ -142,6 +142,8 @@ The table is the zone that gives up rows and no row overflows the width. The cov
 
 `x` asks to remove the highlighted track from the open playlist: the confirmation names the track and the playlist, `Enter` removes it and `Esc` cancels. When Spotify accepts, the notice names the track and the playlist, and the playlist is read again so the row disappears. Playback and the queue are never touched.
 
+When the terminal speaks the Sixel graphics protocol — foot and Windows Terminal do — the cover is drawn with the real image, scaled to the slot in pixels rather than to the number of cells, which is what removes the pixelation; without that protocol, or while the image has not arrived, the box draws the usual half blocks. Detection happens once at start and is a heuristic, so `PULSO_COVER=sixel` forces it and `PULSO_COVER=blocks` turns it off — and skips the startup query in a terminal that never answers.
+
 With the search field focused you can type `q`, `s`, `r`, `+` and `-` without triggering shortcuts; `Enter` searches and `Esc` leaves the field. `q` and `Ctrl+C` quit Pulso: `q` quits while no text field has the focus and `Ctrl+C` always quits.
 
 Quitting Pulso pauses playback. Soloist stays in the background with its pairing so the next launch is instant; stop that process from the system if you want it gone.
@@ -253,6 +255,7 @@ Tests use local fixtures and fake transports: no real Spotify requests and no cr
 - Search returns ten results per page and requires paging.
 - The progress bar interpolates between Soloist reports; it can drift by under a second.
 - The first pairing requires the official Spotify app once.
+- The cover uses the Sixel protocol or the half block: Kitty's and iTerm2's protocols are not used, and a terminal that does not declare Sixel at startup stays on half blocks unless `PULSO_COVER` says otherwise.
 
 ## Repository layout
 

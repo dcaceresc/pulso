@@ -142,6 +142,8 @@ La tabla es la que cede filas y ninguna fila desborda el ancho. La carátula se 
 
 `x` pide quitar de la lista abierta la canción marcada: la confirmación nombra la canción y la lista, `Enter` la quita y `Esc` cancela. Cuando Spotify acepta, el aviso nombra la canción y la lista, y la lista se vuelve a leer para que la fila desaparezca. La reproducción y la cola no se tocan.
 
+Cuando el terminal habla el protocolo gráfico Sixel —foot y Windows Terminal lo hacen—, la carátula se dibuja con la imagen real, escalada al tamaño de la ranura en píxeles y no al número de celdas, que es lo que quita el pixelado; sin ese protocolo, o mientras la imagen no llega, la caja dibuja el medio bloque de siempre. La detección se hace una sola vez al arrancar y es una heurística, así que `PULSO_COVER=sixel` la fuerza y `PULSO_COVER=blocks` la apaga —y de paso evita la consulta de arranque en un terminal que no contesta—.
+
 Con la búsqueda enfocada puedes escribir `q`, `s`, `r`, `+` y `-` sin que se disparen atajos; `Enter` busca y `Esc` sale del campo. `q` y `Ctrl+C` cierran Pulso: `q` sale cuando ningún campo de texto tiene el foco y `Ctrl+C` sale siempre.
 
 Al cerrar Pulso, la reproducción se pausa. Soloist sigue en segundo plano con su emparejamiento para que el siguiente arranque sea inmediato; si quieres detener el proceso, termínalo desde el sistema.
@@ -253,6 +255,7 @@ Las pruebas usan servidores y transportes locales simulados: no hacen peticiones
 - La búsqueda devuelve diez resultados por página y exige paginar.
 - La barra de progreso se interpola entre los informes de Soloist; puede desviarse menos de un segundo.
 - El emparejamiento inicial requiere la aplicación oficial de Spotify una vez.
+- La carátula usa el protocolo Sixel o el medio bloque: los protocolos de Kitty y de iTerm2 no se usan, y un terminal que no declara Sixel al arrancar se queda en el medio bloque, salvo que `PULSO_COVER` diga otra cosa.
 
 ## Estructura del repositorio
 

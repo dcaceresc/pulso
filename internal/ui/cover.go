@@ -92,9 +92,11 @@ type coverBytesMsg struct {
 // coverPicture es una carátula lista para cualquiera de las ranuras de la caja,
 // o el recuerdo de que su URL no dio ninguna. Cada ranura guarda sus filas ya
 // dibujadas, reducidas desde la misma imagen: cambiar de banda elige otra ranura
-// y no vuelve a descargar ni a decodificar.
+// y no vuelve a descargar ni a decodificar. src es la imagen decodificada, que
+// la carátula gráfica escala a la ranura en píxeles.
 type coverPicture struct {
 	rows map[artSlot][]string
+	src  image.Image
 	ok   bool
 }
 
@@ -110,6 +112,10 @@ type coverArt struct {
 	urls   map[string]string
 	asked  map[string]bool
 	images map[string]coverPicture
+	// graphics guarda la imagen escalada al tamaño en píxeles de la ranura: la
+	// vista la pide en cada repintado y volver a escalarla costaría más que
+	// dibujar el medio bloque.
+	graphics map[string]image.Image
 	// loading marca las URL cuyos bytes van en camino: la misma imagen no se
 	// descarga dos veces mientras la primera sigue pendiente.
 	loading map[string]bool
@@ -119,7 +125,8 @@ func newCoverArt(source coverSource) *coverArt {
 	return &coverArt{
 		source: source, fetch: coverDownload,
 		urls: map[string]string{}, asked: map[string]bool{},
-		images: map[string]coverPicture{}, loading: map[string]bool{},
+		images: map[string]coverPicture{}, graphics: map[string]image.Image{},
+		loading: map[string]bool{},
 	}
 }
 
@@ -233,6 +240,35 @@ func (c *coverArt) rows(uri string, slot artSlot) ([]string, bool) {
 	return rows, drawn
 }
 
+// artwork devuelve la carátula de una pista escalada al tamaño en píxeles de la
+// ranura, que es lo que la carátula gráfica escribe en el terminal: columnas por
+// ancho de celda y filas por alto de celda, no el número de celdas. La reducción
+// se guarda por URL y tamaño, así un repintado no la repite.
+func (c *coverArt) artwork(uri string, slot artSlot, cell coverCell) (string, image.Image, bool) {
+	if c == nil || uri == "" || !slot.ok() {
+		return "", nil, false
+	}
+	link, known := c.urls[uri]
+	if !known {
+		return "", nil, false
+	}
+	picture, done := c.images[link]
+	if !done || !picture.ok || picture.src == nil {
+		return "", nil, false
+	}
+	width, height := slot.columns*cell.width, slot.rows*cell.height
+	if width <= 0 || height <= 0 {
+		return "", nil, false
+	}
+	key := fmt.Sprintf("%s|%dx%d", link, width, height)
+	if scaled, cached := c.graphics[key]; cached {
+		return link, scaled, scaled != nil
+	}
+	scaled := coverScale(picture.src, width, height)
+	c.graphics[key] = scaled
+	return link, scaled, true
+}
+
 // coverPictureFrom decodifica los bytes de una carátula y la reduce una vez a
 // cada ranura de la caja: el color de cada celda sale del promedio de sus bloques
 // de origen, así la ranura pequeña no hereda el recorte de la grande.
@@ -241,7 +277,7 @@ func coverPictureFrom(data []byte) (coverPicture, error) {
 	if err != nil {
 		return coverPicture{}, err
 	}
-	picture := coverPicture{rows: make(map[artSlot][]string, len(playerArtSlots)), ok: true}
+	picture := coverPicture{rows: make(map[artSlot][]string, len(playerArtSlots)), src: img, ok: true}
 	for _, slot := range playerArtSlots {
 		pixels := coverShrink(img, slot.pixelWidth(), slot.pixelHeight())
 		picture.rows[slot] = coverDraw(pixels, slot.columns, slot.pixelHeight())
@@ -273,6 +309,23 @@ func coverDecode(data []byte) (image.Image, error) {
 
 // coverPixel es un píxel de la ranura con ocho bits por canal.
 type coverPixel struct{ r, g, b uint8 }
+
+// coverScale arma la imagen que la carátula gráfica escribe en el terminal, con
+// el promedio de cada bloque de origen como color de cada píxel: el mismo
+// criterio que la ranura del medio bloque, a la medida en píxeles de la celda.
+func coverScale(img image.Image, width, height int) image.Image {
+	pixels := coverShrink(img, width, height)
+	scaled := image.NewNRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			pixel := pixels[y*width+x]
+			at := scaled.PixOffset(x, y)
+			scaled.Pix[at], scaled.Pix[at+1], scaled.Pix[at+2] = pixel.r, pixel.g, pixel.b
+			scaled.Pix[at+3] = 0xFF
+		}
+	}
+	return scaled
+}
 
 // coverShrink reduce la imagen al tamaño de la ranura promediando cada bloque
 // de origen, para que una carátula de 640 px conserve su color medio en las dos

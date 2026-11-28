@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -623,6 +624,388 @@ func TestCoverAnsiRowsAreStripped(t *testing.T) {
 	for _, row := range rows {
 		if stripped := ansi.Strip(row); stripped != strings.Repeat(coverUpperHalf, playerArtWide.columns) {
 			t.Fatalf("cover row = %q, want %d half blocks", stripped, playerArtWide.columns)
+		}
+	}
+}
+
+// coverSixelPlayer construye el espacio de trabajo con la carátula ya
+// decodificada y el modo gráfico inyectado: el terminal es un búfer y la celda
+// la decide la prueba, así que nada toca un terminal real.
+func coverSixelPlayer(t *testing.T, width, height int) (*playerModel, *bytes.Buffer) {
+	t.Helper()
+	fetch := &coverFetchFake{serve: func(context.Context, string) ([]byte, error) {
+		return coverImagePNG(t, 40, 40, color.RGBA{R: 0x10, G: 0x80, B: 0x30, A: 0xFF}), nil
+	}}
+	m := coverPlayer(t, width, height, nil, fetch)
+	terminal := &bytes.Buffer{}
+	m.sixel = coverGraphics{renderer: coverSixel, cell: coverCell{width: 10, height: 20}, out: terminal}
+	m.covers.urls[coverFixtureURI] = coverFixtureURL
+	m = coverState(t, m, coverTrackState(coverFixtureURI))
+	m = coverSettle(t, m, m.coverRequest())
+	return m, terminal
+}
+
+// coverFailWriter es el terminal que rechaza la imagen: una emisión que falla
+// devuelve la ranura al medio bloque.
+type coverFailWriter struct{}
+
+func (coverFailWriter) Write([]byte) (int, error) {
+	return 0, errors.New("fixture terminal refused the image")
+}
+
+// coverEmit ejecuta la emisión programada y entrega su respuesta al modelo, como
+// haría Bubble Tea con el comando.
+func coverEmit(t *testing.T, m *playerModel) *playerModel {
+	t.Helper()
+	cmd := m.coverSixelEmit()
+	if cmd == nil {
+		t.Fatal("the cover was not emitted")
+	}
+	model, _ := m.Update(cmd())
+	player, ok := model.(*playerModel)
+	if !ok {
+		t.Fatalf("unexpected model %T", model)
+	}
+	return player
+}
+
+// coverPlacement es la fila y la columna donde la vista deja la ranura: el borde
+// superior de la caja y, dos filas más abajo, la primera fila de la imagen.
+func coverPlacement(t *testing.T, rows []string) (int, int) {
+	t.Helper()
+	for index, row := range rows {
+		if strings.HasPrefix(row, "├") {
+			return index + coverSixelRowOffset, coverSixelColumn
+		}
+	}
+	t.Fatalf("the view has no player box:\n%s", strings.Join(rows, "\n"))
+	return 0, 0
+}
+
+// TestCoverRendererChoosesOnceWithOverride fija la regla de detección y la
+// salida de emergencia: PULSO_COVER impone el modo sin preguntar nada, la
+// detección exige un terminal y, si el terminal no declara Sixel, la carátula se
+// queda en el medio bloque.
+func TestCoverRendererChoosesOnceWithOverride(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		override  string
+		terminal  bool
+		supported bool
+		want      coverRenderer
+	}{
+		{"the environment forces sixel over a terminal that denies it", "sixel", false, false, coverSixel},
+		{"the environment forces blocks over a terminal that declares it", "blocks", true, true, coverBlocks},
+		{"the override ignores case and surrounding spaces", " SIXEL ", false, false, coverSixel},
+		{"detection picks sixel when the terminal declares it", "", true, true, coverSixel},
+		{"detection keeps blocks when the terminal denies it", "", true, false, coverBlocks},
+		{"an output that is not a terminal never hears about sixel", "", false, true, coverBlocks},
+		{"an unknown value leaves detection in charge", "kitty", true, true, coverSixel},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			terminal := func() bool { return tt.terminal }
+			supported := func() bool { return tt.supported }
+			if got := coverRendererFor(tt.override, terminal, supported); got != tt.want {
+				t.Fatalf("coverRendererFor(%q, terminal=%v, sixel=%v) = %v, want %v",
+					tt.override, tt.terminal, tt.supported, got, tt.want)
+			}
+		})
+	}
+
+	// Un modo impuesto no pregunta nada al terminal.
+	for _, override := range []string{"sixel", "blocks"} {
+		asked := false
+		coverRendererFor(override, func() bool { asked = true; return true }, func() bool { asked = true; return true })
+		if asked {
+			t.Fatalf("the override %q still queried the terminal", override)
+		}
+	}
+}
+
+// TestCoverCellSizeUsesTheMeasurementOrTheFallback fija el tamaño de celda: la
+// medida del terminal cuando llega y, cuando no contesta o contesta algo que no
+// sirve, la celda de respaldo documentada.
+func TestCoverCellSizeUsesTheMeasurementOrTheFallback(t *testing.T) {
+	if want := (coverCell{width: 10, height: 20}); coverCellFallback != want {
+		t.Fatalf("the documented fallback cell is %+v, want %+v", coverCellFallback, want)
+	}
+	for _, tt := range []struct {
+		name    string
+		measure func() (int, int, error)
+		want    coverCell
+	}{
+		{"the terminal reports its cell", func() (int, int, error) { return 12, 24, nil }, coverCell{width: 12, height: 24}},
+		{"no answer falls back to the documented cell", func() (int, int, error) { return 0, 0, errors.New("no terminal") }, coverCellFallback},
+		{"a report without pixels falls back", func() (int, int, error) { return 0, 20, nil }, coverCellFallback},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := coverCellSize(tt.measure); got != tt.want {
+				t.Fatalf("coverCellSize = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCoverSixelScalesToTheSlotInPixels fija la medida de la imagen: la ranura
+// en píxeles, columnas por ancho de celda y filas por alto de celda. Con una
+// celda de diez por veinte píxeles, la ranura de 20×10 celdas de 120×34 pide
+// 200×200 píxeles y la de 10×5 de 80×24 pide 100×100, y lo codificado declara
+// ese tamaño y no el número de celdas.
+func TestCoverSixelScalesToTheSlotInPixels(t *testing.T) {
+	for _, tt := range []struct {
+		width, height int
+		pixels        int
+	}{
+		{120, 34, 200},
+		{80, 24, 100},
+	} {
+		m, _ := coverSixelPlayer(t, tt.width, tt.height)
+		art, ok := m.coverSixelArt()
+		if !ok {
+			t.Fatalf("%dx%d has no graphic cover", tt.width, tt.height)
+		}
+		if bounds := art.image.Bounds(); bounds.Dx() != tt.pixels || bounds.Dy() != tt.pixels {
+			t.Fatalf("%dx%d scales the cover to %dx%d pixels, want %dx%d",
+				tt.width, tt.height, bounds.Dx(), bounds.Dy(), tt.pixels, tt.pixels)
+		}
+		data, err := coverSixelEncode(art.image)
+		if err != nil {
+			t.Fatalf("%dx%d encode: %v", tt.width, tt.height, err)
+		}
+		if !bytes.HasPrefix(data, []byte("\x1bP")) || !bytes.HasSuffix(data, []byte("\x1b\\")) {
+			t.Fatalf("%dx%d does not emit a sixel block", tt.width, tt.height)
+		}
+		if raster := fmt.Sprintf(`"1;1;%d;%d`, tt.pixels, tt.pixels); !bytes.Contains(data, []byte(raster)) {
+			t.Fatalf("%dx%d does not declare the raster %q", tt.width, tt.height, raster)
+		}
+	}
+}
+
+// TestCoverSixelLeavesTheSlotBlank fija la vista del modo gráfico: la ranura se
+// queda en blanco —ni medios bloques ni iniciales— y todo lo demás es la misma
+// caja, con cada fila del ancho exacto de la ventana.
+func TestCoverSixelLeavesTheSlotBlank(t *testing.T) {
+	blocks, _ := coverSixelPlayer(t, 120, 40)
+	blocks.sixel.renderer = coverBlocks
+	graphic, _ := coverSixelPlayer(t, 120, 40)
+
+	want := playerViewRows(t, blocks, 120, 40)
+	got := playerViewRows(t, graphic, 120, 40)
+	slot := playerArtSlot(120, 40)
+	drawn := 0
+	for index := 0; index < len(want); index++ {
+		if lipgloss.Width(got[index]) != 120 {
+			t.Fatalf("row %d measures %d cells, want 120: %q", index, lipgloss.Width(got[index]), got[index])
+		}
+		if strings.Contains(got[index], coverUpperHalf) {
+			t.Fatalf("the graphic cover still draws half blocks on row %d: %q", index, got[index])
+		}
+		if !strings.Contains(want[index], coverUpperHalf) {
+			if got[index] != want[index] {
+				t.Fatalf("row %d changed outside the slot:\nblocks:  %q\nsixel:   %q", index, want[index], got[index])
+			}
+			continue
+		}
+		drawn++
+		if expected := coverBlankSlotRow(want[index], slot); got[index] != expected {
+			t.Fatalf("row %d is not the blank slot:\nwant: %q\ngot:  %q", index, expected, got[index])
+		}
+	}
+	if drawn != slot.rows {
+		t.Fatalf("the blocks view draws the cover in %d rows, want %d", drawn, slot.rows)
+	}
+	if strings.Contains(strings.Join(got, "\n"), coverInitialsTop(slot)) {
+		t.Fatalf("the initials block survived the graphic cover:\n%s", strings.Join(got, "\n"))
+	}
+	if art, ok := graphic.coverSixelArt(); !ok || graphic.sixel.painted != art.key {
+		t.Fatal("the view did not reserve the slot for the graphic cover")
+	}
+}
+
+// coverBlankSlotRow sustituye por espacios las celdas de la ranura en una fila
+// ya sin color: la misma fila que la vista deja en blanco.
+func coverBlankSlotRow(row string, slot artSlot) string {
+	runes := []rune(row)
+	for index := coverSixelColumn - 1; index < coverSixelColumn-1+slot.columns; index++ {
+		if index < len(runes) {
+			runes[index] = ' '
+		}
+	}
+	return string(runes)
+}
+
+// TestCoverSixelWritesAfterTheBlankFrame fija el orden: la vista deja la ranura
+// en blanco, el tic vuelve después de ese cuadro y solo entonces se escribe la
+// imagen, de modo que el repintado que la reservó no puede borrarla.
+func TestCoverSixelWritesAfterTheBlankFrame(t *testing.T) {
+	m, terminal := coverSixelPlayer(t, 120, 40)
+	// La imagen ya está decodificada y la vista todavía no reservó su lugar.
+	if cmd := m.coverSixelSoon(); cmd == nil {
+		t.Fatal("the ready cover scheduled no write")
+	}
+	if cmd := m.coverSixelEmit(); cmd != nil {
+		t.Fatal("the cover was written before the view reserved its slot")
+	}
+	playerViewRows(t, m, 120, 40)
+
+	model, cmd := m.Update(coverSixelReadyMsg{})
+	ready, ok := model.(*playerModel)
+	if !ok {
+		t.Fatalf("unexpected model %T", model)
+	}
+	ready = coverSettle(t, ready, cmd)
+	if terminal.Len() == 0 {
+		t.Fatal("the tic wrote no image after the blank frame")
+	}
+	if ready.sixel.emitted == "" {
+		t.Fatal("the written image was not remembered")
+	}
+	if cmd := ready.coverSixelSoon(); cmd != nil {
+		t.Fatal("the written image scheduled another write")
+	}
+}
+
+// TestCoverSixelEmitsOncePerChange fija cuándo se escribe la imagen: una vez por
+// pista, por tamaño de ventana y por tamaño de la imagen, y nunca en un
+// repintado, porque sus filas no cambian y Bubble Tea no las vuelve a escribir.
+func TestCoverSixelEmitsOncePerChange(t *testing.T) {
+	m, terminal := coverSixelPlayer(t, 120, 40)
+	rows := playerViewRows(t, m, 120, 40)
+	if terminal.Len() != 0 {
+		t.Fatalf("the first paint wrote to the terminal: %q", terminal.String())
+	}
+	row, column := coverPlacement(t, rows)
+	if cmd := m.coverSixelSoon(); cmd == nil {
+		t.Fatal("the blank slot scheduled no write")
+	}
+	m = coverEmit(t, m)
+	if !bytes.HasPrefix(terminal.Bytes(), []byte(fmt.Sprintf("\x1b[%d;%dH", row, column))) {
+		t.Fatalf("the image is not placed at its slot (%d;%d): %q", row, column, terminal.String())
+	}
+	if !bytes.Contains(terminal.Bytes(), []byte("\x1bP")) {
+		t.Fatalf("the emission carries no sixel block: %q", terminal.String())
+	}
+	written := terminal.Len()
+
+	// Un repintado y un estado nuevo de la misma pista no la escriben otra vez.
+	for i := 0; i < 3; i++ {
+		playerViewRows(t, m, 120, 40)
+		m = coverState(t, m, coverTrackState(coverFixtureURI))
+		if cmd := m.coverSixelEmit(); cmd != nil {
+			t.Fatalf("the repaint %d wrote the image again", i)
+		}
+	}
+	if terminal.Len() != written {
+		t.Fatalf("the repaints wrote %d bytes more", terminal.Len()-written)
+	}
+
+	// Otro tamaño de ventana la escribe otra vez, en la ranura nueva.
+	rows = playerViewRows(t, m, 80, 24)
+	row, column = coverPlacement(t, rows)
+	m = coverEmit(t, m)
+	second := terminal.Bytes()[written:]
+	if !bytes.HasPrefix(second, []byte(fmt.Sprintf("\x1b[%d;%dH", row, column))) {
+		t.Fatalf("the resized image is not placed at its slot (%d;%d): %q", row, column, second)
+	}
+	if !bytes.Contains(second, []byte(`"1;1;100;100`)) {
+		t.Fatalf("the compact slot is not 100x100 pixels: %q", second)
+	}
+
+	// Otra pista la escribe otra vez.
+	written = terminal.Len()
+	m.covers.urls["spotify:track:otra"] = coverFixtureURL
+	m = coverState(t, m, coverTrackState("spotify:track:otra"))
+	playerViewRows(t, m, 80, 24)
+	m = coverEmit(t, m)
+	if terminal.Len() == written {
+		t.Fatal("the new track did not write its cover")
+	}
+}
+
+// TestCoverSixelFailureFallsBackToBlocks fija el respaldo: una emisión que falla
+// deja esa imagen en el medio bloque, sin ranura vacía y sin reintentos.
+func TestCoverSixelFailureFallsBackToBlocks(t *testing.T) {
+	m, _ := coverSixelPlayer(t, 120, 40)
+	m.sixel.out = coverFailWriter{}
+	playerViewRows(t, m, 120, 40)
+	cmd := m.coverSixelEmit()
+	if cmd == nil {
+		t.Fatal("the cover was not emitted")
+	}
+	model, _ := m.Update(cmd())
+	player, ok := model.(*playerModel)
+	if !ok {
+		t.Fatalf("unexpected model %T", model)
+	}
+	view := strings.Join(playerViewRows(t, player, 120, 40), "\n")
+	if !strings.Contains(view, coverUpperHalf) {
+		t.Fatalf("a failed emission left the slot blank:\n%s", view)
+	}
+	if player.sixel.emitted != "" {
+		t.Fatalf("a failed emission was remembered as written: %q", player.sixel.emitted)
+	}
+	if cmd := player.coverSixelEmit(); cmd != nil {
+		t.Fatal("a failed emission was retried")
+	}
+}
+
+// TestCoverSixelForgetsAHiddenScreen fija que una pantalla que tapa la caja —la
+// ayuda, el mensaje de tamaño mínimo— olvida la imagen escrita: al volver, la
+// ranura se reserva de nuevo y la imagen se escribe otra vez.
+func TestCoverSixelForgetsAHiddenScreen(t *testing.T) {
+	m, terminal := coverSixelPlayer(t, 120, 40)
+	playerViewRows(t, m, 120, 40)
+	m = coverEmit(t, m)
+	written := terminal.Len()
+
+	m.help = true
+	m.View()
+	if m.sixel.emitted != "" {
+		t.Fatalf("the help kept the image as written: %q", m.sixel.emitted)
+	}
+	m.help = false
+	playerViewRows(t, m, 120, 40)
+	m = coverEmit(t, m)
+	if terminal.Len() == written {
+		t.Fatal("the cover was not written again after the help")
+	}
+
+	// La banda sin caja también la olvida y la recupera al volver.
+	written = terminal.Len()
+	playerViewRows(t, m, 30, 10)
+	if m.sixel.emitted != "" {
+		t.Fatalf("the minimum size kept the image as written: %q", m.sixel.emitted)
+	}
+	playerViewRows(t, m, 120, 40)
+	m = coverEmit(t, m)
+	if terminal.Len() == written {
+		t.Fatal("the cover was not written again after the minimum size")
+	}
+}
+
+// TestCoverBlocksViewIsTheFallback fija que sin Sixel la vista es la de siempre:
+// la detección en una prueba —sin terminal— elige el medio bloque, y el modo
+// forzado dibuja exactamente los mismos bytes a los dos tamaños.
+func TestCoverBlocksViewIsTheFallback(t *testing.T) {
+	t.Setenv(coverOverrideEnv, "blocks")
+	blocks, _ := coverSixelPlayer(t, 120, 40)
+	blocks.sixel.renderer = coverBlocks
+
+	detected, _ := coverSixelPlayer(t, 120, 40)
+	// La detección real, con el modo impuesto por el entorno, no mide la celda ni
+	// pregunta nada al terminal.
+	detected.sixel = newCoverSixel()
+	if detected.sixel.renderer != coverBlocks {
+		t.Fatalf("detection chose %v with PULSO_COVER=blocks, want blocks", detected.sixel.renderer)
+	}
+	for _, size := range [][2]int{{120, 40}, {80, 24}} {
+		want := strings.Join(playerViewRows(t, blocks, size[0], size[1]), "\n")
+		got := strings.Join(playerViewRows(t, detected, size[0], size[1]), "\n")
+		if !strings.Contains(want, coverUpperHalf) {
+			t.Fatalf("%dx%d does not draw the half blocks:\n%s", size[0], size[1], want)
+		}
+		if got != want {
+			t.Fatalf("%dx%d the forced blocks view differs from the detected one", size[0], size[1])
 		}
 	}
 }
